@@ -39,6 +39,7 @@ sudo apt-get install g++ git scons libqt4-dev libqt4-sql-sqlite libportmidi-dev 
 sudo apt-get install libjack-dev libjack0 portaudio19-dev -y # because of Bug #1464120
 sudo apt-get install libfaad-dev libmp4v2-dev -y # required for M4A support
 sudo apt-get install libmp3lame-dev -y
+sudo apt-get install cmake -y
 
 # Get the required libraries
 sudo apt-get install -y --force-yes build-essential autotools-dev automake autoconf \
