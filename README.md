@@ -26,3 +26,5 @@ Installation from source is pretty slow and problematic; using system images mak
 Currently just one viewer can watch a stream before the script needs to be restarted to free up the camera and encoder. A work-in-progress issue.
 
 Please use the provided backup server for development and testing purposes.
+
+Passwords must be DISABLED as this code does not yet have the required crypto logic added.
