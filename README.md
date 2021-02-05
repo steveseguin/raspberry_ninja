@@ -1,2 +1,28 @@
-# raspberry_ninja
+# Raspberry Ninja
 Turn your Raspberry Pi into a Ninja-cam with hardware-acceleration enabled!
+
+### Installation
+
+It is recommended to use the provided raspberry pi image, as the install process is otherwise quite challenging.
+
+-- link to image here --
+username: pi
+password: raspberry
+
+If installing from scratch, please see the install script.
+
+### How to Run:
+
+Run using:
+`python3 publish.py SomeStreamID`
+
+In Chrome, open this link to view:
+`https://backup.obs.ninja/?password=false&view=SomeStreamID`
+
+### Note:
+
+Installation from source is pretty slow and problematic; using system images makes using this so much easier.
+
+Currently just one viewer can watch a stream before the script needs to be restarted to free up the camera and encoder. A work-in-progress issue.
+
+Please use the provided backup server for development and testing purposes.
