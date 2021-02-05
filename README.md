@@ -33,7 +33,7 @@ Passwords must be DISABLED explicitly as this code does not yet have the require
 
 ### Further Reading:
 
-Setting up to use with Nvidia Hardware
+Details on WebRTC mechanics, Gstreamer, debugging issues, and discussion of Hardware encoders.
 https://cloud.google.com/solutions/gpu-accelerated-streaming-using-webrtc
 
 
