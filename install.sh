@@ -100,6 +100,10 @@ sudo apt-get install ccache git curl bison flex yasm python3-pip \
 
 sudo apt-get install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev -y
 
+cd ~
+[ ! -d meson ] && git clone https://github.com/mesonbuild/meson.git
+cd meson
+sudo python3 setup install
 
 cd ~
 [ ! -d glib ] && git clone https://github.com/GNOME/glib.git 
