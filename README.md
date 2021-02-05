@@ -27,4 +27,4 @@ Currently just one viewer can watch a stream before the script needs to be resta
 
 Please use the provided backup server for development and testing purposes.
 
-Passwords must be DISABLED as this code does not yet have the required crypto logic added.
+Passwords must be DISABLED explicitly as this code does not yet have the required crypto logic added.
