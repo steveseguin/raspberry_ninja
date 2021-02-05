@@ -98,6 +98,7 @@ sudo apt-get install ccache git curl bison flex yasm python3-pip \
         libtheora-dev libtwolame-dev libvorbis-dev libvpx-dev libwebp-dev \
         pkg-config unzip zlib1g-dev -y
 
+sudo apt-get install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev -y
 
 
 cd ~
