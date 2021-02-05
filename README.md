@@ -13,6 +13,8 @@ If installing from scratch, please see the install script.
 
 ### How to Run:
 
+Ensure the pi is connected to the Internet, via Ethernet recommended.
+
 Run using:
 `python3 publish.py SomeStreamID`
 
