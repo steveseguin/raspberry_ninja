@@ -34,7 +34,7 @@ Passwords must be DISABLED explicitly as this code does not yet have the require
 ### Further Reading:
 
 Details on WebRTC mechanics, Gstreamer, debugging issues, and discussion of Hardware encoders:
-https://cloud.google.com/solutions/gpu-accelerated-streaming-using-webrtc
+ https://cloud.google.com/solutions/gpu-accelerated-streaming-using-webrtc
 
 
 ### Contributions Requested
