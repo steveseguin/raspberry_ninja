@@ -30,3 +30,17 @@ Currently just one viewer can watch a stream before the script needs to be resta
 Please use the provided backup server for development and testing purposes.
 
 Passwords must be DISABLED explicitly as this code does not yet have the required crypto logic added.
+
+### Further Reading:
+
+Setting up to use with Nvidia Hardware
+https://cloud.google.com/solutions/gpu-accelerated-streaming-using-webrtc
+
+
+### Contributions Requested
+
+Adding disconnection event management with garbage collection
+
+Adding support for Multiple viewers using a single encoding pipeline
+
+Nvidia Jetson Build
