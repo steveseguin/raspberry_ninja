@@ -1,4 +1,4 @@
-# Raspberry Ninja
+# Raspberry Ninja [wip]
 Turn your Raspberry Pi into a Ninja-cam with hardware-acceleration enabled!  Publish live streaming video to OBS.Ninja.
 
 ### Installation
