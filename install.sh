@@ -139,6 +139,9 @@ sudo ninja -C builddir install
 sudo ldconfig
 sudo cp /usr/lib/gstreamer-1.0/* /usr/lib/arm-linux-gnueabihf/gstreamer-1.0/
 
+sudo apt-get install libwebrtc-audio-processing-dev -y
+sudo apt-get install cmake -y
+
 cd ~
 wget http://freedesktop.org/software/pulseaudio/webrtc-audio-processing/webrtc-audio-processing-0.3.1.tar.xz
 tar xvf webrtc-audio-processing-0.3.1.tar.xz
@@ -165,8 +168,7 @@ sudo cmake .
 sudo make install
 sudo ldconfig
 
-sudo apt-get install libwebrtc-audio-processing-dev -y
-sudo apt-get install cmake -y
+
 
 #cd ~
 #[ ! -d webrtc-audio-processing ] && git clone git://anongit.freedesktop.org/pulseaudio/webrtc-audio-processing
