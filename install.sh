@@ -166,6 +166,13 @@ git pull
 make -j4
 sudo make install -j4
 
+cd ~
+[ ! -d abseil-cpp ] && git clone https://github.com/abseil/abseil-cpp.git
+cd abseil-cpp
+git pull
+sudo cmake .
+sudo make install
+sudo ldconfig
 
 cd ~
 [ ! -d webrtc-audio-processing ] && git clone git://anongit.freedesktop.org/pulseaudio/webrtc-audio-processing
