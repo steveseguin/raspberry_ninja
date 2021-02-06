@@ -19,8 +19,7 @@ grep -q BCM2 /proc/cpuinfo && sudo apt-get update && sudo apt-get upgrade -y
 #apt-get update -oAcquire::AllowInsecureRepositories=true
 #apt-get install deb-multimedia-keyring -y
 
-#sudo dpkg --remove 
--dev libsrtp2-dev libusrsctp-dev
+#sudo dpkg --remove -dev libsrtp2-dev libusrsctp-dev
 sudo apt autoremove -y
 sudo apt-get install libomxil-bellagio-dev libfreetype6-dev libmp3lame-dev checkinstall libx264-dev fonts-freefont-ttf libasound2-dev meson -y
 
