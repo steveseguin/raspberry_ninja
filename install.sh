@@ -19,7 +19,8 @@ grep -q BCM2 /proc/cpuinfo && sudo apt-get update && sudo apt-get upgrade -y
 #apt-get update -oAcquire::AllowInsecureRepositories=true
 #apt-get install deb-multimedia-keyring -y
 
-#sudo dpkg --remove libnice-dev libsrtp2-dev libusrsctp-dev
+#sudo dpkg --remove 
+-dev libsrtp2-dev libusrsctp-dev
 sudo apt autoremove -y
 sudo apt-get install libomxil-bellagio-dev libfreetype6-dev libmp3lame-dev checkinstall libx264-dev fonts-freefont-ttf libasound2-dev meson -y
 
@@ -130,13 +131,13 @@ sudo ldconfig
 
 cd ~
 sudo rm -r libnice || true
-[ ! -d libnice ] && git clone https://github.com/libnice/libnice.git -b 0.1.16
+[ ! -d libnice ] && git clone https://github.com/libnice/libnice.git 
 cd libnice
-############  NEW CODE, but invalild
-#git pull
-#sudo meson builddir
-#sudo ninja -C builddir
-#sudo ninja -C builddir install
+############  NEW METHOD
+git pull
+sudo meson builddir
+sudo ninja -C builddir
+sudo ninja -C builddir install
 ############### OLD Method that fails for me now
 #git checkout -b release/0.1.16 origin/master
 #cd agent
@@ -147,15 +148,8 @@ cd libnice
 #wget https://gitlab.freedesktop.org/libnice/libnice/uploads/52e70b46da7c2396db56ea59f314a1a5/conncheck.c
 #wget https://gitlab.freedesktop.org/libnice/libnice/uploads/a237b809e0b9f14c9fc1706a707e85ea/outputstream.c
 #cd ..
-libtoolize
-./autogen.sh --prefix=/usr --with-gstreamer --enable-static --enable-static-plugins --enable-shared --without-gstreamer-0.10 --disable-gtk-doc --enable-compile-warnings=minimum --with-crypto-library=auto   
-libtoolize
-make -j4
-sudo make install -j4
-sudo ldconfig
-cd gst
-sudo make install
-sudo cp /usr/lib/gstreamer-1.0/* /usr/lib/arm-linux-gnueabihf/gstreamer-1.0/
+
+
 
 sudo apt-get remove libsrtp-dev -y
 cd ~
@@ -173,6 +167,9 @@ git pull
 sudo cmake .
 sudo make install
 sudo ldconfig
+
+sudo apt-get install libwebrtc-audio-processing-dev -y
+sudo apt-get install cmake -y
 
 cd ~
 [ ! -d webrtc-audio-processing ] && git clone git://anongit.freedesktop.org/pulseaudio/webrtc-audio-processing
@@ -205,10 +202,11 @@ git clone --depth 1 https://github.com/mstorsjo/fdk-aac.git ~/ffmpeg-libraries/f
   && sudo make install
 
 cd ~
-git clone --depth 1 https://chromium.googlesource.com/webm/libvpx ~/ffmpeg-libraries/libvpx \
-  && cd ~/ffmpeg-libraries/libvpx \
-  && make distclean \
-  && ./configure --disable-examples --disable-tools --disable-unit_tests --disable-docs --enable-shared \
+git clone --depth 1 https://chromium.googlesource.com/webm/libvpx ~/ffmpeg-libraries/libvpx 
+cd ~/ffmpeg-libraries/libvpx
+git pull
+make distclean
+./configure --disable-examples --disable-tools --disable-unit_tests --disable-docs --enable-shared \
   && make -j4 \
   && sudo make install
 
@@ -351,17 +349,18 @@ sudo ninja -C build install -j4
 cd ..
 
 
-[ ! -d gst-rpicamsrc ] && git clone https://github.com/thaytan/gst-rpicamsrc.git
-cd gst-rpicamsrc
-git pull
-sudo meson build --prefix=/usr
-libtoolize
-sudo ninja -C build install
-libtoolize
-./autogen
-libtoolize
-make
-sudo make install
-cd ~
+#[ ! -d gst-rpicamsrc ] && git clone https://github.com/thaytan/gst-rpicamsrc.git
+#cd gst-rpicamsrc
+#git pull
+#sudo meson build --prefix=/usr
+#libtoolize
+#sudo ninja -C build install
+#libtoolize
+#./autogen
+#libtoolize
+#make
+#sudo make install
+#cd ~
 
 sudo ldconfig
+sudo pip3 install websockets
