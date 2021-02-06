@@ -130,26 +130,24 @@ sudo make install -j4
 sudo ldconfig
 
 cd ~
-sudo rm -r libnice || true
+sudo rm -r || true
 [ ! -d libnice ] && git clone https://github.com/libnice/libnice.git 
-cd libnice
-############  NEW METHOD
+cd 
 git pull
 sudo meson builddir
 sudo ninja -C builddir
 sudo ninja -C builddir install
-############### OLD Method that fails for me now
-#git checkout -b release/0.1.16 origin/master
-#cd agent
-#rm agent-priv.h
-#rm connecheck.c
-#rm outputstream.c
-#wget https://gitlab.freedesktop.org/libnice/libnice/uploads/eea94598d97de9d18a5e5a8c135a0767/agent-priv.h
-#wget https://gitlab.freedesktop.org/libnice/libnice/uploads/52e70b46da7c2396db56ea59f314a1a5/conncheck.c
-#wget https://gitlab.freedesktop.org/libnice/libnice/uploads/a237b809e0b9f14c9fc1706a707e85ea/outputstream.c
-#cd ..
+sudo ldconfig
+sudo cp /usr/lib/gstreamer-1.0/* /usr/lib/arm-linux-gnueabihf/gstreamer-1.0/
 
-
+cd ~
+wget http://freedesktop.org/software/pulseaudio/webrtc-audio-processing/webrtc-audio-processing-0.3.1.tar.xz
+tar xvf webrtc-audio-processing-0.3.1.tar.xz
+cd webrtc-audio-processing-0.3.1
+./configure 
+make
+sudo make install
+sudo ldconfig
 
 sudo apt-get remove libsrtp-dev -y
 cd ~
@@ -171,14 +169,14 @@ sudo ldconfig
 sudo apt-get install libwebrtc-audio-processing-dev -y
 sudo apt-get install cmake -y
 
-cd ~
-[ ! -d webrtc-audio-processing ] && git clone git://anongit.freedesktop.org/pulseaudio/webrtc-audio-processing
-cd webrtc-audio-processing
-git pull
-sudo rm -r build
-[ ! -d build ] && mkdir build
-sudo meson build || true
-sudo ninja -C build install -j4 || true
+#cd ~
+#[ ! -d webrtc-audio-processing ] && git clone git://anongit.freedesktop.org/pulseaudio/webrtc-audio-processing
+#cd webrtc-audio-processing
+#git pull
+#sudo rm -r build
+##[ ! -d build ] && mkdir build
+#sudo meson build || true
+#sudo ninja -C build install -j4 || true
 
 sudo apt-get remove libsctp-dev -y
 cd ~
@@ -254,8 +252,9 @@ cd gstreamer
 [ ! $RPI ] && [ ! -d gstreamer-vaapi ] && git clone git://anongit.freedesktop.org/git/gstreamer/gstreamer-vaapi
 
 
-
+export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
 export LD_LIBRARY_PATH=/usr/local/lib/
+
 # checkout branch (default=master) and build & install
 cd gstreamer
 git pull
