@@ -299,6 +299,7 @@ cd ..
 sudo ninja -C build install -j4
 cd ..
 
+## https://gitlab.freedesktop.org/gstreamer/gst-libav/-/issues/88 ; as of feb 5th, a file needs patching to continue.
 cd gst-libav
 git pull
 sudo rm -r build  || true
