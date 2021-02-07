@@ -1,25 +1,47 @@
 # Raspberry Ninja [wip - not quite ready for use yet]
 Turn your Raspberry Pi into a Ninja-cam with hardware-acceleration enabled!  Publish live streaming video to OBS.Ninja.
 
+### Preface
+
+This code is more a proof of concept at the moment; I wouldn't recommend using things as is for production projects. The core concepts and code used in this project can be reused for other projects, including Nvidia Jetsons, smartphone applications, and for ingesting streams into OBS.Ninja from other video distribution systems.
+
+It be a goal of mine to have http://butcanitrunninja.com/ and https://runs.ninja point to a repo which lists all the different devices and systems that have been made compatible with OBS.Ninja. By the end of 2021, I suspect it would be feasble to have dozens of devices supported, including professional streaming devices like Tricasters.
+
 ### Installation
 
 It is recommended to use the provided raspberry pi image, as the install process is otherwise quite challenging.
 
--- link to image here --
+Download and extract the image file:
+https://drive.google.com/file/d/1NchpcHYHcNMvjm7NaBf84ZH0xKgLomXR/view?usp=sharing
+
+Write the image to an SD cards; at least 8GB in size, using the appropriate tool:
+https://www.raspberrypi.org/documentation/installation/installing-images/windows.md
+
+SSH is enabled on port 22 if needed.
+
+Login information for the device is:
 username: pi
 password: raspberry
 
-If installing from scratch, please see the install script.
+And in case you need to connect it to wifi, it's preconfigured to connect to a default wifi network:
+ssid: raspberry
+password: password
+
+If you do not want to use the provided image, you can try to install from scratch, but be prepared to a weekend on it. Please see the install script.
+
+The install script is not fully functional right now -- I would love to have someone organize it to run with a fixed version, perhaps gstreamer 1.18, as running master (as I am currently) causes it to break from week to week.  It was working in a few months ago, but I don't have the time to maintain it.
 
 ### How to Run:
 
-Ensure the pi is connected to the Internet, via Ethernet recommended.
+Ensure the pi is connected to the Internet, via Ethernet recommended.  You will also need an official raspberry pi camera; v1 or v2 will probably work.
 
 Run using:
 `python3 publish.py SomeStreamID`
 
 In Chrome, open this link to view:
 `https://backup.obs.ninja/?password=false&view=SomeStreamID`
+
+Once done, you need to stop and start the Python script again to connect a new viewer.  One viewer at a time can work at the moment. Hoping to address this limitation with future updates.
 
 ### Note:
 
