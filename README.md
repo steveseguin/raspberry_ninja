@@ -1,6 +1,5 @@
 # Raspberry Ninja [wip - not validated yet]
-Turn your Raspberry Pi into a Ninja-cam with hardware-acceleration enabled!  Publish live streaming video to OBS.Ninja.  [Disk Image linked below.]
-
+Turn your Raspberry Pi into a Ninja-cam with hardware-acceleration enabled!  Publish live streaming video to OBS.Ninja.
 ### Preface
 
 This code is more a proof of concept at the moment; I wouldn't recommend using things as is for production projects. The core concepts and code used in this project can be reused for other projects, including Nvidia Jetsons, smartphone applications, and for ingesting streams into OBS.Ninja from other video distribution systems.
