@@ -66,3 +66,5 @@ Adding disconnection event management with garbage collection
 Adding support for Multiple viewers using a single encoding pipeline
 
 Nvidia Jetson Build
+
+Organizing the install bash script into something that isn't a complete mess.
