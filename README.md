@@ -19,13 +19,15 @@ https://www.raspberrypi.org/documentation/installation/installing-images/windows
 SSH is enabled on port 22 if needed.
 
 Login information for the device is:
+```
 username: pi
 password: raspberry
-
+```
 And in case you need to connect it to wifi, it's preconfigured to connect to a default wifi network:
+```
 ssid: raspberry
 password: password
-
+```
 If you do not want to use the provided image, you can try to install from scratch, but be prepared to a weekend on it. Please see the install script.
 
 The install script is not fully functional right now -- I would love to have someone organize it to run with a fixed version, perhaps gstreamer 1.18, as running master (as I am currently) causes it to break from week to week.  It was working in a few months ago, but I don't have the time to maintain it.
