@@ -36,6 +36,7 @@ Ensure the pi is connected to the Internet, via Ethernet recommended.  You will 
 
 Run using:
 `python3 publish.py SomeStreamID`
+(script might be named something differently on the image)
 
 In Chrome, open this link to view:
 `https://backup.obs.ninja/?password=false&view=SomeStreamID`
