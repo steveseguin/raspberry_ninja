@@ -1,4 +1,4 @@
-# Raspberry Ninja [wip - not validated yet] <img src="https://user-images.githubusercontent.com/2575698/107161226-467cd200-6969-11eb-8cef-81ab334cbab3.png"  width="100" />
+# Raspberry Ninja [wip - not validated yet] <img src="https://user-images.githubusercontent.com/2575698/107161226-467cd200-6969-11eb-8cef-81ab334cbab3.png"  width="20" />
 Turn your Raspberry Pi into a Ninja-cam with hardware-acceleration enabled!  Publish live streaming video to OBS.Ninja. 
 ### Preface
 
