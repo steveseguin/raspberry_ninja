@@ -1,4 +1,4 @@
-# Raspberry Ninja [wip - not quite ready for use yet]
+# Raspberry Ninja [wip - not validated yet]
 Turn your Raspberry Pi into a Ninja-cam with hardware-acceleration enabled!  Publish live streaming video to OBS.Ninja.
 
 ### Preface
