@@ -37,8 +37,7 @@ The install script is not fully functional right now -- I would love to have som
 Ensure the pi is connected to the Internet, via Ethernet recommended.  You will also need an official raspberry pi camera; v1 or v2 will probably work.
 
 Run using:
-`python3 publish.py SomeStreamID`
-(script might be named something differently on the image)
+`python3 server.py SomeStreamID`
 
 In Chrome, open this link to view:
 `https://backup.obs.ninja/?password=false&view=SomeStreamID`
