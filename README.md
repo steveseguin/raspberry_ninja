@@ -6,6 +6,8 @@ This code is more a proof of concept at the moment; I wouldn't recommend using t
 
 It be a goal of mine to have http://butcanitrunninja.com/ and https://runs.ninja point to a repo which lists all the different devices and systems that have been made compatible with OBS.Ninja. By the end of 2021, I suspect it would be feasble to have dozens of devices supported, including professional streaming devices like Tricasters.
 
+Please note, as an alternative to this low-level approach to publishing with a Rpi, please consider using Chromium on a raspberry pi to publish instead.  It will likely be software-based video encoding, so the resolution will be limited in comparison, but it will likely be more stable and easier to work with.  A Raspberry pi image that boots into a "kiosk" mode can be found here: https://awesomeopensource.com/project/futurice/chilipie-kiosk ; it probably is a good choice is using a Raspberry Pi 4 so newer.
+
 ### Installation
 
 It is recommended to use the provided raspberry pi image, as the install process is otherwise quite challenging.
