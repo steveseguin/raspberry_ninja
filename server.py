@@ -38,7 +38,7 @@ class WebRTCClient:
         self.UUID = None
         self.session = None
         self.peer_id = peer_id
-        self.server = 'wss://apibackup.obs.ninja:443' ###  To avoid causing issues for production; streams can be view at https://backup.obs.ninja as a result.
+        self.server = server
 
     async def connect(self):
         print("Connect")
@@ -239,10 +239,12 @@ if __name__=='__main__':
     if not check_plugins():
         sys.exit(1)
     parser = argparse.ArgumentParser()
-    parser.add_argument('streamid', help='Stream ID of the peer to connect to')
+    parser.add_argument('--streamid', help='Stream ID of the peer to connect to')
     parser.add_argument('--server', help='Handshake server to use, eg: "wss://backupapi.obs.ninja:443"')
     args = parser.parse_args()
-    c = WebRTCClient(args.streamid, args.server)
+    our_id = args.streamid or random.randrange(10000, 1000000)
+    our_wss = args.wss or 'wss://apibackup.obs.ninja:443' ###  To avoid causing issues for production; streams can be view at https://backup.obs.ninja as a result.
+    c = WebRTCClient(our_id, our_wss)
     asyncio.get_event_loop().run_until_complete(c.connect())
     res = asyncio.get_event_loop().run_until_complete(c.loop())
     sys.exit(res)
