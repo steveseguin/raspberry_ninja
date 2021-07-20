@@ -1,10 +1,10 @@
 # <img src="https://user-images.githubusercontent.com/2575698/107161314-f6523f80-6969-11eb-9e9b-9135554b87b5.png"  width="50" />  Raspberry Ninja [wip] 
-Turn your Raspberry Pi into a Ninja-cam with hardware-acceleration enabled!  Publish live streaming video to OBS.Ninja. 
+Turn your Raspberry Pi into a Ninja-cam with hardware-acceleration enabled!  Publish live streaming video to VDO.Ninja. 
 ### Preface
 
-This code is more a proof of concept at the moment; I wouldn't recommend using things as is for production projects. The core concepts and code used in this project can be reused for other projects, including Nvidia Jetsons, smartphone applications, and for ingesting streams into OBS.Ninja from other video distribution systems.
+This code is more a proof of concept at the moment; I wouldn't recommend using things as is for production projects. The core concepts and code used in this project can be reused for other projects, including Nvidia Jetsons, smartphone applications, and for ingesting streams into VDO.Ninja from other video distribution systems.
 
-It be a goal of mine to have http://butcanitrunninja.com/ and https://runs.ninja point to a repo which lists all the different devices and systems that have been made compatible with OBS.Ninja. By the end of 2021, I suspect it would be feasble to have dozens of devices supported, including professional streaming devices like Tricasters.
+It be a goal of mine to have http://butcanitrunninja.com/ and https://runs.ninja point to a repo which lists all the different devices and systems that have been made compatible with VDO.Ninja. By the end of 2021, I suspect it would be feasble to have dozens of devices supported, including professional streaming devices like Tricasters.
 
 Please note, as an alternative to this low-level approach to publishing with a Rpi, please consider using Chromium on a raspberry pi to publish instead.  It will likely be software-based video encoding, so the resolution will be limited in comparison, but it will likely be more stable and easier to work with.  A Raspberry pi image that boots into a "kiosk" mode can be found here: https://awesomeopensource.com/project/futurice/chilipie-kiosk ; it probably is a good choice is using a Raspberry Pi 4 so newer.
 
