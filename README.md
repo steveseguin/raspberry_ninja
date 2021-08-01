@@ -42,7 +42,7 @@ Run using:
 `python3 server.py --streamid SomeStreamID`
 
 In Chrome, open this link to view:
-`https://backup.obs.ninja/?password=false&view=SomeStreamID`
+`https://backup.vdo.ninja/?password=false&view=SomeStreamID`
 
 Once done, you need to stop and start the Python script again to connect a new viewer.  One viewer at a time can work at the moment. Hoping to address this limitation with future updates.
 
