@@ -8,6 +8,9 @@ Please note, as an alternative to this low-level approach to publishing with a R
 
 If you wish to play a video back, using a Raspberry pi, try this "kiosk" mode image that can be found here: https://awesomeopensource.com/project/futurice/chilipie-kiosk. Raspberry Pis seem to handle video playback in Chromium-based browsers pretty well; it's just the encoding they don't do well in browser yet.
 
+![image](https://user-images.githubusercontent.com/2575698/127804804-7ee38ebd-6f98-4242-af34-ac9ef0d9a82e.png)
+
+
 ### Installation for a Raspberry Pi
 
 It is recommended to use the provided raspberry pi image, as the install process is otherwise quite challenging.
@@ -37,6 +40,11 @@ The install script is not fully functional right now -- I would love to have som
 ### Installation for an Nvidia Jetson
 
 Please see the `nvidia_jetson` folder for details on installation.
+
+![image](https://user-images.githubusercontent.com/2575698/127804651-fc8ce68e-3510-4cd0-9d5a-1953c6aac0d8.png)
+
+![image](https://user-images.githubusercontent.com/2575698/127804619-a029a31e-2098-4d99-ad03-6c5ec6804ae5.png)
+
 
 ### How to Run:
 
