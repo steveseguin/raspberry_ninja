@@ -15,21 +15,6 @@ from gi.repository import GstWebRTC
 gi.require_version('GstSdp', '1.0')
 from gi.repository import GstSdp
 
-PIPELINE_DESC = ''' 
-webrtcbin name=sendrecv bundle-policy=max-bundle
- videotestsrc ! videoconvert ! queue ! vp8enc deadline=1 ! rtpvp8pay !
- queue ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! sendrecv.
- audiotestsrc is-live=true wave=red-noise ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay !
- queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv.
-''' ## In case you don't have a camera attached, try using this instead?
-
-PIPELINE_DESC = '''
-webrtcbin name=sendrecv bundle-policy=max-bundle
-rpicamsrc bitrate=2000000 ! video/x-h264,profile=constrained-baseline,width=1280,height=720,level=3.0 ! queue ! h264parse ! rtph264pay config-interval=-1 !
-queue ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! sendrecv.
-''' # raspberry pi camera needed; audio source removed to perserve simplicity.
-
-
 class WebRTCClient:
     def __init__(self, peer_id, server):
         self.conn = None
@@ -38,14 +23,12 @@ class WebRTCClient:
         self.UUID = None
         self.session = None
         self.peer_id = peer_id
-        self.server = 'wss://apibackup.obs.ninja:443' ###  To avoid causing issues for production; streams can be view at https://backup.obs.ninja as a result.
+        self.server = server ###  To avoid causing issues for production; streams can be view at https://backup.obs.ninja as a result.
 
     async def connect(self):
-        print("Connect")
         sslctx = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
         self.conn = await websockets.connect(self.server, ssl=sslctx)
         msg = json.dumps({"request":"seed","streamID":self.peer_id})
-        print(msg)
         await self.conn.send(msg)
 
     def on_offer_created(self, promise, _, __):  ## This is all based on the legacy API of OBS.Ninja; gstreamer-1.19 lacks support for the newer API.
@@ -146,6 +129,8 @@ class WebRTCClient:
 
     def start_pipeline(self):
         print("START PIPE")
+        if self.pipe:
+            self.pipe.set_state(Gst.State.NULL)
         self.pipe = Gst.parse_launch(PIPELINE_DESC)
         self.webrtc = self.pipe.get_by_name('sendrecv')
         self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed)
@@ -190,7 +175,6 @@ class WebRTCClient:
 
 
     async def loop(self):
-        print("LOOP START")
         assert self.conn
         print("WSS CONNECTED")
         async for message in self.conn:
@@ -239,10 +223,47 @@ if __name__=='__main__':
     if not check_plugins():
         sys.exit(1)
     parser = argparse.ArgumentParser()
-    parser.add_argument('streamid', help='Stream ID of the peer to connect to')
+    parser.add_argument('--streamid', help='Stream ID of the peer to connect to')
     parser.add_argument('--server', help='Handshake server to use, eg: "wss://backupapi.obs.ninja:443"')
+    parser.add_argument('--bitrate', help='Sets the video bitrate. This is not adaptive, so packet loss and insufficient bandwidth will cause frame loss')
     args = parser.parse_args()
-    c = WebRTCClient(args.streamid, args.server)
+
+    server = args.server or "wss://apibackup.obs.ninja:443"
+    streamid = args.streamid or str(random.randint(1000000,9999999))
+    bitrate = args.bitrate or str(4000)
+
+    print("\nAvailable options include --streamid, --bitrate, and --server. Default bitrate is 4000 (kbps)")
+    print("\nYou can view this stream at: https://backup.vdo.ninja/?password=false&view="+streamid);
+
+    ## RASPBERRY PI camera needed; audio source removed to perserve simplicity. See below for some more pipelines to experiment with
+    PIPELINE_DESC = "webrtcbin name=sendrecv bundle-policy=max-bundle rpicamsrc bitrate="+bitrate+"000 ! video/x-h264,profile=constrained-baseline,width=1280,height=720,level=3.0 ! queue ! h264parse ! rtph264pay config-interval=-1 ! queue ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! sendrecv. " 
+
+    ## FOR JETSON ## PIPELINE_DESC = "v4l2src device=/dev/video0 io-mode=2 ! image/jpeg,framerate=30/1,width=1920,height=1080 ! jpegparse ! nvjpegdec ! video/x-raw ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate="+bitrate+"000 ! video/x-h264, stream-format=(string)byte-stream ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtcbin name=sendrecv "
+
+    c = WebRTCClient(streamid, server)
     asyncio.get_event_loop().run_until_complete(c.connect())
     res = asyncio.get_event_loop().run_until_complete(c.loop())
     sys.exit(res)
+
+
+
+### pipelines you can use
+
+#PIPELINE_DESC = '''
+#    webrtcbin name=sendrecv bundle-policy=max-bundle
+#     videotestsrc ! videoconvert ! queue ! vp8enc deadline=1 ! rtpvp8pay !
+#      queue ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! sendrecv.
+#       audiotestsrc is-live=true wave=red-noise ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay !
+#        queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv.
+#        ''' ## A sample of how Audio could work; not bothering to setup it up though.
+
+        ## This is untested, fopr the nvidia jetson, but could work with the CSI-port built into the Jetson.
+PIPELINE_DESC = "nvarguscamerasrc ! video/x-raw(memory:NVMM), width=(int)1920, height=(int)1080, format=(string)NV12, framerate=(fraction)30/1 ! omxh264enc ! video/x-h264, stream-format=(string)byte-stream ! queue ! h264parse ! queue ! rtph264pay config-interval=-1 ! queue ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtcbin name=sendrecv "
+
+        ## This is a good test pipeline for the Nvidia Jetson; uses a fake source to test with. -- no camera needed
+PIPELINE_DESC = "videotestsrc ! video/x-raw, width=(int)1920, height=(int)1080, format=(string)NV12, framerate=(fraction)30/1 ! omxh264enc ! video/x-h264, stream-format=(string)byte-stream ! queue ! h264parse ! queue ! rtph264pay config-interval=-1 ! queue ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtcbin name=sendrecv "
+
+        ## For Nvidia Jetson; Works with those cheap HDMI to USB 2.0 UVC capture dongle. Assumes just one UVC device is connected.
+PIPELINE_DESC = "v4l2src device=/dev/video0 io-mode=2 ! image/jpeg,framerate=30/1,width=1920,height=1080 ! jpegparse ! nvjpegdec ! video/x-raw ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate=10000000 ! video/x-h264, stream-format=(string)byte-stream ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtcbin name=sendrecv "
+
+
