@@ -31,14 +31,16 @@ Login information for the device is:
 username: pi
 password: raspberry
 ```
-And in case you need to connect it to wifi, it's preconfigured to connect to a default wifi network:
-```
-ssid: raspberry
-password: password
-```
-If you do not want to use the provided image, you can try to install from scratch, but be prepared to a weekend on it. Please see the install script.
+It's recommend that you connect over Ethernet, but USB works I think, too. Connecting to a Raspberry Pi can be searched for on Google though.
 
-The install script is not fully functional right now -- I would love to have someone organize it to run with a fixed version, perhaps gstreamer 1.18, as running master (as I am currently) causes it to break from week to week.  It was working in a few months ago, but I don't have the time to maintain it.
+Once connected, you can use the existing server.py file, or you can pull the repo for the newest code version:
+
+```
+git clone https://github.com/steveseguin/raspberry_ninja.git
+```
+
+* If you do not want to use the provided image, you can try to install from scratch, but be prepared to a weekend on it. Please see the install script. Gstreamer 1.14 is required as a minimum, but future versions of this script will probably require at least 1.16.
+
 
 ### Installation for an Nvidia Jetson
 
@@ -46,6 +48,17 @@ Please see the `nvidia_jetson` folder for details on installation.
 
 ![image](https://user-images.githubusercontent.com/2575698/127804651-fc8ce68e-3510-4cd0-9d5a-1953c6aac0d8.png) ![image](https://user-images.githubusercontent.com/2575698/127804619-a029a31e-2098-4d99-ad03-6c5ec6804ae5.png)
 
+### Configuring
+
+The Raspberry Pi image is setup to use an official Raspberry Pi camera by default. The Nvidia Jetson is conversely setup to use an HDMI to USB 2.0 MJPEG 1080p30 adapter.
+
+If you wish to use a different type of device, you'll need to modify the script accordingly.
+
+Using `gst-device-monitor-1.0` will list available devices and their 'caps', or settings.  This can help determine what GStreamer pipeline changes need to be made in the script.
+
+`gst-launch-1.0` can be used to test a pipeline out before adding it to the script.
+
+Once you have things setup, you can turn the Python script into a system service, so it boots automatically at run time. This lets you plug and play the setup headlessly, but this is more for advanced users at this point.
 
 ### How to Run:
 
