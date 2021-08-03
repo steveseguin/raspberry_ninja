@@ -12,10 +12,9 @@ Youtube video demoing: https://youtu.be/J0qqXxHNU_c
 
 ![image](https://user-images.githubusercontent.com/2575698/127951812-b799a6e6-f77e-4749-8ef1-15221b842805.png)
 
-![image](https://user-images.githubusercontent.com/2575698/127804804-7ee38ebd-6f98-4242-af34-ac9ef0d9a82e.png)
-
-
 ### Installation for a Raspberry Pi
+
+![image](https://user-images.githubusercontent.com/2575698/127804804-7ee38ebd-6f98-4242-af34-ac9ef0d9a82e.png)
 
 It is recommended to use the provided raspberry pi image, as the install process is otherwise quite challenging.
 
