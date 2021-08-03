@@ -8,11 +8,11 @@ Please note, as an alternative to this low-level approach to publishing with a R
 
 If you wish to play a video back, using a Raspberry pi, try this "kiosk" mode image that can be found here: https://awesomeopensource.com/project/futurice/chilipie-kiosk. Raspberry Pis seem to handle video playback in Chromium-based browsers pretty well; it's just the encoding they don't do well in browser yet.
 
-![image](https://user-images.githubusercontent.com/2575698/127804804-7ee38ebd-6f98-4242-af34-ac9ef0d9a82e.png)
-
 Youtube video demoing: https://youtu.be/J0qqXxHNU_c
 
 ![image](https://user-images.githubusercontent.com/2575698/127951812-b799a6e6-f77e-4749-8ef1-15221b842805.png)
+
+![image](https://user-images.githubusercontent.com/2575698/127804804-7ee38ebd-6f98-4242-af34-ac9ef0d9a82e.png)
 
 
 ### Installation for a Raspberry Pi
