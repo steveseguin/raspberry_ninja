@@ -3,8 +3,10 @@ Turn your Raspberry Pi or Nvidia Jetson into a Ninja-cam with hardware-accelerat
 ### Preface
 
 Youtube video demoing:
+
 ![image](https://user-images.githubusercontent.com/2575698/127951812-b799a6e6-f77e-4749-8ef1-15221b842805.png)
-https://youtu.be/J0qqXxHNU_c
+
+link: https://youtu.be/J0qqXxHNU_c
 
 This code is more a proof of concept at the moment; I wouldn't recommend using things as is for production projects, but it could work well for you. The core concepts and code used in this project can be reused for other projects; most Ubuntu systems and a large variety of embedded systems, including smartphones.
 
