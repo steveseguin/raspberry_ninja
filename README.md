@@ -10,7 +10,7 @@ If you wish to play a video back, using a Raspberry pi, try this "kiosk" mode im
 
 Youtube video demoing: https://youtu.be/J0qqXxHNU_c
 
-![image](https://user-images.githubusercontent.com/2575698/127951812-b799a6e6-f77e-4749-8ef1-15221b842805.png)
+<img src="https://user-images.githubusercontent.com/2575698/127951812-b799a6e6-f77e-4749-8ef1-15221b842805.png" width="400">
 
 ### Installation for a Raspberry Pi
 
