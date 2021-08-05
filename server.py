@@ -266,4 +266,5 @@ PIPELINE_DESC = "videotestsrc ! video/x-raw, width=(int)1920, height=(int)1080, 
         ## For Nvidia Jetson; Works with those cheap HDMI to USB 2.0 UVC capture dongle. Assumes just one UVC device is connected.
 PIPELINE_DESC = "v4l2src device=/dev/video0 io-mode=2 ! image/jpeg,framerate=30/1,width=1920,height=1080 ! jpegparse ! nvjpegdec ! video/x-raw ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate=10000000 ! video/x-h264, stream-format=(string)byte-stream ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtcbin name=sendrecv "
 
-
+        ## This pipeline lets you plug a UVC-based camera/HDMI source into the USB of a Raspberry pi and stream it. It expects the camera source to support MJPEG.  You can tweak the pipeline as needed for your own purpose. The pipeline needs a lot more tuning.
+PIPELINE_DESC = "webrtcbin name=sendrecv v4l2src device=/dev/video0 ! image/jpeg,framerate=30/1,width=1280,height=720 ! jpegparse ! jpegdec ! video/x-raw ! videoconvert ! video/x-raw ! omxh264enc ! video/x-h264 ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! queue ! sendrecv. "
