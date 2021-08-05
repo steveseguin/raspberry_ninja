@@ -1,6 +1,7 @@
 # A version for the Nvidia Jetson
 
 This is very much like the RPI version, but uses the Nvidia Jetson (Nano/NX/AGX) and the official Nvidia Jetson Ubuntu 18 system image.
+https://developer.nvidia.com/embedded/downloads
 
 Trying to upgrade Gstreamer to 1.16 or newer involves nothing but endless pain and suffering, so I'm sticking with the officially supported 1.14. It needs libnice to be added for webRTC support to be available still, and the install script provided attempts to do that.
 
