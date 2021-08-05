@@ -16,3 +16,24 @@ https://docs.nvidia.com/jetson/l4t/index.html#page/Tegra%20Linux%20Driver%20Pack
 
 ![image](https://user-images.githubusercontent.com/2575698/127804558-1560ad4d-6c2a-4791-92ca-ca50d2eacc2d.png)
 
+
+### PROBLEMS
+
+##### Just doens't work
+
+If you have an error or things just don't work, saying "START PIPE" but nothing happens, make sure the correct device is specified
+
+video0 or video1 or whatever should align with the location of your video device.  
+```PIPELINE_DESC = "v4l2src device=/dev/video1 io-mode=2 ! image/jpeg,framerate ...```
+
+Using ```$ gst-device-monitor-1.0``` can help you list available devices and their location
+
+![image](https://user-images.githubusercontent.com/2575698/128388731-335aaf3d-5f31-4185-b9f2-b7b8fe748d6b.png)
+
+#### other problems
+
+Make sure the camera/media device supports MJPEG output, else see the script file for examples of other options.  Things may not work if your device needs be changed up, but MJPEG is pretty common.
+
+#### nvjpegdec notg found
+
+Make sure you've correctly installed the install script provided.  Go thru it line by line of the install script to make sure it all works if you need to.  Also, this install script assumes a brand new and clean Jetson image; please at least update first or grab a spare uSD card to try a clean image.
