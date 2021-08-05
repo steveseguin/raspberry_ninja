@@ -35,6 +35,6 @@ Using ```$ gst-device-monitor-1.0``` can help you list available devices and the
 
 Make sure the camera/media device supports MJPEG output, else see the script file for examples of other options.  Things may not work if your device needs be changed up, but MJPEG is pretty common.
 
-#### nvjpegdec notg found
+#### nvjpegdec not found
 
 Make sure you've correctly installed the install script provided.  Go thru it line by line of the install script to make sure it all works if you need to.  Also, this install script assumes a brand new and clean Jetson image; please at least update first or grab a spare uSD card to try a clean image.
