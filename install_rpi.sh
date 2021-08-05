@@ -1,4 +1,5 @@
 ## last tested on Nov 6, 2020
+## For a raspberry pi; not a Jetson
 
 sudo apt-get update -y
 sudo apt-get upgrade -y 
