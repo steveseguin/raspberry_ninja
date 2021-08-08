@@ -105,7 +105,7 @@ sudo apt-get install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev -y
 cd ~
 [ ! -d meson ] && git clone https://github.com/mesonbuild/meson.git
 cd meson
-sudo python3 setup install
+sudo python3 setup.py install
 
 cd ~
 [ ! -d glib ] && git clone https://github.com/GNOME/glib.git 
