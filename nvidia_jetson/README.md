@@ -17,6 +17,31 @@ https://docs.nvidia.com/jetson/l4t/index.html#page/Tegra%20Linux%20Driver%20Pack
 
 ![image](https://user-images.githubusercontent.com/2575698/127804558-1560ad4d-6c2a-4791-92ca-ca50d2eacc2d.png)
 
+### Adding audio
+
+Running the following from the command line will give us access to audio device IDs
+ ```
+ pactl list | grep -A2 'Source #' | grep 'Name: ' | cut -d" " -f2
+ ```
+ resulting in..
+```
+alsa_input.usb-MACROSILICON_2109-02.analog-stereo
+alsa_output.platform-sound.analog-stereo.monitor
+alsa_input.platform-sound.analog-stereo
+```
+Our HDMI audio source is the first in the list, so that is our device name.
+
+We can then modify our Gstreamer Pipeline in the server.py file, to add audio:
+```
+PIPELINE_DESC = "v4l2src device=/dev/video0 io-mode=2 ! image/jpeg,framerate=30/1,width=1920,height=1080 ! jpegparse ! nvjpegdec ! video/x-raw ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate="+bitrate+"000 ! video/x-h264, stream-format=(string)byte-stream ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtcbin stun-server=stun://stun4.l.google.com:19302 name=sendrecv pulsesrc device=alsa_input.usb-MACROSILICON_2109-02.analog-stereo ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv. "
+```
+Note how we used device = OUR_AUDIO_DEVICE_NAME
+
+Finally, we can run the script as so:
+```
+python3 server.py
+```
+If you run it with sudo, you might get a permissions error.
 
 ### PROBLEMS
 
