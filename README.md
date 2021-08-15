@@ -66,6 +66,36 @@ PIPELINE_DESC = "webrtcbin name=sendrecv v4l2src device=/dev/video0 ! image/jpeg
 ```
 This is a very untuned pipeline though, but tuning it can be quite frustrating. Good luck.
 
+#### Adding audio
+
+Adding audio is possible, but it requires a bit of tweaking to get it working respective of the audio device you are using.
+
+Assuming pulseaudio is installed, running the following from the command line will give us access to audio device IDs
+ ```
+ pactl list | grep -A2 'Source #' | grep 'Name: ' | cut -d" " -f2
+ ```
+ resulting in..
+```
+alsa_input.usb-MACROSILICON_2109-02.analog-stereo
+alsa_output.platform-sound.analog-stereo.monitor
+alsa_input.platform-sound.analog-stereo
+```
+Our HDMI audio source is the first in the list, so that is our device name. Your device name will likely vary.
+
+Knowing that, we can then modify our Gstreamer Pipeline in the server.py file, changing things to look a bit like this:
+```
+webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle rpicamsrc bitrate="+bitrate+"000 ! video/x-h264,profile=constrained-baseline,width=1280,height=720,level=3.0 ! queue ! h264parse ! rtph264pay config-interval=-1 ! queue ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! sendrecv. pulsesrc device=alsa_input.usb-MACROSILICON_2109-02.analog-stereo ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv. "
+```
+Notice how we used device = OUR_AUDIO_DEVICE_NAME to specify the audio device we want to use.
+
+Finally, we can run the script as so:
+```
+python3 server.py
+```
+If you run it with sudo, you might get a permissions error.
+
+I've only tested the above pipeline on an advanced Jetson build so far, and I'm yet to test on the provided Raspberry Pi image; there might be some missing dependencies still that need to be resolved before it is working 100%. (opus and pulse audio dependencies maybe?)
+
 ### How to Run:
 
 Ensure the pi/jetson is connected to the Internet, via Ethernet recommended.  You will also need an official raspberry pi camera; v1 or v2 will probably work, if using a Raspberry Pi.  When using an Nvidia Jetson, it's setup to use a UVC 2.0 1080p MJPEG-based capture device by default; this can be changed at a code level.
