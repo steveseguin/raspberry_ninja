@@ -88,12 +88,6 @@ webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-polic
 ```
 Notice how we used device = OUR_AUDIO_DEVICE_NAME to specify the audio device we want to use.
 
-Finally, we can run the script as so:
-```
-python3 server.py
-```
-If you run it with sudo, you might get a permissions error.
-
 I've only tested the above pipeline on an advanced Jetson build so far, and I'm yet to test on the provided Raspberry Pi image; there might be some missing dependencies still that need to be resolved before it is working 100%. (opus and pulse audio dependencies maybe?)
 
 ### How to Run:
