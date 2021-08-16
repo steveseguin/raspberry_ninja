@@ -49,7 +49,9 @@ Please see the `nvidia_jetson` folder for details on installation.
 
 ![image](https://user-images.githubusercontent.com/2575698/127804651-fc8ce68e-3510-4cd0-9d5a-1953c6aac0d8.png) ![image](https://user-images.githubusercontent.com/2575698/127804619-a029a31e-2098-4d99-ad03-6c5ec6804ae5.png)
 
-### Configuring
+### Configuring 
+
+##### Changing video input sources
 
 The Raspberry Pi image is setup to use an official Raspberry Pi camera by default. The Nvidia Jetson is conversely setup to use an HDMI to USB 2.0 MJPEG 1080p30 adapter.
 
@@ -67,7 +69,7 @@ PIPELINE_DESC = "webrtcbin name=sendrecv v4l2src device=/dev/video0 ! image/jpeg
 ```
 This is a very untuned pipeline though, but tuning it can be quite frustrating. Good luck.
 
-#### Adding audio
+#### Adding an audio source
 
 Adding audio is possible, but it requires a bit of tweaking to get it working respective of the audio device you are using.
 
@@ -102,6 +104,8 @@ In Chrome, open this link to view:
 `https://backup.vdo.ninja/?password=false&view=SomeStreamID`
 
 One viewer at a time can work at the moment. Hoping to address this limitation with future updates.
+
+If you run with sudo, you might get a permissions error when using audio.
 
 ### Note:
 
