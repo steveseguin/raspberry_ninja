@@ -39,7 +39,7 @@ Once connected, you can use the existing server.py file, or you can pull the rep
 git clone https://github.com/steveseguin/raspberry_ninja.git
 ```
 
-* If you do not want to use the provided image, you can try to install from scratch, but be prepared to a weekend on it. Please see the install script. Gstreamer 1.14 is required as a minimum, but future versions of this script will probably require at least 1.16.
+* If you do not want to use the provided image, you can try to install from scratch, but be prepared to lose a weekend on it. Please see the install script. Gstreamer 1.14 is required as a minimum, but future versions of this script will probably require at least 1.16.
 
 
 ### Installation for an Nvidia Jetson
