@@ -8,6 +8,7 @@ import json
 import argparse
 import time
 import gi
+import threading
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst
 gi.require_version('GstWebRTC', '1.0')
@@ -24,6 +25,8 @@ class WebRTCClient:
         self.session = None
         self.peer_id = peer_id
         self.server = server ###  To avoid causing issues for production; streams can be view at https://backup.obs.ninja as a result.
+        self.send_channel = None
+        self.timer = None
 
     async def connect(self):
         sslctx = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
@@ -76,6 +79,38 @@ class WebRTCClient:
         icemsg = json.dumps({'candidates': [{'candidate': candidate, 'sdpMLineIndex': mlineindex}], 'session':self.session, 'type':'local', 'UUID':self.UUID})
         loop = asyncio.new_event_loop()
         loop.run_until_complete(self.conn.send(icemsg))
+
+    def on_signaling_state(self, p1, p2):
+        print("ON SIGNALING STATE CHANGE: {}".format(self.webrtc.get_property(p2.name)))
+
+    def on_ice_connection_state(self, p1, p2):
+        print("ON ICE CONNECTION STATE CHANGE: {}".format(self.webrtc.get_property(p2.name)))
+
+    def on_connection_state(self, p1, p2):
+        if (self.webrtc.get_property(p2.name)==2): # connected
+            print("PEER CONNECTION ACTIVE")
+            promise = Gst.Promise.new_with_change_func(self.on_stats, self.webrtc, None) # check stats
+            self.webrtc.emit('get-stats', None, promise)
+            self.send_channel = self.webrtc.emit('create-data-channel', 'sendChannel', None)
+            self.on_data_channel(self.webrtc, self.send_channel)
+            if self.timer == None:
+                self.timer = threading.Timer(3, self.pingTimer).start()
+        elif (self.webrtc.get_property(p2.name)>=4): # closed/failed , but this won't work unless Gstreamer / LibNice support it -- which isn't the case in most versions.
+            print("PEER CONNECTION DISCONNECTED")
+        else:
+            print("PEER CONNECTION STATE {}".format(self.webrtc.get_property(p2.name)))
+
+    def on_stats(self, promise, abin, data):
+        promise.wait()
+        stats = promise.get_reply()
+        stats.foreach(self.foreach_stats)
+
+    def foreach_stats(self, field_id, stats):
+        #print(stats)
+        if stats.get_name() == "remote-inbound-rtp":
+            print(stats.to_string())
+        else:
+            print(stats.to_string())
 
     def on_incoming_decodebin_stream(self, _, pad): # If daring to capture inbound video; support not assured at this point.
         print("ON INCOMING")
@@ -133,6 +168,15 @@ class WebRTCClient:
             self.pipe.set_state(Gst.State.NULL)
         self.pipe = Gst.parse_launch(PIPELINE_DESC)
         self.webrtc = self.pipe.get_by_name('sendrecv')
+        try:
+            self.webrtc.set_property('bundle-policy', 'max-bundle') # not compatible with GST 1.4
+            self.webrtc.connect('notify::ice-connection-state', self.on_ice_connection_state)
+            self.webrtc.connect('notify::connection-state', self.on_connection_state)
+            self.webrtc.connect('notify::signaling-state', self.on_signaling_state)
+        except Exception as e:
+            print(e)
+            pass
+
         self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed)
         self.webrtc.connect('on-ice-candidate', self.send_ice_candidate_message)
         self.webrtc.connect('pad-added', self.on_incoming_stream)
@@ -173,6 +217,46 @@ class WebRTCClient:
             promise.interrupt()
             self.create_answer()
 
+    def on_data_channel(self, webrtc, channel):
+        print('DATA CHANNEL SETUP')
+        channel.connect('on-open', self.on_data_channel_open)
+        channel.connect('on-error', self.on_data_channel_error)
+        channel.connect('on-close', self.on_data_channel_close)
+        channel.connect('on-message-string', self.on_data_channel_message)
+
+    def on_data_channel_error(self, channel):
+        print('DATA CHANNEL: ERROR')
+
+    def on_data_channel_open(self, channel):
+        print('DATA CHANNEL: OPENED')
+
+    def on_data_channel_close(self, channel):
+        print('DATA CHANNEL: CLOSE')
+
+    def on_data_channel_message(self, channel, msg_raw):
+        try:
+            msg = json.loads(msg_raw)
+        except:
+            return
+        if 'candidates' in msg:
+            for ice in msg['candidates']:
+                pass ## TODO: handle incoming ICE
+                ## await self.handle_sdp(ice)
+        elif 'pong' in msg: # Supported in v19 of VDO.Ninja
+            print('PONG:', msg['pong'])
+        elif 'bye' in msg: ## v19 of VDO.Ninja
+            print("PEER INTENTIONALLY HUNG UP")
+        else:
+            return
+            #print('DATA CHANNEL: MESSAGE:', msg_raw)
+
+    def pingTimer(self):
+        try:
+            self.send_channel.emit('send-string', '{"ping":"'+str(time.time())+'"}')
+            print("PINGED")
+        except Exception as E:
+            print("PING FAILED")
+        threading.Timer(3, self.pingTimer).start()
 
     async def loop(self):
         assert self.conn
@@ -228,16 +312,19 @@ if __name__=='__main__':
     parser.add_argument('--bitrate', help='Sets the video bitrate. This is not adaptive, so packet loss and insufficient bandwidth will cause frame loss')
     args = parser.parse_args()
 
-    server = args.server or "wss://apibackup.obs.ninja:443"
+
+    server = args.server or "wss://wss13.obs.ninja:443" # production WSS is only for optimized webrtc handshaking; other traffic must be done via p2p.
     streamid = args.streamid or str(random.randint(1000000,9999999))
     bitrate = args.bitrate or str(4000)
 
     print("\nAvailable options include --streamid, --bitrate, and --server. Default bitrate is 4000 (kbps)")
-    print("\nYou can view this stream at: https://backup.vdo.ninja/?password=false&view="+streamid);
+    print("\nYou can view this stream at: https://vdo.ninja/beta/?password=false&view="+streamid);
 
     ## RASPBERRY PI camera needed; audio source removed to perserve simplicity. See below for some more pipelines to experiment with
-    PIPELINE_DESC = "webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle rpicamsrc bitrate="+bitrate+"000 ! video/x-h264,profile=constrained-baseline,width=1280,height=720,level=3.0 ! queue ! h264parse ! rtph264pay config-interval=-1 ! queue ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! sendrecv. "
+    # PIPELINE_DESC = "webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle rpicamsrc bitrate="+bitrate+"000 ! video/x-h264,profile=constrained-baseline,width=1280,height=720,level=3.0 ! queue ! h264parse ! rtph264pay config-interval=-1 ! queue ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! sendrecv. "
 
+    # PIPELINE_DESC = "v4l2src device=/dev/video0 io-mode=2 ! image/jpeg,framerate=30/1,width=1920,height=1080 ! jpegparse ! nvjpegdec ! video/x-raw ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate="+bitrate+"000 ! video/x-h264, stream-format=(string)byte-stream ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtcbin stun-server=stun://stun4.l.google.com:19302 name=sendrecv pulsesrc device=alsa_input.usb-MACROSILICON_2109-02.analog-stereo ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv. "
+    PIPELINE_DESC = '''v4l2src device=/dev/v4l/by-id/usb-MACROSILICON_USB_Video-video-index0 io-mode=2 ! image/jpeg,width=1280,height=720,type=video,framerate=30/1 ! jpegdec ! videoconvert ! vp8enc deadline=1 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! webrtcbin stun-server=stun://stun4.l.google.com:19302 name=sendrecv alsasrc device="hw:MS2109" ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv.'''
     ## FOR JETSON ## PIPELINE_DESC = "v4l2src device=/dev/video0 io-mode=2 ! image/jpeg,framerate=30/1,width=1920,height=1080 ! jpegparse ! nvjpegdec ! video/x-raw ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate="+bitrate+"000 ! video/x-h264, stream-format=(string)byte-stream ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtcbin name=sendrecv "
 
     c = WebRTCClient(streamid, server)
