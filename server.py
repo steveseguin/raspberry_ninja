@@ -16,6 +16,9 @@ from gi.repository import GstWebRTC
 gi.require_version('GstSdp', '1.0')
 from gi.repository import GstSdp
 
+# Gst.debug_set_active(True)
+# Gst.debug_set_default_threshold(3)
+
 class WebRTCClient:
     def __init__(self, peer_id, server):
         self.conn = None
@@ -27,6 +30,7 @@ class WebRTCClient:
         self.server = server ###  To avoid causing issues for production; streams can be view at https://backup.obs.ninja as a result.
         self.send_channel = None
         self.timer = None
+        self.ping = 0
 
     async def connect(self):
         sslctx = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
@@ -92,11 +96,16 @@ class WebRTCClient:
             promise = Gst.Promise.new_with_change_func(self.on_stats, self.webrtc, None) # check stats
             self.webrtc.emit('get-stats', None, promise)
             self.send_channel = self.webrtc.emit('create-data-channel', 'sendChannel', None)
-            self.on_data_channel(self.webrtc, self.send_channel)
-            if self.timer == None:
-                self.timer = threading.Timer(3, self.pingTimer).start()
+            if not self.send_channel:
+                print("ERROR: CANNOT CREATE DATA CHANNEL")
+            else:
+                self.ping = 0
+                self.on_data_channel(self.webrtc, self.send_channel)
+                if self.timer == None:
+                    self.timer = threading.Timer(3, self.pingTimer).start()
         elif (self.webrtc.get_property(p2.name)>=4): # closed/failed , but this won't work unless Gstreamer / LibNice support it -- which isn't the case in most versions.
             print("PEER CONNECTION DISCONNECTED")
+            self.stop_pipeline()
         else:
             print("PEER CONNECTION STATE {}".format(self.webrtc.get_property(p2.name)))
 
@@ -182,6 +191,11 @@ class WebRTCClient:
         self.webrtc.connect('pad-added', self.on_incoming_stream)
         self.pipe.set_state(Gst.State.PLAYING)
 
+    def stop_pipeline(self):
+        print("STOP PIPE")
+        if self.pipe:
+            self.pipe.set_state(Gst.State.NULL)
+
     async def handle_sdp(self, msg):
         print("HANDLE SDP")
         assert (self.webrtc)
@@ -218,11 +232,14 @@ class WebRTCClient:
             self.create_answer()
 
     def on_data_channel(self, webrtc, channel):
-        print('DATA CHANNEL SETUP')
-        channel.connect('on-open', self.on_data_channel_open)
-        channel.connect('on-error', self.on_data_channel_error)
-        channel.connect('on-close', self.on_data_channel_close)
-        channel.connect('on-message-string', self.on_data_channel_message)
+        if channel is None:
+            print('DATA CHANNEL: NOT AVAILABLE')
+        else:
+            print('DATA CHANNEL SETUP')
+            channel.connect('on-open', self.on_data_channel_open)
+            channel.connect('on-error', self.on_data_channel_error)
+            channel.connect('on-close', self.on_data_channel_close)
+            channel.connect('on-message-string', self.on_data_channel_message)
 
     def on_data_channel_error(self, channel):
         print('DATA CHANNEL: ERROR')
@@ -237,6 +254,7 @@ class WebRTCClient:
         try:
             msg = json.loads(msg_raw)
         except:
+            raise
             return
         if 'candidates' in msg:
             for ice in msg['candidates']:
@@ -244,6 +262,7 @@ class WebRTCClient:
                 ## await self.handle_sdp(ice)
         elif 'pong' in msg: # Supported in v19 of VDO.Ninja
             print('PONG:', msg['pong'])
+            self.ping = 0
         elif 'bye' in msg: ## v19 of VDO.Ninja
             print("PEER INTENTIONALLY HUNG UP")
         else:
@@ -251,12 +270,18 @@ class WebRTCClient:
             #print('DATA CHANNEL: MESSAGE:', msg_raw)
 
     def pingTimer(self):
-        try:
-            self.send_channel.emit('send-string', '{"ping":"'+str(time.time())+'"}')
-            print("PINGED")
-        except Exception as E:
-            print("PING FAILED")
-        threading.Timer(3, self.pingTimer).start()
+        if self.ping < 4:
+            self.ping += 1
+            try:
+                self.send_channel.emit('send-string', '{"ping":"'+str(time.time())+'"}')
+                print("PINGED")
+            except Exception as E:
+                print(E)
+                print("PING FAILED")
+            threading.Timer(3, self.pingTimer).start()
+        else:
+            print("NO HEARTBEAT")
+            self.stop_pipeline()
 
     async def loop(self):
         assert self.conn
@@ -294,7 +319,7 @@ class WebRTCClient:
 
 
 def check_plugins():
-    needed = ["opus", "vpx", "nice", "webrtc", "dtls", "srtp", "rtp",  ## vpx probably isn't needed
+    needed = ["opus", "vpx", "nice", "webrtc", "dtls", "srtp", "rtp", "sctp",  ## vpx probably isn't needed
               "rtpmanager", "videotestsrc", "audiotestsrc"]
     missing = list(filter(lambda p: Gst.Registry.get().find_plugin(p) is None, needed))
     if len(missing):
