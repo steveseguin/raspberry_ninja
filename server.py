@@ -357,7 +357,9 @@ if __name__=='__main__':
     # needed = ["opus", "vpx", "nice", "webrtc", "dtls", "srtp", "rtp", "sctp",  ## vpx probably isn't needed
     #           "rtpmanager", "videotestsrc", "audiotestsrc"] + extra
 
+    Gst.init(None)
     if args.pipeline is not None:
+        PIPELINE_DESC = args.pipeline
         print('We assume you have tested your custom pipeline with: gst-launch-1.0 ' + args.pipeline.replace('(', '\\(').replace('(', '\\)'))
     else:
         pipeline_video_input = ''
@@ -464,9 +466,9 @@ if __name__=='__main__':
         PIPELINE_DESC = f'webrtcbin name=sendrecv bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input}'
         print('gst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
 
-        Gst.init(None)
         if not check_plugins(needed) or error:
             sys.exit(1)
+
 
     print("\nAvailable options include --streamid, --bitrate, and --server. Default bitrate is 4000 (kbps)")
     print(f"\nYou can view this stream at: https://vdo.ninja/beta/?password=false&view={args.streamid}");
