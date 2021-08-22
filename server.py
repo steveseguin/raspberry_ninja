@@ -318,71 +318,160 @@ class WebRTCClient:
         return 0
 
 
-def check_plugins():
-    needed = ["opus", "vpx", "nice", "webrtc", "dtls", "srtp", "rtp", "sctp",  ## vpx probably isn't needed
-              "rtpmanager", "videotestsrc", "audiotestsrc"]
+def check_plugins(needed):
     missing = list(filter(lambda p: Gst.Registry.get().find_plugin(p) is None, needed))
     if len(missing):
         print('Missing gstreamer plugins:', missing)
         return False
     return True
 
+WSS="wss://wss13.obs.ninja:443"
+URL="https://vdo.ninja/beta/?password=false&view=%s"
+
 if __name__=='__main__':
-    Gst.init(None)
-    if not check_plugins():
-        sys.exit(1)
+    error = False
     parser = argparse.ArgumentParser()
-    parser.add_argument('--streamid', help='Stream ID of the peer to connect to')
-    parser.add_argument('--server', help='Handshake server to use, eg: "wss://backupapi.obs.ninja:443"')
-    parser.add_argument('--bitrate', help='Sets the video bitrate. This is not adaptive, so packet loss and insufficient bandwidth will cause frame loss')
+    parser.add_argument('--streamid', type=int, default=random.randint(1000000,9999999), help='Stream ID of the peer to connect to')
+    parser.add_argument('--server', type=str, default=WSS, help='Handshake server to use, eg: "wss://backupapi.obs.ninja:443"')
+    parser.add_argument('--bitrate', type=int, default=4000, help='Sets the video bitrate. This is not adaptive, so packet loss and insufficient bandwidth will cause frame loss')
+    parser.add_argument('--width', type=int, default=1920, help='Sets the video width. Make sure that your input supports it.')
+    parser.add_argument('--height', type=int, default=1080, help='Sets the video height. Make sure that your input supports it.')
+    parser.add_argument('--framerate', type=int, default=30, help='Sets the video framerate. Make sure that your input supports it.')
+    parser.add_argument('--test', action='store_true', help='Use test sources.')
+    parser.add_argument('--hdmi', action='store_true', help='Try to setup a HDMI dongle')
+    parser.add_argument('--v4l2',type=str, default='/dev/video0', help='Sets the V4L2 input device.')
+    parser.add_argument('--rpicam', action='store_true', help='Sets the RaspberryPi input device.')
+    parser.add_argument('--nvidiacsi', action='store_true', help='Sets the input to the nvidia csi port.')
+    parser.add_argument('--alsa', type=str, default='default', help='Use alsa audio input.')
+    parser.add_argument('--pulse', type=str, help='Use pulse audio (or pipewire) input.')
+    parser.add_argument('--raw', action='store_true', help='Opens the V4L2 device with raw capabilities.')
+    parser.add_argument('--h264', action='store_true', help='For PC, instead of VP8, use x264.')
+    parser.add_argument('--nvidia', action='store_true', help='Creates a pipeline optimised for nvidia hardware.')
+    parser.add_argument('--rpi', action='store_true', help='Creates a pipeline optimised for raspberry pi hadware.')
+    parser.add_argument('--novideo', action='store_true', help='Disables video input.')
+    parser.add_argument('--noaudio', action='store_true', help='Disables audio input.')
+    parser.add_argument('--pipeline', type=str, help='A full custom pipeline')
     args = parser.parse_args()
 
+    needed = ["nice", "webrtc", "dtls", "srtp", "rtp", "sctp", "rtpmanager"]
+    # needed = ["opus", "vpx", "nice", "webrtc", "dtls", "srtp", "rtp", "sctp",  ## vpx probably isn't needed
+    #           "rtpmanager", "videotestsrc", "audiotestsrc"] + extra
 
-    server = args.server or "wss://wss13.obs.ninja:443" # production WSS is only for optimized webrtc handshaking; other traffic must be done via p2p.
-    streamid = args.streamid or str(random.randint(1000000,9999999))
-    bitrate = args.bitrate or str(4000)
+    if args.pipeline is not None:
+        print('We assume you have tested your custom pipeline with: gst-launch-1.0 ' + args.pipeline.replace('(', '\\(').replace('(', '\\)'))
+    else:
+        pipeline_video_input = ''
+        pipeline_audio_input = ''
+
+        if args.hdmi:
+            args.v4l2 = '/dev/v4l/by-id/usb-MACROSILICON_USB_Video-video-index0'
+            args.alsa = 'hw:MS2109'
+            if args.raw:
+                args.width = 1280
+                args.height = 720
+                args.framerate = 10
+
+        if not args.novideo:
+            if args.nvidia:
+                needed += ['gst-omx', 'videoparsersbad']
+
+                # TODO
+                # if now args.raw:
+                #   needed += ['nvjpegdec', 'nvvidconv']
+
+            elif args.rpi:
+                needed += ['gst-omx', 'videoparsersbad']
+
+            if not args.raw:
+                needed += ['jpeg']
+
+            if not (args.nvidia or args.rpi) and args.h264:
+                needed += ['x264']
+
+            # THE VIDEO INPUT
+            if args.test:
+                needed += ['videotestsrc']
+                pipeline_video_input = 'videotestsrc'
+                if args.nvidia:
+                    pipeline_video_input = f'videotestsrc ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string)NV12,framerate=(fraction){args.framerate}/1'
+                else:
+                    pipeline_video_input = f'videotestsrc ! video/x-raw,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
+
+            elif args.rpicam:
+                # TODO
+                # needed += ['rpicamsrc']
+                args.rpi = True
+                pipeline_video_input = f'rpicamsrc bitrate={args.bitrate}000 ! video/x-h264,profile=constrained-baseline,width={args.width},height={args.height},level=3.0 ! queue'
+
+            elif args.nvidiacsi:
+                # TODO:
+                # needed += ['nvarguscamerasrc']
+                args.nvidia = True
+                pipeline_video_input = f'nvarguscamerasrc ! video/x-raw(memory:NVMM),width=(int){args.width},height=(int){args.height},format=(string)NV12,framerate=(fraction){args.framerate}/1'
+
+            elif args.v4l2:
+                needed += ['video4linux2']
+                if not os.path.exists(args.v4l2):
+                    print(f"The video input {args.v4l2} does not exists.")
+                    error = True
+                elif not os.access(args.v4l2, os.R_OK):
+                    print(f"The video input {args.v4l2} does exists, but no persmissions te read.")
+                    error = True
+
+                pipeline_video_input = f'v4l2src device={args.v4l2} io-mode=2'
+                if args.raw:
+                    pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
+                else:
+                    pipeline_video_input += f' ! image/jpeg,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
+                    if args.nvidia:
+                        pipeline_video_input += ' ! jpegparse ! nvjpegdec ! video/x-raw'
+                    else:
+                        pipeline_video_input += ' ! jpegdec'
+
+            if args.h264 or args.nvidia or args.rpi:
+                # H264
+                if args.nvidia:
+                    pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate={args.bitrate}000 ! video/x-h264,stream-format=(string)byte-stream'
+                elif args.rpi:
+                    pipeline_video_input += f' ! videoconvert ! video/x-raw ! omxh264enc bitrate={args.bitrate}000 ! video/x-h264,stream-format=(string)byte-stream'
+                else:
+                    pipeline_video_input += f' ! videoconvert ! x264enc bitrate={args.bitrate} speed-preset=ultrafast tune=zerolatency key-int-max=15 ! video/x-h264,profile=constrained-baseline'
+
+                pipeline_video_input += ' ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! queue ! sendrecv.'
+
+            else:
+                # VP8
+                pipeline_video_input += f' ! videoconvert ! vp8enc deadline=1 target-bitrate={args.bitrate}000 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! sendrecv.'
+
+        if not args.noaudio:
+            if args.test:
+                needed += ['audiotestsrc']
+                pipeline_audio_input += 'audiotestsrc is-live=true wave=red-noise'
+
+            elif args.pulse:
+                needed += ['pulse']
+                pipeline_audio_input += f'pulsesrc device={args.pulse}'
+
+            else:
+                needed += ['alsa']
+                pipeline_audio_input += f'alsasrc device={args.alsa}'
+
+            pipeline_audio_input += ' ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv.'
+
+        # print(pipeline_video_input)
+        # print(pipeline_audio_input)
+
+        PIPELINE_DESC = f'webrtcbin name=sendrecv bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input}'
+        print('gst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
+
+        Gst.init(None)
+        if not check_plugins(needed) or error:
+            sys.exit(1)
 
     print("\nAvailable options include --streamid, --bitrate, and --server. Default bitrate is 4000 (kbps)")
-    print("\nYou can view this stream at: https://vdo.ninja/beta/?password=false&view="+streamid);
+    print(f"\nYou can view this stream at: https://vdo.ninja/beta/?password=false&view={args.streamid}");
 
-    ## RASPBERRY PI camera needed; audio source removed to perserve simplicity. See below for some more pipelines to experiment with
-    # PIPELINE_DESC = "webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle rpicamsrc bitrate="+bitrate+"000 ! video/x-h264,profile=constrained-baseline,width=1280,height=720,level=3.0 ! queue ! h264parse ! rtph264pay config-interval=-1 ! queue ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! sendrecv. "
-
-    # PIPELINE_DESC = "v4l2src device=/dev/video0 io-mode=2 ! image/jpeg,framerate=30/1,width=1920,height=1080 ! jpegparse ! nvjpegdec ! video/x-raw ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate="+bitrate+"000 ! video/x-h264, stream-format=(string)byte-stream ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtcbin stun-server=stun://stun4.l.google.com:19302 name=sendrecv pulsesrc device=alsa_input.usb-MACROSILICON_2109-02.analog-stereo ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv. "
-    PIPELINE_DESC = '''v4l2src device=/dev/v4l/by-id/usb-MACROSILICON_USB_Video-video-index0 io-mode=2 ! image/jpeg,width=1280,height=720,type=video,framerate=30/1 ! jpegdec ! videoconvert ! vp8enc deadline=1 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! webrtcbin stun-server=stun://stun4.l.google.com:19302 name=sendrecv alsasrc device="hw:MS2109" ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv.'''
-    ## FOR JETSON ## PIPELINE_DESC = "v4l2src device=/dev/video0 io-mode=2 ! image/jpeg,framerate=30/1,width=1920,height=1080 ! jpegparse ! nvjpegdec ! video/x-raw ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate="+bitrate+"000 ! video/x-h264, stream-format=(string)byte-stream ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtcbin name=sendrecv "
-
-    c = WebRTCClient(streamid, server)
+    c = WebRTCClient(args.streamid, args.server)
     asyncio.get_event_loop().run_until_complete(c.connect())
     res = asyncio.get_event_loop().run_until_complete(c.loop())
     sys.exit(res)
-
-
-
-### pipelines you can use
-
-#PIPELINE_DESC = '''
-#    webrtcbin name=sendrecv bundle-policy=max-bundle
-#     videotestsrc ! videoconvert ! queue ! vp8enc deadline=1 ! rtpvp8pay !
-#      queue ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! sendrecv.
-#       audiotestsrc is-live=true wave=red-noise ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay !
-#        queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv.
-#        ''' ## A sample of how Audio could work; not bothering to setup it up though.
-
-        ## This is untested, fopr the nvidia jetson, but could work with the CSI-port built into the Jetson.
-PIPELINE_DESC = "nvarguscamerasrc ! video/x-raw(memory:NVMM), width=(int)1920, height=(int)1080, format=(string)NV12, framerate=(fraction)30/1 ! omxh264enc ! video/x-h264, stream-format=(string)byte-stream ! queue ! h264parse ! queue ! rtph264pay config-interval=-1 ! queue ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtcbin name=sendrecv "
-
-        ## This is a good test pipeline for the Nvidia Jetson; uses a fake source to test with. -- no camera needed
-PIPELINE_DESC = "videotestsrc ! video/x-raw, width=(int)1920, height=(int)1080, format=(string)NV12, framerate=(fraction)30/1 ! omxh264enc ! video/x-h264, stream-format=(string)byte-stream ! queue ! h264parse ! queue ! rtph264pay config-interval=-1 ! queue ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtcbin name=sendrecv "
-
-        ## For Nvidia Jetson; Works with those cheap HDMI to USB 2.0 UVC capture dongle. Assumes just one UVC device is connected.
-PIPELINE_DESC = "v4l2src device=/dev/video0 io-mode=2 ! image/jpeg,framerate=30/1,width=1920,height=1080 ! jpegparse ! nvjpegdec ! video/x-raw ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate=10000000 ! video/x-h264, stream-format=(string)byte-stream ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtcbin name=sendrecv "
-
-        ## This pipeline lets you plug a UVC-based camera/HDMI source into the USB of a Raspberry pi and stream it. It expects the camera source to support MJPEG.  You can tweak the pipeline as needed for your own purpose. The pipeline needs a lot more tuning.
-PIPELINE_DESC = "webrtcbin name=sendrecv v4l2src device=/dev/video0 ! image/jpeg,framerate=30/1,width=1280,height=720 ! jpegparse ! jpegdec ! video/x-raw ! videoconvert ! video/x-raw ! omxh264enc ! video/x-h264 ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! queue ! sendrecv. "
-
-        ## This pipeline lets you plug a UVC-based camera/HDMI source into the USB of a normal PC and stream it. It expects the camera source to support MJPEG.  You can tweak the pipeline as needed for your own purpose.
-PIPELINE_DESC = '''webrtcbin name=sendrecv v4l2src device=/dev/v4l/by-id/usb-MACROSILICON_USB_Video-video-index0 io-mode=2 ! image/jpeg,width=1280,height=720,type=video,framerate=30/1 ! jpegdec ! videoconvert ! vp8enc deadline=1 ! rtpvp8pay ! queue ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! sendrecv. alsasrc device="hw:MS2109" ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv.'''
-
-        ## This pipeline lets you plug a UVC-based camera/HDMI source into the USB of a normal PC and stream it. If you would rather prefer YUV, it has a lower framerate, but may be cleaner for encoding.
-PIPELINE_DESC = '''webrtcbin name=sendrecv v4l2src device=/dev/v4l/by-id/usb-MACROSILICON_USB_Video-video-index0 io-mode=2 ! video/x-raw,width=1280,height=720,type=video,framerate=10/1 ! videoconvert ! vp8enc deadline=1 ! rtpvp8pay ! queue ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! sendrecv. alsasrc device="hw:MS2109" ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv.'''
