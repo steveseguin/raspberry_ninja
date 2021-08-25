@@ -296,7 +296,7 @@ class WebRTCClient:
 
 
 def check_plugins():
-    needed = ["opus", "vpx", "nice", "webrtc", "dtls", "srtp", "rtp",  ## vpx probably isn't needed
+    needed = ["opus", "vpx", "nice", "webrtc", "dtls", "srtp", "rtp", "sctp",  ## vpx probably isn't needed
               "rtpmanager", "videotestsrc", "audiotestsrc"]
     missing = list(filter(lambda p: Gst.Registry.get().find_plugin(p) is None, needed))
     if len(missing):
