@@ -8,6 +8,7 @@ import json
 import argparse
 import time
 import gi
+import threading
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst
 gi.require_version('GstWebRTC', '1.0')
@@ -24,6 +25,9 @@ class WebRTCClient:
         self.session = None
         self.peer_id = peer_id
         self.server = server ###  To avoid causing issues for production; streams can be view at https://backup.obs.ninja as a result.
+        self.puuid = None
+        self.send_channel = None
+        self.timer = None
 
     async def connect(self):
         sslctx = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
@@ -31,6 +35,13 @@ class WebRTCClient:
         msg = json.dumps({"request":"seed","streamID":self.peer_id})
         await self.conn.send(msg)
 
+    def sendMessage(self, msg):
+        if self.puuid:
+            msg['from'] = self.puuid
+        msg = json.dumps(msg)
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(self.conn.send(msg))
+    
     def on_offer_created(self, promise, _, __):  ## This is all based on the legacy API of OBS.Ninja; gstreamer-1.19 lacks support for the newer API.
         print("ON OFFER CREATED")
         promise.wait()
@@ -41,11 +52,8 @@ class WebRTCClient:
         promise.interrupt()
         print("SEND SDP OFFER")
         text = offer.sdp.as_text()
-        msg = json.dumps({'description': {'type': 'offer', 'sdp': text}, 'UUID': self.UUID, 'session': self.session, 'streamID':self.peer_id})
-        print(msg)
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(self.conn.send(msg))
-        print("SENT MESSAGE")
+        msg = {'description': {'type': 'offer', 'sdp': text}, 'UUID': self.UUID, 'session': self.session, 'streamID':self.peer_id}
+        self.sendMessage(msg)
 
     def on_negotiation_needed(self, element):
         print("ON NEGO NEEDED")
@@ -66,16 +74,43 @@ class WebRTCClient:
         promise.interrupt()
         print("SEND SDP ANSWER")
         text = answer.sdp.as_text()
-        msg = json.dumps({'description': {'type': 'answer', 'sdp': text, 'UUID': self.UUID, 'session': self.session}})
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(self.conn.send(msg))
-        print("SENT MESSAGE")
+        msg = {'description': {'type': 'answer', 'sdp': text, 'UUID': self.UUID, 'session': self.session}}
+        self.sendMessage(msg)
 
     def send_ice_candidate_message(self, _, mlineindex, candidate):
-        print("SEND ICE")
-        icemsg = json.dumps({'candidates': [{'candidate': candidate, 'sdpMLineIndex': mlineindex}], 'session':self.session, 'type':'local', 'UUID':self.UUID})
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(self.conn.send(icemsg))
+        icemsg = {'candidates': [{'candidate': candidate, 'sdpMLineIndex': mlineindex}], 'session':self.session, 'type':'local', 'UUID':self.UUID}
+        self.sendMessage(icemsg)
+
+    def on_signaling_state(self, p1, p2):
+        print("ON SIGNALING STATE CHANGE: {}".format(self.webrtc.get_property(p2.name)))
+
+    def on_ice_connection_state(self, p1, p2):
+        print("ON ICE CONNECTION STATE CHANGE: {}".format(self.webrtc.get_property(p2.name)))
+
+    def on_connection_state(self, p1, p2):
+        if (self.webrtc.get_property(p2.name)==2): # connected
+            print("PEER CONNECTION ACTIVE")
+            promise = Gst.Promise.new_with_change_func(self.on_stats, self.webrtc, None) # check stats
+            self.webrtc.emit('get-stats', None, promise)
+            self.send_channel = self.webrtc.emit('create-data-channel', 'sendChannel', None)
+            self.on_data_channel(self.webrtc, self.send_channel)
+            if self.timer == None:
+                self.timer = threading.Timer(3, self.pingTimer).start()
+        elif (self.webrtc.get_property(p2.name)>=4): # closed/failed , but this won't work unless Gstreamer / LibNice support it -- which isn't the case in most versions.
+            print("PEER CONNECTION DISCONNECTED")
+        else:
+            print("PEER CONNECTION STATE {}".format(self.webrtc.get_property(p2.name)))
+
+    def on_stats(self, promise, abin, data):
+        promise.wait()
+        stats = promise.get_reply()
+        stats.foreach(self.foreach_stats)
+
+    def foreach_stats(self, field_id, stats):
+        if stats.get_name() == "remote-inbound-rtp":
+            print(stats.to_string())
+        else:
+            print(stats.to_string())
 
     def on_incoming_decodebin_stream(self, _, pad): # If daring to capture inbound video; support not assured at this point.
         print("ON INCOMING")
@@ -133,6 +168,14 @@ class WebRTCClient:
             self.pipe.set_state(Gst.State.NULL)
         self.pipe = Gst.parse_launch(PIPELINE_DESC)
         self.webrtc = self.pipe.get_by_name('sendrecv')
+        try:
+            self.webrtc.set_property('bundle-policy', 'max-bundle') # not compatible with GST 1.4
+            self.webrtc.connect('notify::ice-connection-state', self.on_ice_connection_state)
+            self.webrtc.connect('notify::connection-state', self.on_connection_state)
+            self.webrtc.connect('notify::signaling-state', self.on_signaling_state)
+        except Exception as e:
+            print(e)
+            pass
         self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed)
         self.webrtc.connect('on-ice-candidate', self.send_ice_candidate_message)
         self.webrtc.connect('pad-added', self.on_incoming_stream)
@@ -145,7 +188,7 @@ class WebRTCClient:
             msg = msg
             assert(msg['type'] == 'answer')
             sdp = msg['sdp']
-            print ('Received answer:\n%s' % sdp)
+#            print ('Received answer:\n%s' % sdp)
             res, sdpmsg = GstSdp.SDPMessage.new()
             GstSdp.sdp_message_parse_buffer(bytes(sdp.encode()), sdpmsg)
             answer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.ANSWER, sdpmsg)
@@ -164,7 +207,7 @@ class WebRTCClient:
             msg = msg
             assert(msg['type'] == 'offer')
             sdp = msg['sdp']
-            print ('Received offer:\n%s' % sdp)
+#            print ('Received offer:\n%s' % sdp)
             res, sdpmsg = GstSdp.SDPMessage.new()
             GstSdp.sdp_message_parse_buffer(bytes(sdp.encode()), sdpmsg)
             offer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.OFFER, sdpmsg)
@@ -173,6 +216,46 @@ class WebRTCClient:
             promise.interrupt()
             self.create_answer()
 
+    def on_data_channel(self, webrtc, channel):
+        print('DATA CHANNEL SETUP')
+        channel.connect('on-open', self.on_data_channel_open)
+        channel.connect('on-error', self.on_data_channel_error)
+        channel.connect('on-close', self.on_data_channel_close)
+        channel.connect('on-message-string', self.on_data_channel_message)
+
+    def on_data_channel_error(self, channel):
+        print('DATA CHANNEL: ERROR')
+
+    def on_data_channel_open(self, channel):
+        print('DATA CHANNEL: OPENED')
+
+    def on_data_channel_close(self, channel):
+        print('DATA CHANNEL: CLOSE')
+
+    def on_data_channel_message(self, channel, msg_raw):
+        try:
+            msg = json.loads(msg_raw)
+        except:
+            return
+        if 'candidates' in msg:
+            for ice in msg['candidates']:
+                pass ## TODO: handle incoming ICE
+                ## await self.handle_sdp(ice)
+        elif 'pong' in msg: # Supported in v19 of VDO.Ninja
+            print('PONG:', msg['pong'])
+        elif 'bye' in msg: ## v19 of VDO.Ninja
+            print("PEER INTENTIONALLY HUNG UP")
+        else:
+            return
+            #print('DATA CHANNEL: MESSAGE:', msg_raw)
+
+    def pingTimer(self):
+        try:
+            self.send_channel.emit('send-string', '{"ping":"'+str(time.time())+'"}')
+            print("PINGED")
+        except Exception as E:
+            print("PING FAILED")
+        threading.Timer(3, self.pingTimer).start()
 
     async def loop(self):
         assert self.conn
@@ -182,8 +265,13 @@ class WebRTCClient:
             print(msg)
             
             if 'UUID' in msg:
+                if (self.puuid != None) and (self.puuid != msg['UUID']):
+                    continue
                 self.UUID = msg['UUID']
-                
+
+            if 'from' in msg:
+                self.UUID = msg['from']
+
             if 'session' in msg:
                 self.session = msg['session']
 
@@ -203,8 +291,14 @@ class WebRTCClient:
             elif 'request' in msg:
                 if 'offerSDP' in  msg['request']:
                     self.start_pipeline()
+                elif msg['request'] == 'play':
+                    if self.puuid==None:
+                        self.puuid = str(random.randint(10000000,99999999))
+                    if 'streamID' in msg:
+                        if msg['streamID'] == streamid:
+                            self.start_pipeline()
             else:
-                print (message)
+                print(message)
                 # return 1 ## disconnects on bad message
         return 0
 
@@ -226,44 +320,21 @@ if __name__=='__main__':
     parser.add_argument('--streamid', help='Stream ID of the peer to connect to')
     parser.add_argument('--server', help='Handshake server to use, eg: "wss://backupapi.obs.ninja:443"')
     parser.add_argument('--bitrate', help='Sets the video bitrate. This is not adaptive, so packet loss and insufficient bandwidth will cause frame loss')
+
     args = parser.parse_args()
 
-    server = args.server or "wss://apibackup.obs.ninja:443"
+    server = args.server or "wss://free3.piesocket.com/v3/1?api_key=xxxxxxxxxxxxxxxxxxxxxxxx" # self hosted wss server example
     streamid = args.streamid or str(random.randint(1000000,9999999))
     bitrate = args.bitrate or str(4000)
 
     print("\nAvailable options include --streamid, --bitrate, and --server. Default bitrate is 4000 (kbps)")
-    print("\nYou can view this stream at: https://backup.vdo.ninja/?password=false&view="+streamid);
+    print("\nYou can view this stream at: https:/vdo.ninja/beta/?password=false&view="+streamid);
 
     ## Works with those cheap HDMI to USB 2.0 UVC capture dongle. Assumes just one UVC device is connected; see below for some others
-    PIPELINE_DESC = "v4l2src device=/dev/video0 io-mode=2 ! image/jpeg,framerate=30/1,width=1920,height=1080 ! jpegparse ! nvjpegdec ! video/x-raw ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate="+bitrate+"000 ! video/x-h264, stream-format=(string)byte-stream ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtcbin stun-server=stun://stun4.l.google.com:19302 name=sendrecv "
+    PIPELINE_DESC = "v4l2src device=/dev/video0 io-mode=2 ! image/jpeg,framerate=30/1,width=1920,height=1080 ! jpegparse ! nvjpegdec ! video/x-raw ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate="+bitrate+"000 ! video/x-h264, stream-format=(string)byte-stream ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtcbin stun-server=stun://stun4.l.google.com:19302 name=sendrecv pulsesrc device=alsa_input.usb-MACROSILICON_2109-02.analog-stereo ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv. "
 
     c = WebRTCClient(streamid, server)
     asyncio.get_event_loop().run_until_complete(c.connect())
     res = asyncio.get_event_loop().run_until_complete(c.loop())
     sys.exit(res)
-
-
-
-
-
-
-
-### pipelines you can use
-
-#PIPELINE_DESC = '''
-#    webrtcbin name=sendrecv bundle-policy=max-bundle
-#     videotestsrc ! videoconvert ! queue ! vp8enc deadline=1 ! rtpvp8pay !
-#      queue ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! sendrecv.
-#       audiotestsrc is-live=true wave=red-noise ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay !
-#        queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv.
-#        ''' ## A sample of how Audio could work; not bothering to setup it up though.
-
-        ## This is untested, but could work with the CSI-port built into the Jetson.
-PIPELINE_DESC = "nvarguscamerasrc ! video/x-raw(memory:NVMM), width=(int)1920, height=(int)1080, format=(string)NV12, framerate=(fraction)30/1 ! omxh264enc ! video/x-h264, stream-format=(string)byte-stream ! queue ! h264parse ! queue ! rtph264pay config-interval=-1 ! queue ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtcbin name=sendrecv "
-
-        ## This is a good test pipeline; uses a fake source to test with.
-PIPELINE_DESC = "videotestsrc ! video/x-raw, width=(int)1920, height=(int)1080, format=(string)NV12, framerate=(fraction)30/1 ! omxh264enc ! video/x-h264, stream-format=(string)byte-stream ! queue ! h264parse ! queue ! rtph264pay config-interval=-1 ! queue ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtcbin name=sendrecv "
-        ## Works with those cheap HDMI to USB 2.0 UVC capture dongle. Assumes just one UVC device is connected.
-PIPELINE_DESC = "v4l2src device=/dev/video0 io-mode=2 ! image/jpeg,framerate=30/1,width=1920,height=1080 ! jpegparse ! nvjpegdec ! video/x-raw ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate=10000000 ! video/x-h264, stream-format=(string)byte-stream ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtcbin name=sendrecv "
 
