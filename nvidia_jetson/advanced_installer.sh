@@ -14,7 +14,7 @@ sudo apt purge unity -y
 
 sudo apt-get remove chromium-browser-l10n -y
 sudo apt --fix-broken install -y
-sudo apt-get install python3-pip -y
+sudo apt-get install python3-pip
 sudo pip3 install websockets
 
 sudo apt-get remove libtag1-vanilla -y
@@ -217,23 +217,23 @@ sudo ninja -C build install -j4
 cd ..
 
 cd ~
-wget https://download.gnome.org/sources/glib/2.66/glib-2.66.7.tar.xz
-sudo rm glib-2.66.7 -r || true
-tar -xvf glib-2.66.7.tar.xz
-cd glib-2.66.7
+wget https://download.gnome.org/sources/glib/2.70/glib-2.70.0.tar.xz
+sudo rm glib-2.70.0 -r || true
+tar -xvf glib-2.70.0.tar.xz
+cd glib-2.70.0
 mkdir build
 cd build
-meson --prefix=/usr/local -Dman=true   -Dselinux=disabled  ..
+meson --prefix=/usr/local -Dman=true -Dselinux=disabled  ..
 sudo ninja
 sudo ninja install
 sudo ldconfig
 sudo libtoolize
 
 cd ~
-wget https://download.gnome.org/sources/gobject-introspection/1.68/gobject-introspection-1.68.0.tar.xz
-sudo rm  gobject-introspection-1.68.0 -r || true
-tar -xvf gobject-introspection-1.68.0.tar.xz
-cd gobject-introspection-1.68.0
+wget https://download.gnome.org/sources/gobject-introspection/1.70/gobject-introspection-1.70.0.tar.xz
+sudo rm  gobject-introspection-1.70.0 -r || true
+tar -xvf gobject-introspection-1.70.0.tar.xz
+cd gobject-introspection-1.70.0
 mkdir build
 cd build
 meson --prefix=/usr/local --buildtype=release ..
@@ -267,7 +267,7 @@ cd gst-build
 git checkout 1.18.5  ## 1.6.2 is an older vesrion; should be compatible with 1.16.3 though, and bug fixes!!
 git fetch --all
 meson builddir -Dpython=enabled  -Dgtk_doc=disabled  -Dbuildtype=release -Dintrospection=disabled --prefix=/usr/local
-sudo ninja -C builddir
+sudo ninja -C build
 sudo ninja -C builddir install -j4
 sudo ldconfig
 
