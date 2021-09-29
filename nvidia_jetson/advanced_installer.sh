@@ -264,7 +264,7 @@ cd build
 sudo rm gst-build -r || true
 git clone https://github.com/GStreamer/gst-build.git
 cd gst-build
-git checkout 1.18.4  ## 1.6.2 is an older vesrion; should be compatible with 1.16.3 though, and bug fixes!!
+git checkout 1.18.5  ## 1.6.2 is an older vesrion; should be compatible with 1.16.3 though, and bug fixes!!
 git fetch --all
 meson builddir -Dpython=enabled  -Dgtk_doc=disabled  -Dbuildtype=release -Dintrospection=disabled --prefix=/usr/local
 sudo ninja -C builddir
