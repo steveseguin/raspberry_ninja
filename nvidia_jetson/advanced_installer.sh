@@ -14,7 +14,7 @@ sudo apt purge unity -y
 
 sudo apt-get remove chromium-browser-l10n -y
 sudo apt --fix-broken install -y
-sudo apt-get install python3-pip
+sudo apt-get install python3-pip -y
 sudo pip3 install websockets
 
 sudo apt-get remove libtag1-vanilla -y
