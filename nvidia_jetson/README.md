@@ -21,7 +21,7 @@ https://vdoninja.s3.amazonaws.com/jetson_2gb_ninja.zip
 
 The **Jetson Xavier NX image**, with Gstreamer 1.19.2:
 ```
-https://vdoninja.s3.amazonaws.com/jetson_NX_ninja.zip
+https://drive.google.com/file/d/1gMB4CDnnbFmIhsbYMqrAjluhn7oS7a03/view?usp=sharing
 ```
 
 The username and password to sign in to the image is:
