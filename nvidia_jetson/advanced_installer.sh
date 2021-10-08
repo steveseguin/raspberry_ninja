@@ -1,21 +1,23 @@
-#ninja@ninja-desktop:~$ sudo chmod +x test.sh
+#ninja@ninja-desktop:~$ chmod +x test.sh
 #ninja@ninja-desktop:~$ sudo ./test.sh
 
 sudo apt-get update
 sudo apt-get upgrade -y
 sudo apt-get dist-upgrade -y
+
 sudo apt-get install ubuntu-release-upgrader-core -y
+
+sudo apt-get remove --purge chromium-browser chromium-browser-l10n -y
+sudo dpkg --purge --force-all libopencv-dev  ## this seems needed for the Jetson Nano 4GB ?
+sudo apt purge unity
+sudo apt-get --fix-broken install -y
+
 sudo rm /etc/update-manager/release-upgrades
+sudo do-release-upgrade
 
-sudo do-release-upgrade ## you may need to baby-sit this step
-sudo apt-get autoremove -y
-
-sudo apt purge unity -y
-sudo apt-get remove chromium-browser-l10n -y
 for f in /etc/apt/sources.list.d/*; do
   sudo sed -i 's/^\#\s*//' $f
 done
-sudo apt-get --fix-broken install -y
 
 sudo apt-get install python3-pip -y
 sudo apt-get install git -y
