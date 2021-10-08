@@ -182,7 +182,7 @@ git clone https://github.com/GStreamer/gstreamer
 cd gstreamer
 git checkout main  ## New Method, but may need you to update dependencies.  Tested with 1.19.2 at least. not newer
 git fetch --all
-sudo meson builddir -Dpython=enabled  -Dgtk_doc=disabled  -Dexamples=disabled -Dbuildtype=release -Dintrospection=disabled --prefix=/usr/local 
+sudo meson builddir -Dpython=enabled  -Dgtk_doc=disabled  -Dexamples=disabled -Dbuildtype=release
 sudo ninja -C builddir
 sudo ninja -C builddir install -j4
 sudo ldconfig
