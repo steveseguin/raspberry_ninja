@@ -14,12 +14,12 @@ All Steve-provided images require a 32-GB microSD card (or larger).
 
 You can use Win32DiskImager (https://sourceforge.net/projects/win32diskimager/) to write this image to a disk.  If you need to format your SD card first, you can use the SD Card Formatter (https://www.sdcard.org/downloads/formatter/).
 
-The Jetson Nano-2GB image, with Gstreamer 1.19.2:
+The **Jetson Nano-2GB image**, with Gstreamer 1.19.2:
 ```
 https://vdoninja.s3.amazonaws.com/jetson_2gb_ninja.zip
 ```
 
-The Jetson Xavier NX image, with Gstreamer 1.19.2:
+The **Jetson Xavier NX image**, with Gstreamer 1.19.2:
 ```
 https://vdoninja.s3.amazonaws.com/jetson_NX_ninja.zip
 ```
@@ -35,7 +35,7 @@ These Steve-provided builds may not come with Chromium installed
 
 The official Nvidia Jetson builds are running Ubuntu 18, with Gstreamer 1.14.  Gstreamer 1.14 is capable of running the "basic" version of Raspberry Ninja, but not the advanced versions. You can use the provided advanced_install.sh script to upgrade the official Nvidia images with a newer Gstreamer version.  The advanced_install.sh expects a FRESH image install and it may need some dependencies tweaks over time.
 
-The link to the official Nvidia images are here: https://developer.nvidia.com/embedded/downloads
+The link to the **official Nvidia images** are here: https://developer.nvidia.com/embedded/downloads
 
 If you wish to just use Gstreamer 1.14 and not run the advanced versions of Raspberry_ninja, you may still need to install websockets for python.  For example, something like this:
 ```
