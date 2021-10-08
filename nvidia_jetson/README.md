@@ -20,12 +20,16 @@ https://vdoninja.s3.amazonaws.com/jetson_2gb_ninja.zip
 ```
 
 The Jetson Xavier NX image, with Gstreamer 1.19.2:
-https://vdoninja.s3.amazonaws.com/jetson_NX_ninja.zip (32-gb or larger SD card required)
+```
+https://vdoninja.s3.amazonaws.com/jetson_NX_ninja.zip
+```
 
+The username and password to sign in to the image is:
 ```
 username: ninja
 password: vdo
 ```
+These Steve-provided builds may not come with Chromium installed
 
 #### Nvidia provided builds
 
