@@ -9,8 +9,8 @@ While you can probably install Raspberry_ninja onto any Linux flavour, Nvidia's 
 #### Steve provided builds
 You can use Win32DiskImager to write this image to a disk.  If you need to format your SD card first, you can use the SD Card Formatter app.  Links are in google.
 
-Jetson Nano 2GB image, with Gstreamer 1.19.2 setup and ready to go:
-https://vdoninja.s3.amazonaws.com/jetson_2gb_ninja.zip
+Jetson Nano-2GB image, with Gstreamer 1.19.2 setup and ready to go:
+https://vdoninja.s3.amazonaws.com/jetson_2gb_ninja.zip (32-gb or larger SD card required)
 
 ```
 username: ninja
