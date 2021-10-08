@@ -16,7 +16,7 @@ You can use Win32DiskImager (https://sourceforge.net/projects/win32diskimager/) 
 
 The **Jetson Nano-2GB image**, with Gstreamer 1.19.2:
 ```
-https://vdoninja.s3.amazonaws.com/jetson_2gb_ninja.zip
+https://drive.google.com/file/d/1WTsW_dWkggGhQXa8p9yOIz3E4tYcl6ee/view?usp=sharing
 ```
 
 The **Jetson Xavier NX image**, with Gstreamer 1.19.2:
