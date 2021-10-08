@@ -6,11 +6,21 @@ This is very much like the RPI version, but uses the Nvidia Jetson (Nano/NX/AGX)
 
 While you can probably install Raspberry_ninja onto any Linux flavour, Nvidia's Jetpack Ubuntu version contains the drivers needed to make use of the hardware encoder. I provide some pre-built images, that are setup with all the depedencies needed to run Raspberry_Ninja, but you can use the official image and DIY also.
 
-#### Steve provided builds
-You can use Win32DiskImager to write this image to a disk.  If you need to format your SD card first, you can use the SD Card Formatter app.  Links are in google.
 
-Jetson Nano-2GB image, with Gstreamer 1.19.2 setup and ready to go:
-https://vdoninja.s3.amazonaws.com/jetson_2gb_ninja.zip (32-gb or larger SD card required)
+
+#### Steve provided builds
+
+All Steve-provided images require a 32-GB microSD card (or larger).
+
+You can use Win32DiskImager (https://sourceforge.net/projects/win32diskimager/) to write this image to a disk.  If you need to format your SD card first, you can use the SD Card Formatter (https://www.sdcard.org/downloads/formatter/).
+
+The Jetson Nano-2GB image, with Gstreamer 1.19.2:
+```
+https://vdoninja.s3.amazonaws.com/jetson_2gb_ninja.zip
+```
+
+The Jetson Xavier NX image, with Gstreamer 1.19.2:
+https://vdoninja.s3.amazonaws.com/jetson_NX_ninja.zip (32-gb or larger SD card required)
 
 ```
 username: ninja
