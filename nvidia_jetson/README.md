@@ -1,11 +1,50 @@
 # A version for the Nvidia Jetson
 
-This is very much like the RPI version, but uses the Nvidia Jetson (Nano/NX/AGX) and the official Nvidia Jetson Ubuntu 18 system image.
-https://developer.nvidia.com/embedded/downloads
+This is very much like the RPI version, but uses the Nvidia Jetson (Nano/NX/AGX).  The Nvidia Jetson tends to have more power and likely will give better results; it is more expensive though.
 
-Trying to upgrade Gstreamer to 1.16 or newer involves nothing but endless pain and suffering, so I'm sticking with the officially supported 1.14. It needs libnice to be added for webRTC support to be available still, and the install script provided attempts to do that.
+### Installing from an Image
 
-Even the newest Gstreamer version still have incomplete compatilbity with VDO.Ninja, so this Python scripts uses the legacy-compatible API interface offered by VDO.Ninja; it's enough to still get a basic video/audio stream though to at least one viewer. Potentially more.
+While you can probably install Raspberry_ninja onto any Linux flavour, Nvidia's Jetpack Ubuntu version contains the drivers needed to make use of the hardware encoder. I provide some pre-built images, that are setup with all the depedencies needed to run Raspberry_Ninja, but you can use the official image and DIY also.
+
+
+
+#### Steve provided builds
+
+All Steve-provided images require a 32-GB microSD card (or larger).
+
+You can use Win32DiskImager (https://sourceforge.net/projects/win32diskimager/) to write this image to a disk.  If you need to format your SD card first, you can use the SD Card Formatter (https://www.sdcard.org/downloads/formatter/).
+
+The **Jetson Nano-2GB image**, with Gstreamer 1.19.2:
+```
+https://drive.google.com/file/d/1WTsW_dWkggGhQXa8p9yOIz3E4tYcl6ee/view?usp=sharing
+```
+
+The **Jetson Xavier NX image**, with Gstreamer 1.19.2:
+```
+https://drive.google.com/file/d/1gMB4CDnnbFmIhsbYMqrAjluhn7oS7a03/view?usp=sharing
+```
+
+The username and password to sign in to the image is:
+```
+username: ninja
+password: vdo
+```
+These Steve-provided builds may not come with Chromium installed
+
+#### Nvidia provided builds
+
+The official Nvidia Jetson builds are running Ubuntu 18, with Gstreamer 1.14.  Gstreamer 1.14 is capable of running the "basic" version of Raspberry Ninja, but not the advanced versions. You can use the provided advanced_install.sh script to upgrade the official Nvidia images with a newer Gstreamer version.  The advanced_install.sh expects a FRESH image install and it may need some dependencies tweaks over time.
+
+The link to the **official Nvidia images** are here: https://developer.nvidia.com/embedded/downloads
+
+If you wish to just use Gstreamer 1.14 and not run the advanced versions of Raspberry_ninja, you may still need to install websockets for python.  For example, something like this:
+```
+sudo apt-get update
+sudo apt-get install python3-pip -y
+sudo apt-get install websockets -y
+```
+
+##### Details on Nvidia's Gstreamer implementation
 
 Details on the Nvidia encoder and pipeline options:
 https://docs.nvidia.com/jetson/l4t/index.html#page/Tegra%20Linux%20Driver%20Package%20Development%20Guide/accelerated_gstreamer.html#wwpID0E0A40HA
@@ -13,7 +52,6 @@ https://docs.nvidia.com/jetson/l4t/index.html#page/Tegra%20Linux%20Driver%20Pack
 ![image](https://user-images.githubusercontent.com/2575698/127804981-22787b8f-53c2-4e0d-b3ff-d768be597536.png) ![image](https://user-images.githubusercontent.com/2575698/127804578-c949f689-9bfb-409f-8c6f-6f23ff338abb.png)
 
 ![image](https://user-images.githubusercontent.com/2575698/127804472-073ce656-babc-450a-a7a5-754493ad1fd8.png)
-
 
 ![image](https://user-images.githubusercontent.com/2575698/127804558-1560ad4d-6c2a-4791-92ca-ca50d2eacc2d.png)
 
@@ -62,4 +100,4 @@ Make sure the camera/media device supports MJPEG output, else see the script fil
 
 #### nvjpegdec not found
 
-Make sure you've correctly installed the install script provided.  Go thru it line by line of the install script to make sure it all works if you need to.  Also, this install script assumes a brand new and clean Jetson image; please at least update first or grab a spare uSD card to try a clean image.
+Make sure you've correctly installed the install script or that you have moved the nvidia-provided gstreamer plugins into the correct folder. The Nvidia version of Raspberry Ninja is currently for the Jetson; not desktops.

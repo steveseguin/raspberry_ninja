@@ -38,7 +38,7 @@ class WebRTCClient:
         print("ON OFFER CREATED")
         promise.wait()
         reply = promise.get_reply()
-        offer = reply.get_value('offer') 
+        offer = reply.get_value('offer')
         promise = Gst.Promise.new()
         self.webrtc.emit('set-local-description', offer, promise)
         promise.interrupt()
@@ -265,11 +265,9 @@ class WebRTCClient:
         print("WSS CONNECTED")
         async for message in self.conn:
             msg = json.loads(message)
-            #print(msg)
-            
             if 'UUID' in msg:
                 self.UUID = msg['UUID']
-                
+
             if 'session' in msg:
                 self.session = msg['session']
 
@@ -281,11 +279,11 @@ class WebRTCClient:
                         await self.handle_offer(msg)
                     elif msg['type'] == "answer":
                         await self.handle_sdp(msg)
-                        
+
             elif 'candidates' in msg:
                 for ice in msg['candidates']:
                     await self.handle_sdp(ice)
-                    
+
             elif 'request' in msg:
                 if 'offerSDP' in  msg['request']:
                     self.start_pipeline()

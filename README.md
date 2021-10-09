@@ -21,7 +21,8 @@ It is recommended to use the provided raspberry pi image, as the install process
 Download and extract the image file:
 https://drive.google.com/file/d/1NchpcHYHcNMvjm7NaBf84ZH0xKgLomXR/view?usp=sharing
 
-Write the image to an SD cards; at least 8GB in size, using the appropriate tool:
+Write the image to an SD cards; at least 8GB in size, using the appropriate tool. 
+(I'd recommend using balenaEtcher, as the official Raspberry Pi image writer may have problems with the image.)
 https://www.raspberrypi.org/documentation/installation/installing-images/windows.md
 
 SSH is enabled on port 22 if needed.
