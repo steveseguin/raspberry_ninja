@@ -2,8 +2,6 @@
 
 This is very much like the RPI version, but uses the Nvidia Jetson (Nano/NX/AGX).  The Nvidia Jetson tends to have more power and likely will give better results; it is more expensive though.  1080p30 should be quite easy for an Nvidia Jetson to handle, which can't be said for a Raspberry Pi.
 
-![image](https://user-images.githubusercontent.com/2575698/127804619-a029a31e-2098-4d99-ad03-6c5ec6804ae5.png)
-
 ### Installing from an Image
 
 While you can probably install Raspberry_ninja onto any Linux flavour, Nvidia's Jetpack Ubuntu version contains the drivers needed to make use of the hardware encoder. I provide some pre-built images, that are setup with all the depedencies needed to run Raspberry_Ninja, but you can use the official image and DIY also.
