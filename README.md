@@ -22,7 +22,50 @@ Please see the `nvidia_jetson` folder for details on installation. [Jump there n
 
 ![image](https://user-images.githubusercontent.com/2575698/127804651-fc8ce68e-3510-4cd0-9d5a-1953c6aac0d8.png) 
 
-### Configuring
+
+### Usage
+```
+$ python3 publish.py
+
+usage: publish.py [-h] [--streamid STREAMID] [--server SERVER]
+                  [--bitrate BITRATE] [--width WIDTH] [--height HEIGHT]
+                  [--framerate FRAMERATE] [--test] [--hdmi] [--v4l2 V4L2]
+                  [--rpicam] [--nvidiacsi] [--alsa ALSA] [--pulse PULSE]
+                  [--raw] [--h264] [--nvidia] [--rpi] [--novideo] [--noaudio]
+                  [--pipeline PIPELINE]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --streamid STREAMID   Stream ID of the peer to connect to
+  --server SERVER       Handshake server to use, eg:
+                        "wss://backupapi.obs.ninja:443"
+  --bitrate BITRATE     Sets the video bitrate. This is not adaptive, so
+                        packet loss and insufficient bandwidth will cause
+                        frame loss
+  --width WIDTH         Sets the video width. Make sure that your input
+                        supports it.
+  --height HEIGHT       Sets the video height. Make sure that your input
+                        supports it.
+  --framerate FRAMERATE
+                        Sets the video framerate. Make sure that your input
+                        supports it.
+  --test                Use test sources.
+  --hdmi                Try to setup a HDMI dongle
+  --v4l2 V4L2           Sets the V4L2 input device.
+  --rpicam              Sets the RaspberryPi input device.
+  --nvidiacsi           Sets the input to the nvidia csi port.
+  --alsa ALSA           Use alsa audio input.
+  --pulse PULSE         Use pulse audio (or pipewire) input.
+  --raw                 Opens the V4L2 device with raw capabilities.
+  --h264                For PC, instead of VP8, use x264.
+  --nvidia              Creates a pipeline optimised for nvidia hardware.
+  --rpi                 Creates a pipeline optimised for raspberry pi hadware.
+  --novideo             Disables video input.
+  --noaudio             Disables audio input.
+  --pipeline PIPELINE   A full custom pipeline
+
+```
+
 
 ##### Changing video input sources
 
