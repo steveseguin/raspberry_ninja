@@ -137,11 +137,11 @@ If you run with sudo, you might get a permissions error when using audio.
 
 - Add an option for dynamic resolution, based on packet loss indicators. (advanced)
 
-- Add the ability to record an incoming stream directly to disk (steve-specificly needed I think)
+- Add the ability to record an incoming stream directly to disk (steve)
 
-- Add support for passwords and group rooms
+- Add support for passwords and group rooms (steve)
 
-- Make easier to use for novice users; perhaps adding a local web-interface or config file accessible via an SD card reader via Windows. These options could then allow for setting of wifi passwords, device, settings, stream IDs, etc, without needing to SSH in or using nano/vim.
+- Make easier to use for novice users; perhaps adding a local web-interface or config file accessible via an SD card reader via Windows. These options could then allow for setting of wifi passwords, device, settings, stream IDs, etc, without needing to SSH in or using nano/vim. (moderate)
 
 ### Further Reading:
 
