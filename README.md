@@ -10,7 +10,7 @@ If you wish to play a video back, using a Raspberry pi, try this "kiosk" mode im
 
 Youtube video demoing: https://youtu.be/J0qqXxHNU_c
 
-![image](https://user-images.githubusercontent.com/2575698/127951812-b799a6e6-f77e-4749-8ef1-15221b842805.png)
+![image](https://user-images.githubusercontent.com/2575698/127951812-b799a6e6-f77e-4749-8ef1-15221b842805.png) 
 
 ### Installation for a Raspberry Pi
 
@@ -24,6 +24,8 @@ Please see the `nvidia_jetson` folder for details on installation. [Jump there n
 ![image](https://user-images.githubusercontent.com/2575698/127804651-fc8ce68e-3510-4cd0-9d5a-1953c6aac0d8.png) 
 
 ### Configuring the Pi or Jetson
+
+![image](https://user-images.githubusercontent.com/2575698/127804981-22787b8f-53c2-4e0d-b3ff-d768be597536.png)
 
 ##### Changing video input sources
 
