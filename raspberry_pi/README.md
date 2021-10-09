@@ -1,3 +1,6 @@
+
+<img src="https://user-images.githubusercontent.com/2575698/127804804-7ee38ebd-6f98-4242-af34-ac9ef0d9a82e.png" width="400">
+
 ## Installation on a Raspberry Pi
 
 It is recommended to use the provided raspberry pi image, as the install process is otherwise quite challenging.
