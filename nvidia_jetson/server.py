@@ -46,7 +46,7 @@ class WebRTCClient:
         print("ON OFFER CREATED")
         promise.wait()
         reply = promise.get_reply()
-        offer = reply.get_value('offer') 
+        offer = reply.get_value('offer')
         promise = Gst.Promise.new()
         self.webrtc.emit('set-local-description', offer, promise)
         promise.interrupt()
@@ -107,6 +107,38 @@ class WebRTCClient:
         stats.foreach(self.foreach_stats)
 
     def foreach_stats(self, field_id, stats):
+        if stats.get_name() == "remote-inbound-rtp":
+            print(stats.to_string())
+        else:
+            print(stats.to_string())
+
+    def on_signaling_state(self, p1, p2):
+        print("ON SIGNALING STATE CHANGE: {}".format(self.webrtc.get_property(p2.name)))
+
+    def on_ice_connection_state(self, p1, p2):
+        print("ON ICE CONNECTION STATE CHANGE: {}".format(self.webrtc.get_property(p2.name)))
+
+    def on_connection_state(self, p1, p2):
+        if (self.webrtc.get_property(p2.name)==2): # connected
+            print("PEER CONNECTION ACTIVE")
+            promise = Gst.Promise.new_with_change_func(self.on_stats, self.webrtc, None) # check stats
+            self.webrtc.emit('get-stats', None, promise)
+            self.send_channel = self.webrtc.emit('create-data-channel', 'sendChannel', None)
+            self.on_data_channel(self.webrtc, self.send_channel)
+            if self.timer == None:
+                self.timer = threading.Timer(3, self.pingTimer).start()
+        elif (self.webrtc.get_property(p2.name)>=4): # closed/failed , but this won't work unless Gstreamer / LibNice support it -- which isn't the case in most versions.
+            print("PEER CONNECTION DISCONNECTED")
+        else:
+            print("PEER CONNECTION STATE {}".format(self.webrtc.get_property(p2.name)))
+
+    def on_stats(self, promise, abin, data):
+        promise.wait()
+        stats = promise.get_reply()
+        stats.foreach(self.foreach_stats)
+
+    def foreach_stats(self, field_id, stats):
+        #print(stats)
         if stats.get_name() == "remote-inbound-rtp":
             print(stats.to_string())
         else:
@@ -262,13 +294,11 @@ class WebRTCClient:
         print("WSS CONNECTED")
         async for message in self.conn:
             msg = json.loads(message)
-            print(msg)
-            
             if 'UUID' in msg:
                 if (self.puuid != None) and (self.puuid != msg['UUID']):
                     continue
                 self.UUID = msg['UUID']
-
+                
             if 'from' in msg:
                 self.UUID = msg['from']
 
@@ -283,11 +313,11 @@ class WebRTCClient:
                         await self.handle_offer(msg)
                     elif msg['type'] == "answer":
                         await self.handle_sdp(msg)
-                        
+
             elif 'candidates' in msg:
                 for ice in msg['candidates']:
                     await self.handle_sdp(ice)
-                    
+
             elif 'request' in msg:
                 if 'offerSDP' in  msg['request']:
                     self.start_pipeline()
@@ -304,7 +334,7 @@ class WebRTCClient:
 
 
 def check_plugins():
-    needed = ["opus", "vpx", "nice", "webrtc", "dtls", "srtp", "rtp",  ## vpx probably isn't needed
+    needed = ["opus", "vpx", "nice", "webrtc", "dtls", "srtp", "rtp", "sctp",  ## vpx probably isn't needed
               "rtpmanager", "videotestsrc", "audiotestsrc"]
     missing = list(filter(lambda p: Gst.Registry.get().find_plugin(p) is None, needed))
     if len(missing):
@@ -323,7 +353,8 @@ if __name__=='__main__':
 
     args = parser.parse_args()
 
-    server = args.server or "wss://free3.piesocket.com/v3/1?api_key=xxxxxxxxxxxxxxxxxxxxxxxx" # self hosted wss server example
+    ## server = args.server or "wss://free3.piesocket.com/v3/1?api_key=xxxxxxxxxxxxxxxxxxxxxxxx" # self hosted wss server example
+    server = args.server or "wss://wss.vdo.ninja:443" # production WSS is only for optimized webrtc handshaking; other traffic must be done via p2p.
     streamid = args.streamid or str(random.randint(1000000,9999999))
     bitrate = args.bitrate or str(4000)
 
