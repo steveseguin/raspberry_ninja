@@ -76,16 +76,17 @@ optional arguments:
 
 ```
 
-
 ##### Changing video input sources
 
-Using `gst-device-monitor-1.0` will list available devices and their 'caps', or settings.  This can help determine what GStreamer pipeline changes need to be made in the script.
+Using `gst-device-monitor-1.0` will list available devices and their 'caps', or settings.  This can help determine what GStreamer pipeline changes need to be made in the script or getting info about what video format options are available for your device.
 
-`gst-launch-1.0` can be used to test a pipeline out before adding it to the script. For for added reference, here is an example Pipeline for the Rasbperry Pi to enable UVC-based MJPEG video capture support is:
+To help further debug, `gst-launch-1.0` can be used to test a pipeline out before adding it to the script. For for added reference, here is an example Pipeline for the Rasbperry Pi to enable UVC-based MJPEG video capture support is:
 ```
-PIPELINE_DESC = "webrtcbin name=sendrecv v4l2src device=/dev/video0 ! image/jpeg,framerate=30/1,width=1280,height=720 ! jpegparse ! jpegdec ! video/x-raw ! videoconvert ! video/x-raw ! omxh264enc ! video/x-h264 ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! queue ! sendrecv. "
+gst-launch-1.0 v4l2src device=/dev/video0 io-mode=2 ! image/jpeg,framerate=30/1,width=1920,height=1080 ! jpegparse ! nvjpegdec ! video/x-raw ! nvvidconv ! "video/x-raw(memory:NVMM)" ! omxh264enc ! "video/x-h264, stream-format=(string)byte-stream" ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! fakesink
 ```
-This is a very untuned pipeline though, but tuning it can be quite frustrating. The Raspberry_Ninja publish.py script automatically tries to create a pipeline for you, based on the command line arguments passed, but you can override that at a code level with your own pipeline if easier.
+Notice how we used device = OUR_AUDIO_DEVICE_NAME to specify the audio device we want to use, and we configure the device to read and decode JPEG, as that is what our device in this case supports.
+
+The Raspberry_Ninja publish.py script automatically tries to create a pipeline for you, based on the command line arguments passed, but you can override that at a code level with your own pipeline if easier as well.
 
 #### Adding an audio source
 
@@ -103,19 +104,11 @@ alsa_input.platform-sound.analog-stereo
 ```
 In this example, an HDMI audio source is the first in the list, so that is our device name. Your device name will likely vary.
 
-Knowing the device name, a sample Gstreamer pipeline would look something like this:
-```
-webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle rpicamsrc bitrate="+bitrate+"000 ! video/x-h264,profile=constrained-baseline,width=1280,height=720,level=3.0 ! queue ! h264parse ! rtph264pay config-interval=-1 ! queue ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! sendrecv. pulsesrc device=alsa_input.usb-MACROSILICON_2109-02.analog-stereo ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv. "
-```
-Notice how we used device = OUR_AUDIO_DEVICE_NAME to specify the audio device we want to use.
-
-So far others have confirmed this works, even with micro USB microphones, so give it a go and let me know how it goes!
-
-Pulse audio and ALSA audio command-line arguments can be passed to setup audio, without needing to tweak Gstreamer pipelines manually.
+Pulse audio and ALSA audio command-line arguments can be passed to setup audio, without needing to tweak Gstreamer pipelines manually. The defaults I think will use the system ALSA default device.
 
 ### How to Run:
 
-Ensure the pi/jetson is connected to the Internet, via Ethernet recommended.  You'll also need to ensure a camera and/or microphone input are connected; this can also be an HDMI to USB dongle or other media input. 
+Ensure the pi/jetson is connected to the Internet, via Ethernet is recommended for best performance.  You'll also very likely need to ensure a camera and/or microphone input are connected; this can also be a USB UVC device, supported CSI-based camera, or other selectable media inputs. It technically might be possible to even select a pipe to stream from, although this is a fairly advanced option.
 
 Run using:
 `python3 publish.py --streamid SomeStreamID --bitrate 4000`
@@ -123,17 +116,32 @@ Run using:
 In Chrome, open this link to view:
 `https://vdo.ninja/?password=false&view=SomeStreamID`
 
-One viewer at a time can work at the moment. Hoping to address this limitation with future updates.
+One viewer at a time can work at the moment, although I am hoping to address this limitation shortly.
 
 If you run with sudo, you might get a permissions error when using audio.
 
 ### Note:
 
-Installation from source is pretty slow and problematic on a rpi; using system images makes using this so much easier.
+- Installation from source is pretty slow and problematic on a rpi; using system images makes using this so much easier.
 
-Please use the provided backup server for development and testing purposes.
+- Please use the provided backup server for development and testing purposes; that server is `wss:/apibackup.obs.ninja:443` and `https://backup.vdo.ninja`
 
-Passwords must be DISABLED explicitly as this code does not yet have the required crypto logic added.
+- Passwords must be DISABLED explicitly as this code does not yet have the required crypto logic added yet.
+
+- The current code does not dynamically adjust resolution to combat frame loss; rather it will just drop frames. As a result, having a high quality connection between sender and viewer is required. 
+
+
+### TODO:
+
+- Add in the support for multiple viewers (moderate)
+
+- Add an option for dynamic resolution, based on packet loss indicators. (advanced)
+
+- Add the ability to record an incoming stream directly to disk (steve-specificly needed I think)
+
+- Add support for passwords and group rooms
+
+- Make easier to use for novice users; perhaps adding a local web-interface or config file accessible via an SD card reader via Windows. These options could then allow for setting of wifi passwords, device, settings, stream IDs, etc, without needing to SSH in or using nano/vim.
 
 ### Further Reading:
 
