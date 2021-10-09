@@ -2,30 +2,28 @@
 Turn your Raspberry Pi or Nvidia Jetson into a Ninja-cam with hardware-acceleration enabled!  Publish live streaming video to VDO.Ninja. 
 ### Preface
 
-This code is more a proof of concept at the moment; I wouldn't recommend using things as is for production projects, but it could work well for you. The core concepts and code used in this project can be reused for other projects; most Ubuntu systems and a large variety of embedded systems, including smartphones.
-
-Please note, as an alternative to this low-level approach to publishing with a Rpi, please consider using something like a Chromebook, especially if not connecting over a wired LAN network. Packet loss isn't tolerated well with this script yet, so you need a prestine connection for things to work well. 
-
-If you wish to play a video back, using a Raspberry pi, try this "kiosk" mode image that can be found here: https://awesomeopensource.com/project/futurice/chilipie-kiosk. Raspberry Pis seem to handle video playback in Chromium-based browsers pretty well; it's just the encoding they don't do well in browser yet.
+The core concepts and code used in this project can be reused for other projects; most Linux systems, and a large variety of embedded systems; potentially even smartphones. There's a focus of supporting Raspberry Pis and Nvidia Jetson systems, which includes offering pre-built images and install scripts. Other Linux system users should still be able to use the code, but setup support will be limited.
 
 Youtube video demoing: https://youtu.be/J0qqXxHNU_c
 
 ![image](https://user-images.githubusercontent.com/2575698/127951812-b799a6e6-f77e-4749-8ef1-15221b842805.png) 
 
-### Installation for a Raspberry Pi
+Please note, as an alternative to this low-level approach to publishing with a Rpi, please consider using something like a Chromebook, especially if not connecting over a wired LAN network. Packet loss isn't tolerated well with this script yet, so you need a prestine connection for things to work well. 
+
+If you wish to play a video back, using a Raspberry pi, try this "kiosk" mode image that can be found here: https://awesomeopensource.com/project/futurice/chilipie-kiosk. Raspberry Pis seem to handle video playback in Chromium-based browsers pretty well; it's just the encoding they don't do well in browser yet.
+
+### Setup for a Raspberry Pi
 
 See the raspberry_pi sub-folder for instructions on installing and setting up a Raspberry Pi
 [Go to RPI setup instuctions and files here](raspberry_pi/README.md)
 
-### Installation for an Nvidia Jetson
+### Setup for an Nvidia Jetson
 
 Please see the `nvidia_jetson` folder for details on installation. [Jump there now](nvidia_jetson/README.md)
 
 ![image](https://user-images.githubusercontent.com/2575698/127804651-fc8ce68e-3510-4cd0-9d5a-1953c6aac0d8.png) 
 
-### Configuring the Pi or Jetson
-
-![image](https://user-images.githubusercontent.com/2575698/127804981-22787b8f-53c2-4e0d-b3ff-d768be597536.png)
+### Configuring
 
 ##### Changing video input sources
 
