@@ -25,6 +25,7 @@ class WebRTCClient:
         self.session = None
         self.peer_id = peer_id
         self.server = server ###  To avoid causing issues for production; streams can be view at https://backup.obs.ninja as a result.
+        self.puuid = None
         self.send_channel = None
         self.timer = None
 
@@ -33,6 +34,13 @@ class WebRTCClient:
         self.conn = await websockets.connect(self.server, ssl=sslctx)
         msg = json.dumps({"request":"seed","streamID":self.peer_id})
         await self.conn.send(msg)
+
+    def sendMessage(self, msg):
+        if self.puuid:
+            msg['from'] = self.puuid
+        msg = json.dumps(msg)
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(self.conn.send(msg))
     
     def on_offer_created(self, promise, _, __):  ## This is all based on the legacy API of OBS.Ninja; gstreamer-1.19 lacks support for the newer API.
         print("ON OFFER CREATED")
@@ -44,10 +52,8 @@ class WebRTCClient:
         promise.interrupt()
         print("SEND SDP OFFER")
         text = offer.sdp.as_text()
-        msg = json.dumps({'description': {'type': 'offer', 'sdp': text}, 'UUID': self.UUID, 'session': self.session, 'streamID':self.peer_id})
-        #print(msg)
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(self.conn.send(msg))
+        msg = {'description': {'type': 'offer', 'sdp': text}, 'UUID': self.UUID, 'session': self.session, 'streamID':self.peer_id}
+        self.sendMessage(msg)
 
     def on_negotiation_needed(self, element):
         print("ON NEGO NEEDED")
@@ -68,15 +74,43 @@ class WebRTCClient:
         promise.interrupt()
         print("SEND SDP ANSWER")
         text = answer.sdp.as_text()
-        msg = json.dumps({'description': {'type': 'answer', 'sdp': text, 'UUID': self.UUID, 'session': self.session}})
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(self.conn.send(msg))
+        msg = {'description': {'type': 'answer', 'sdp': text, 'UUID': self.UUID, 'session': self.session}}
+        self.sendMessage(msg)
 
     def send_ice_candidate_message(self, _, mlineindex, candidate):
-#        print("SEND ICE")
-        icemsg = json.dumps({'candidates': [{'candidate': candidate, 'sdpMLineIndex': mlineindex}], 'session':self.session, 'type':'local', 'UUID':self.UUID})
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(self.conn.send(icemsg))
+        icemsg = {'candidates': [{'candidate': candidate, 'sdpMLineIndex': mlineindex}], 'session':self.session, 'type':'local', 'UUID':self.UUID}
+        self.sendMessage(icemsg)
+
+    def on_signaling_state(self, p1, p2):
+        print("ON SIGNALING STATE CHANGE: {}".format(self.webrtc.get_property(p2.name)))
+
+    def on_ice_connection_state(self, p1, p2):
+        print("ON ICE CONNECTION STATE CHANGE: {}".format(self.webrtc.get_property(p2.name)))
+
+    def on_connection_state(self, p1, p2):
+        if (self.webrtc.get_property(p2.name)==2): # connected
+            print("PEER CONNECTION ACTIVE")
+            promise = Gst.Promise.new_with_change_func(self.on_stats, self.webrtc, None) # check stats
+            self.webrtc.emit('get-stats', None, promise)
+            self.send_channel = self.webrtc.emit('create-data-channel', 'sendChannel', None)
+            self.on_data_channel(self.webrtc, self.send_channel)
+            if self.timer == None:
+                self.timer = threading.Timer(3, self.pingTimer).start()
+        elif (self.webrtc.get_property(p2.name)>=4): # closed/failed , but this won't work unless Gstreamer / LibNice support it -- which isn't the case in most versions.
+            print("PEER CONNECTION DISCONNECTED")
+        else:
+            print("PEER CONNECTION STATE {}".format(self.webrtc.get_property(p2.name)))
+
+    def on_stats(self, promise, abin, data):
+        promise.wait()
+        stats = promise.get_reply()
+        stats.foreach(self.foreach_stats)
+
+    def foreach_stats(self, field_id, stats):
+        if stats.get_name() == "remote-inbound-rtp":
+            print(stats.to_string())
+        else:
+            print(stats.to_string())
 
     def on_signaling_state(self, p1, p2):
         print("ON SIGNALING STATE CHANGE: {}".format(self.webrtc.get_property(p2.name)))
@@ -174,11 +208,6 @@ class WebRTCClient:
         except Exception as e:
             print(e)
             pass
-#            exc_type, exc_obj, exc_tb = sys.exc_info()
- #           fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-  #          print(e)
-   #         print(exc_type, fname, exc_tb.tb_lineno)
-    #        pass 
         self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed)
         self.webrtc.connect('on-ice-candidate', self.send_ice_candidate_message)
         self.webrtc.connect('pad-added', self.on_incoming_stream)
@@ -266,7 +295,12 @@ class WebRTCClient:
         async for message in self.conn:
             msg = json.loads(message)
             if 'UUID' in msg:
+                if (self.puuid != None) and (self.puuid != msg['UUID']):
+                    continue
                 self.UUID = msg['UUID']
+                
+            if 'from' in msg:
+                self.UUID = msg['from']
 
             if 'session' in msg:
                 self.session = msg['session']
@@ -287,8 +321,14 @@ class WebRTCClient:
             elif 'request' in msg:
                 if 'offerSDP' in  msg['request']:
                     self.start_pipeline()
+                elif msg['request'] == 'play':
+                    if self.puuid==None:
+                        self.puuid = str(random.randint(10000000,99999999))
+                    if 'streamID' in msg:
+                        if msg['streamID'] == streamid:
+                            self.start_pipeline()
             else:
-                print (message)
+                print(message)
                 # return 1 ## disconnects on bad message
         return 0
 
@@ -310,9 +350,11 @@ if __name__=='__main__':
     parser.add_argument('--streamid', help='Stream ID of the peer to connect to')
     parser.add_argument('--server', help='Handshake server to use, eg: "wss://backupapi.obs.ninja:443"')
     parser.add_argument('--bitrate', help='Sets the video bitrate. This is not adaptive, so packet loss and insufficient bandwidth will cause frame loss')
+
     args = parser.parse_args()
 
-    server = args.server or "wss://wss13.obs.ninja:443" # production WSS is only for optimized webrtc handshaking; other traffic must be done via p2p.
+    ## server = args.server or "wss://free3.piesocket.com/v3/1?api_key=xxxxxxxxxxxxxxxxxxxxxxxx" # self hosted wss server example
+    server = args.server or "wss://wss.vdo.ninja:443" # production WSS is only for optimized webrtc handshaking; other traffic must be done via p2p.
     streamid = args.streamid or str(random.randint(1000000,9999999))
     bitrate = args.bitrate or str(4000)
 
