@@ -12,9 +12,11 @@ https://drive.google.com/file/d/1NchpcHYHcNMvjm7NaBf84ZH0xKgLomXR/view?usp=shari
 
 Write the image to a SD / microSD card; at least 8GB in size is needed, using the appropriate tool. 
 
-On Windows, you can use Win32DiskImager (https://sourceforge.net/projects/win32diskimager/) to write this image to a disk.  If you need to format your SD card first, you can use the SD Card Formatter (https://www.sdcard.org/downloads/formatter/).  balenaEtcher also works for writing the image, but the official Raspberry Pi image writer may have problems.
+On Windows, you can use Win32DiskImager (https://sourceforge.net/projects/win32diskimager/) to write this image to a disk.  If you need to format your SD card first, you can use the SD Card Formatter (https://www.sdcard.org/downloads/formatter/).  
 
-SSH is enabled on port 22 if needed.
+(balenaEtcher also works for writing the image, but using the official Raspberry Pi image writer may have problems.)
+
+To connect, use a display and keyboard, or you can SSH into it as SSH on port 22 if enabled.
 
 Login information for the device is:
 ```
@@ -40,4 +42,5 @@ git clone https://github.com/steveseguin/raspberry_ninja.git
 
 The newest code supports streaming over the Internet, rather than just a LAN, so be sure to update if you need that functionality.
 
+##### Please return to the parent folder for details on how to run and configure
 
