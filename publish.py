@@ -45,7 +45,7 @@ class WebRTCClient:
         loop = asyncio.new_event_loop()
         loop.run_until_complete(self.conn.send(msg))
     
-    def on_offer_created(self, promise, _, __):  ## This is all based on the legacy API of OBS.Ninja; gstreamer-1.19 lacks support for the newer API.
+    def on_offer_created(self, promise, _, __): 
         print("ON OFFER CREATED")
         promise.wait()
         reply = promise.get_reply()
@@ -375,7 +375,7 @@ if __name__=='__main__':
     error = False
     parser = argparse.ArgumentParser()
     parser.add_argument('--streamid', type=int, default=random.randint(1000000,9999999), help='Stream ID of the peer to connect to')
-    parser.add_argument('--server', type=str, default=WSS, help='Handshake server to use, eg: "wss://backupapi.obs.ninja:443"')
+    parser.add_argument('--server', type=str, default=WSS, help='Handshake server to use, eg: "wss://wss.vdo.ninja:443"')
     parser.add_argument('--bitrate', type=int, default=4000, help='Sets the video bitrate. This is not adaptive, so packet loss and insufficient bandwidth will cause frame loss')
     parser.add_argument('--width', type=int, default=1920, help='Sets the video width. Make sure that your input supports it.')
     parser.add_argument('--height', type=int, default=1080, help='Sets the video height. Make sure that your input supports it.')
