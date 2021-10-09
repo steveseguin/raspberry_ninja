@@ -14,8 +14,7 @@ If you wish to play a video back, using a Raspberry pi, try this "kiosk" mode im
 
 ### Setup for a Raspberry Pi
 
-See the `raspberry_pi` sub-folder for instructions on installing and setting up a Raspberry Pi
-[Go to RPI setup instuctions and files here](raspberry_pi/README.md)
+See the `raspberry_pi` sub-folder for instructions on installing and setting up a Raspberry Pi. [Jump there now](raspberry_pi/README.md)
 
 ### Setup for an Nvidia Jetson
 
