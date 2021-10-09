@@ -16,13 +16,14 @@ Youtube video demoing: https://youtu.be/J0qqXxHNU_c
 
 <img src="https://user-images.githubusercontent.com/2575698/127804804-7ee38ebd-6f98-4242-af34-ac9ef0d9a82e.png" width="400">
 
-
+See the raspberry_pi sub-folder for instructions on installing and setting up a Raspberry Pi
+[Go to RPI setup instuctions and files here](raspberry_pi/README.md)
 
 ### Installation for an Nvidia Jetson
 
-Please see the `nvidia_jetson` folder for details on installation.
+Please see the `nvidia_jetson` folder for details on installation. [Jump there now](nvidia_jetson/README.md)
 
-![image](https://user-images.githubusercontent.com/2575698/127804651-fc8ce68e-3510-4cd0-9d5a-1953c6aac0d8.png) ![image](https://user-images.githubusercontent.com/2575698/127804619-a029a31e-2098-4d99-ad03-6c5ec6804ae5.png)
+![image](https://user-images.githubusercontent.com/2575698/127804651-fc8ce68e-3510-4cd0-9d5a-1953c6aac0d8.png) 
 
 ### Configuring the Pi or Jetson
 
