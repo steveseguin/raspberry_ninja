@@ -38,7 +38,7 @@ optional arguments:
   -h, --help            show this help message and exit
   --streamid STREAMID   Stream ID of the peer to connect to
   --server SERVER       Handshake server to use, eg:
-                        "wss://backupapi.obs.ninja:443"
+                        "wss://wss.vdo.ninja:443"
   --bitrate BITRATE     Sets the video bitrate. This is not adaptive, so
                         packet loss and insufficient bandwidth will cause
                         frame loss
