@@ -14,8 +14,6 @@ Youtube video demoing: https://youtu.be/J0qqXxHNU_c
 
 ### Installation for a Raspberry Pi
 
-<img src="https://user-images.githubusercontent.com/2575698/127804804-7ee38ebd-6f98-4242-af34-ac9ef0d9a82e.png" width="400">
-
 See the raspberry_pi sub-folder for instructions on installing and setting up a Raspberry Pi
 [Go to RPI setup instuctions and files here](raspberry_pi/README.md)
 
