@@ -19,6 +19,11 @@ The **Jetson Nano-2GB image**, with Gstreamer 1.19.2:
 https://drive.google.com/file/d/1WTsW_dWkggGhQXa8p9yOIz3E4tYcl6ee/view?usp=sharing
 ```
 
+The **Jetson Nano-4GB image**, with Gstreamer 1.19.2:
+```
+https://drive.google.com/file/d/10jC3O44NL7xm-CS-nsVlZKXczsF3YHn0/view?usp=sharing
+```
+
 The **Jetson Xavier NX image**, with Gstreamer 1.19.2:
 ```
 https://drive.google.com/file/d/1gMB4CDnnbFmIhsbYMqrAjluhn7oS7a03/view?usp=sharing
