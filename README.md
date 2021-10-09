@@ -22,8 +22,18 @@ Please see the `nvidia_jetson` folder for details on installation. [Jump there n
 
 ![image](https://user-images.githubusercontent.com/2575698/127804651-fc8ce68e-3510-4cd0-9d5a-1953c6aac0d8.png) 
 
+### Setup for Linux Desktops
+
+#### Requirements:
+
+You'll want to install Gstreamer 1.16 or newer; emphasis on the newer.  You'll need to ensure `libnice`, `srtp`, `sctp`, and `webrtcbin` are part of that install, along with any media codecs you intend to use.
+
+Python3 is also required, along with `websockets`.  If you have PIP installed, `pip3 install websockets` can get you going there.
 
 ### Usage
+
+You should be able to run the script simply with `python3 publish.py`, however lots of options are available for customizing as desired.
+
 ```
 $ python3 publish.py
 
@@ -69,27 +79,19 @@ optional arguments:
 
 ##### Changing video input sources
 
-The Raspberry Pi image is setup to use an official Raspberry Pi camera by default. The Nvidia Jetson is conversely setup to use an HDMI to USB 2.0 MJPEG 1080p30 adapter.
-
-If you wish to use a different type of device, you'll need to modify the script accordingly.
-
 Using `gst-device-monitor-1.0` will list available devices and their 'caps', or settings.  This can help determine what GStreamer pipeline changes need to be made in the script.
 
-`gst-launch-1.0` can be used to test a pipeline out before adding it to the script.
-
-Once you have things setup, you can turn the Python script into a system service, so it boots automatically at run time. This lets you plug and play the setup headlessly, but this is more for advanced users at this point.
-
-For for added reference, here is an example Pipeline for the Rasbperry Pi to enable UVC-based MJPEG video capture support is:
+`gst-launch-1.0` can be used to test a pipeline out before adding it to the script. For for added reference, here is an example Pipeline for the Rasbperry Pi to enable UVC-based MJPEG video capture support is:
 ```
 PIPELINE_DESC = "webrtcbin name=sendrecv v4l2src device=/dev/video0 ! image/jpeg,framerate=30/1,width=1280,height=720 ! jpegparse ! jpegdec ! video/x-raw ! videoconvert ! video/x-raw ! omxh264enc ! video/x-h264 ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! queue ! sendrecv. "
 ```
-This is a very untuned pipeline though, but tuning it can be quite frustrating. Good luck.
+This is a very untuned pipeline though, but tuning it can be quite frustrating. The Raspberry_Ninja publish.py script automatically tries to create a pipeline for you, based on the command line arguments passed, but you can override that at a code level with your own pipeline if easier.
 
 #### Adding an audio source
 
-Adding audio is possible, but it requires a bit of tweaking to get it working respective of the audio device you are using.
+The script will use the default system ALSA audio output device, although you can override that using the command line arguments or via manually setting a gstreamer pipeline at the code level.
 
-Assuming pulseaudio is installed, running the following from the command line will give us access to audio device IDs
+To get details of available audio devices, assuming pulseaudio is installed, running the following from the command line will give us access to audio device IDs
  ```
  pactl list | grep -A2 'Source #' | grep 'Name: ' | cut -d" " -f2
  ```
@@ -99,9 +101,9 @@ alsa_input.usb-MACROSILICON_2109-02.analog-stereo
 alsa_output.platform-sound.analog-stereo.monitor
 alsa_input.platform-sound.analog-stereo
 ```
-Our HDMI audio source is the first in the list, so that is our device name. Your device name will likely vary.
+In this example, an HDMI audio source is the first in the list, so that is our device name. Your device name will likely vary.
 
-Knowing that, we can then modify our Gstreamer Pipeline in the server.py file, changing things to look a bit like this:
+Knowing the device name, a sample Gstreamer pipeline would look something like this:
 ```
 webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle rpicamsrc bitrate="+bitrate+"000 ! video/x-h264,profile=constrained-baseline,width=1280,height=720,level=3.0 ! queue ! h264parse ! rtph264pay config-interval=-1 ! queue ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! sendrecv. pulsesrc device=alsa_input.usb-MACROSILICON_2109-02.analog-stereo ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv. "
 ```
@@ -109,15 +111,17 @@ Notice how we used device = OUR_AUDIO_DEVICE_NAME to specify the audio device we
 
 So far others have confirmed this works, even with micro USB microphones, so give it a go and let me know how it goes!
 
+Pulse audio and ALSA audio command-line arguments can be passed to setup audio, without needing to tweak Gstreamer pipelines manually.
+
 ### How to Run:
 
-Ensure the pi/jetson is connected to the Internet, via Ethernet recommended.  You will also need an official raspberry pi camera; v1 or v2 will probably work, if using a Raspberry Pi.  When using an Nvidia Jetson, it's setup to use a UVC 2.0 1080p MJPEG-based capture device by default; this can be changed at a code level.
+Ensure the pi/jetson is connected to the Internet, via Ethernet recommended.  You'll also need to ensure a camera and/or microphone input are connected; this can also be an HDMI to USB dongle or other media input. 
 
 Run using:
-`python3 server.py --streamid SomeStreamID --bitrate 4000`
+`python3 publish.py --streamid SomeStreamID --bitrate 4000`
 
 In Chrome, open this link to view:
-`https://backup.vdo.ninja/?password=false&view=SomeStreamID`
+`https://vdo.ninja/?password=false&view=SomeStreamID`
 
 One viewer at a time can work at the moment. Hoping to address this limitation with future updates.
 
