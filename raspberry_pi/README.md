@@ -5,6 +5,10 @@
 
 It is recommended to use the provided raspberry pi image, as the install process is otherwise quite challenging.
 
+If using a Raspberry Pi Zero, using a CSI Raspicam is probably the best bet, as using a USB-based camera will likely not perform that well. Any of the Raspberry Pis will use the hardware-encoder when a CSI camera, although you need to specify via command line arguments to use the CSI camera.
+
+If using a UVC-based camera (default mode), a Raspberry Pi 4 or 400 is recommend to achieve 1080p30. A Raspberry Pi 2 or 3 can be set to do 360p60 or 720p30, although you might need to adjust the frame rate and resolution at a code level at the moment.  The default target resolution is currently 1080p30. The USB-based camera pipeline will be partially hardware-accelerated, doing some of the encoding at a software-level, but this is for the best if you have a Raspberry Pi 4 or faster to work with.
+
 #### Installing from the provided image
 
 Download and extract the image file:
