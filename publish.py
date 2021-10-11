@@ -374,7 +374,7 @@ if __name__=='__main__':
     
     error = False
     parser = argparse.ArgumentParser()
-    parser.add_argument('--streamid', type=int, default=random.randint(1000000,9999999), help='Stream ID of the peer to connect to')
+    parser.add_argument('--streamid', type=str, default=str(random.randint(1000000,9999999)), help='Stream ID of the peer to connect to')
     parser.add_argument('--server', type=str, default=WSS, help='Handshake server to use, eg: "wss://wss.vdo.ninja:443"')
     parser.add_argument('--bitrate', type=int, default=4000, help='Sets the video bitrate. This is not adaptive, so packet loss and insufficient bandwidth will cause frame loss')
     parser.add_argument('--width', type=int, default=1920, help='Sets the video width. Make sure that your input supports it.')
