@@ -349,7 +349,7 @@ class WebRTCClient:
                     if self.puuid==None:
                         self.puuid = str(random.randint(10000000,99999999))
                     if 'streamID' in msg:
-                        if msg['streamID'] == streamid:
+                        if msg['streamID'] == self.peer_id:
                             self.start_pipeline()
             else:
                 print(message)
