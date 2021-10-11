@@ -426,7 +426,8 @@ if __name__=='__main__':
                     needed += ['nvjpeg']
 
             elif args.rpi:
-                needed += ['omx']
+                #needed += ['omx']
+                needed += ['x264', 'video4linux2']
                 if not args.raw:
                     needed += ['jpeg']
 
