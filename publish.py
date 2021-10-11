@@ -470,6 +470,8 @@ if __name__=='__main__':
                     pipeline_video_input += f' ! image/jpeg,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
                     if args.nvidia:
                         pipeline_video_input += ' ! jpegparse ! nvjpegdec ! video/x-raw'
+                    elif args.rpi:
+                        pipeline_video_input += ' ! jpegparse ! v4l2jpegdec '
                     else:
                         pipeline_video_input += ' ! jpegdec'
 
@@ -478,7 +480,7 @@ if __name__=='__main__':
                 if args.nvidia:
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate={args.bitrate}000 ! video/x-h264,stream-format=(string)byte-stream'
                 elif args.rpi:
-                    pipeline_video_input += f' ! videoconvert ! video/x-raw ! omxh264enc ! video/x-h264,stream-format=(string)byte-stream'
+                    pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc ! video/x-h264,stream-format=(string)byte-stream'
                 else:
                     pipeline_video_input += f' ! videoconvert ! x264enc bitrate={args.bitrate} speed-preset=ultrafast tune=zerolatency key-int-max=15 ! video/x-h264,profile=constrained-baseline'
 
