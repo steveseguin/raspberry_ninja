@@ -125,7 +125,7 @@ If you run with sudo, you might get a permissions error when using audio.
 
 - Installation from source is pretty slow and problematic on a rpi; using system images makes using this so much easier.
 
-- Please use the provided backup server for development and testing purposes; that server is `wss:/apibackup.obs.ninja:443` and `https://backup.vdo.ninja`
+- Please use the provided backup server for development and testing purposes; that wss server is `wss:/apibackup.obs.ninja:443` and for viewing: `https://backup.vdo.ninja`
 
 - Passwords must be DISABLED explicitly as this code does not yet have the required crypto logic added yet.
 
