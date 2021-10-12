@@ -15,221 +15,345 @@ gi.require_version('GstWebRTC', '1.0')
 from gi.repository import GstWebRTC
 gi.require_version('GstSdp', '1.0')
 from gi.repository import GstSdp
-
-# Gst.debug_set_active(True)
-# Gst.debug_set_default_threshold(3)                                   
+                               
 class WebRTCClient:
-    def __init__(self, peer_id, server):
+    def __init__(self, stream_id, server, multiviewer, record):
         self.conn = None
         self.pipe = None
-        self.webrtc = None
-        self.UUID = None
-        self.session = None
-        self.peer_id = peer_id
         self.server = server
+        self.stream_id = stream_id
+        self.multiviewer = multiviewer
+        self.record = record
         self.puuid = None
-        self.send_channel = None
-        self.timer = None
-        self.ping = 0             
-
+        self.clients = {}
+        
     async def connect(self):
         sslctx = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
         self.conn = await websockets.connect(self.server, ssl=sslctx)
-        msg = json.dumps({"request":"seed","streamID":self.peer_id})
-        await self.conn.send(msg)
-
-    def sendMessage(self, msg):
+        
+        if args.record:
+            msg = json.dumps({"request":"play","streamID":args.record})
+            await self.conn.send(msg)
+        else:
+            msg = json.dumps({"request":"seed","streamID":self.stream_id})
+            await self.conn.send(msg)
+        
+        
+    def sendMessage(self, msg): # send message to wss
         if self.puuid:
             msg['from'] = self.puuid
+        
+        client = None
+        if "UUID" in msg and msg['UUID'] in self.clients:
+            client = self.clients[msg['UUID']]
+        
         msg = json.dumps(msg)
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(self.conn.send(msg))
-    
-    def on_offer_created(self, promise, _, __): 
-        print("ON OFFER CREATED")
-        promise.wait()
-        reply = promise.get_reply()
-        offer = reply.get_value('offer')
-        promise = Gst.Promise.new()
-        self.webrtc.emit('set-local-description', offer, promise)
-        promise.interrupt()
-        print("SEND SDP OFFER")
-        text = offer.sdp.as_text()
-        msg = {'description': {'type': 'offer', 'sdp': text}, 'UUID': self.UUID, 'session': self.session, 'streamID':self.peer_id}
-        self.sendMessage(msg)
-
-    def on_negotiation_needed(self, element):
-        print("ON NEGO NEEDED")
-        promise = Gst.Promise.new_with_change_func(self.on_offer_created, element, None)
-        element.emit('create-offer', None, promise)
-
-    def create_answer(self):
-        promise = Gst.Promise.new_with_change_func(self.on_answer_created, self.webrtc, None)
-        self.webrtc.emit('create-answer', None, promise)
-
-    def on_answer_created(self, promise, _, __):
-        print("ON ANSWER CREATED")
-        promise.wait()
-        reply = promise.get_reply()
-        answer = reply.get_value('answer')
-        promise = Gst.Promise.new()
-        self.webrtc.emit('set-local-description', answer, promise)
-        promise.interrupt()
-        print("SEND SDP ANSWER")
-        text = answer.sdp.as_text()
-        msg = {'description': {'type': 'answer', 'sdp': text, 'UUID': self.UUID, 'session': self.session}}
-                        
-        self.sendMessage(msg)
-
-    def send_ice_candidate_message(self, _, mlineindex, candidate):
-        icemsg = {'candidates': [{'candidate': candidate, 'sdpMLineIndex': mlineindex}], 'session':self.session, 'type':'local', 'UUID':self.UUID}
-        self.sendMessage(icemsg)
-
-    def on_signaling_state(self, p1, p2):
-        print("ON SIGNALING STATE CHANGE: {}".format(self.webrtc.get_property(p2.name)))
-
-    def on_ice_connection_state(self, p1, p2):
-        print("ON ICE CONNECTION STATE CHANGE: {}".format(self.webrtc.get_property(p2.name)))
-
-    def on_connection_state(self, p1, p2):
-        if (self.webrtc.get_property(p2.name)==2): # connected
-            print("PEER CONNECTION ACTIVE")
-            promise = Gst.Promise.new_with_change_func(self.on_stats, self.webrtc, None) # check stats
-            self.webrtc.emit('get-stats', None, promise)
-            self.send_channel = self.webrtc.emit('create-data-channel', 'sendChannel', None)
-            self.on_data_channel(self.webrtc, self.send_channel)
-            if self.timer == None:
-                self.timer = threading.Timer(3, self.pingTimer).start()
-        elif (self.webrtc.get_property(p2.name)>=4): # closed/failed , but this won't work unless Gstreamer / LibNice support it -- which isn't the case in most versions.
-            print("PEER CONNECTION DISCONNECTED")
+        
+        if client and client['send_channel']:
+            try:
+                client['send_channel'].emit('send-string', msg)
+                print("sent via datachannels")
+            except Exception as e:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(self.conn.send(msg))
+                #print("sent message wss")
         else:
-            print("PEER CONNECTION STATE {}".format(self.webrtc.get_property(p2.name)))
-
-    def on_stats(self, promise, abin, data):
-        promise.wait()
-        stats = promise.get_reply()
-        stats.foreach(self.foreach_stats)
-
-    def foreach_stats(self, field_id, stats):
-        if stats.get_name() == "remote-inbound-rtp":
-            print(stats.to_string())
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(self.conn.send(msg))
+            #print("sent message wss")
+        
+    async def createPeer(self, UUID):
+        
+        if UUID in self.clients:
+            client = self.clients[UUID]
         else:
-            print(stats.to_string())
-
-    def on_signaling_state(self, p1, p2):
-        print("ON SIGNALING STATE CHANGE: {}".format(self.webrtc.get_property(p2.name)))
-
-    def on_ice_connection_state(self, p1, p2):
-        print("ON ICE CONNECTION STATE CHANGE: {}".format(self.webrtc.get_property(p2.name)))
-
-    def on_connection_state(self, p1, p2):
-        if (self.webrtc.get_property(p2.name)==2): # connected
-            print("PEER CONNECTION ACTIVE")
-            promise = Gst.Promise.new_with_change_func(self.on_stats, self.webrtc, None) # check stats
-            self.webrtc.emit('get-stats', None, promise)
-            self.send_channel = self.webrtc.emit('create-data-channel', 'sendChannel', None)
+            print("peer not yet created; error")
+            return
             
-            if not self.send_channel:
-                print("ERROR: CANNOT CREATE DATA CHANNEL")
+        def on_offer_created(promise, _, __): 
+            print("ON OFFER CREATED")
+            promise.wait()
+            reply = promise.get_reply()
+            offer = reply.get_value('offer')
+            promise = Gst.Promise.new()
+            client['webrtc'].emit('set-local-description', offer, promise)
+            promise.interrupt()
+            print("SEND SDP OFFER")
+            text = offer.sdp.as_text()
+            msg = {'description': {'type': 'offer', 'sdp': text}, 'UUID': client['UUID'], 'session': client['session'], 'streamID':self.stream_id}
+            self.sendMessage(msg)
+
+        def on_negotiation_needed(element):
+            print("ON NEGO NEEDED")
+            promise = Gst.Promise.new_with_change_func(on_offer_created, element, None)
+            element.emit('create-offer', None, promise)
+
+        def send_ice_local_candidate_message(_, mlineindex, candidate):
+            icemsg = {'candidates': [{'candidate': candidate, 'sdpMLineIndex': mlineindex}], 'session':client['session'], 'type':'local', 'UUID':client['UUID']}
+            self.sendMessage(icemsg)
+            
+        def send_ice_remote_candidate_message(_, mlineindex, candidate):
+            icemsg = {'candidates': [{'candidate': candidate, 'sdpMLineIndex': mlineindex}], 'session':client['session'], 'type':'remote', 'UUID':client['UUID']}
+            self.sendMessage(icemsg)
+
+        
+        def on_signaling_state(p1, p2):
+            print("ON SIGNALING STATE CHANGE: {}".format(client['webrtc'].get_property(p2.name)))
+
+        def on_ice_connection_state(p1, p2):
+            print("ON ICE CONNECTION STATE CHANGE: {}".format(client['webrtc'].get_property(p2.name)))
+
+        def on_connection_state(p1, p2):
+            print("on_connection_state")
+            
+            if (client['webrtc'].get_property(p2.name)==2): # connected
+                print("PEER CONNECTION ACTIVE")
+                promise = Gst.Promise.new_with_change_func(on_stats, client['webrtc'], None) # check stats
+                client['webrtc'].emit('get-stats', None, promise)
+                
+                # if self.record:
+                    # direction = GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY
+                    # caps = Gst.caps_from_string("application/x-rtp,media=video,encoding-name=VP8/9000,payload=96")
+                    # client['webrtc'].emit('add-transceiver', direction, caps)
+                if not self.record and not client['send_channel']:
+                    channel = client['webrtc'].emit('create-data-channel', 'sendChannel', None)
+                    on_data_channel(client['webrtc'], channel)
+                
+                if client['timer'] == None:
+                    client['ping'] = 0
+                    client['timer'] = threading.Timer(3, pingTimer).start()
+                    self.clients[client["UUID"]] = client
+                    
+            elif (client['webrtc'].get_property(p2.name)>=4): # closed/failed , but this won't work unless Gstreamer / LibNice support it -- which isn't the case in most versions.
+                print("PEER CONNECTION DISCONNECTED")
+                self.stop_pipeline(client['UUID'])     
             else:
-                self.ping = 0       
-                self.on_data_channel(self.webrtc, self.send_channel)
-                if self.timer == None:
-                    self.timer = threading.Timer(3, self.pingTimer).start()
-        elif (self.webrtc.get_property(p2.name)>=4): # closed/failed , but this won't work unless Gstreamer / LibNice support it -- which isn't the case in most versions.
-            print("PEER CONNECTION DISCONNECTED")
-            self.stop_pipeline()                    
-        else:
-            print("PEER CONNECTION STATE {}".format(self.webrtc.get_property(p2.name)))
+                print("PEER CONNECTION STATE {}".format(client['webrtc'].get_property(p2.name)))
 
-    def on_stats(self, promise, abin, data):
-        promise.wait()
-        stats = promise.get_reply()
-        stats.foreach(self.foreach_stats)
-
-    def foreach_stats(self, field_id, stats):
-        #print(stats)
-        if stats.get_name() == "remote-inbound-rtp":
-            print(stats.to_string())
-        else:
-            print(stats.to_string())
-
-    def on_incoming_decodebin_stream(self, _, pad): # If daring to capture inbound video; support not assured at this point.
-        print("ON INCOMING")
-        if not pad.has_current_caps():
-            print (pad, 'has no caps, ignoring')
-            return
-
-        caps = pad.get_current_caps()
-        name = caps.to_string()
-        if name.startswith('video'):
-            q = Gst.ElementFactory.make('queue')
-            conv = Gst.ElementFactory.make('videoconvert')
-#            sink = Gst.ElementFactory.make('filesink', "fsink")  # record inbound stream to file
-            sink = Gst.ElementFactory.make('autovideosink')
-#            sink.set_property("location", str(time.time())+'.mkv')
-            self.pipe.add(q)
-            self.pipe.add(conv)
-            self.pipe.add(sink)
-            self.pipe.sync_children_states()
-            pad.link(q.get_static_pad('sink'))
-            q.link(conv)
-            conv.link(sink)
-        elif name.startswith('audio'):
-            q = Gst.ElementFactory.make('queue')
-            conv = Gst.ElementFactory.make('audioconvert')
-            resample = Gst.ElementFactory.make('audioresample')
-            sink = Gst.ElementFactory.make('autoaudiosink')
-            self.pipe.add(q)
-            self.pipe.add(conv)
-            self.pipe.add(resample)
-            self.pipe.add(sink)
-            self.pipe.sync_children_states()
-            pad.link(q.get_static_pad('sink'))
-            q.link(conv)
-            conv.link(resample)
-            resample.link(sink)
-
-    def on_incoming_stream(self, _, pad):
-        print("ON INCOMING STREAM")
-        try:
-            if Gst.PadDirection.SRC != pad.direction:
+        def pingTimer():
+            if not client['send_channel']:
+                threading.Timer(3, pingTimer).start()
+                print("data channel not setup yet")
                 return
-        except:
-            return
-        print("INCOMING STREAM")
-        decodebin = Gst.ElementFactory.make('decodebin')
-        decodebin.connect('pad-added', self.on_incoming_decodebin_stream)
-        self.pipe.add(decodebin)
-        decodebin.sync_state_with_parent()
-        self.webrtc.link(decodebin)
+                
+            if client['ping'] < 4:
+                client['ping'] += 1
+                self.clients[client["UUID"]] = client
+                try:
+                    client['send_channel'].emit('send-string', '{"ping":"'+str(time.time())+'"}')
+                    print("PINGED")
+                except Exception as E:
+                    print(E)
+                    print("PING FAILED")
+                threading.Timer(3, pingTimer).start()
+            else:
+                print("NO HEARTBEAT")
+                self.stop_pipeline(client['UUID'])
+                
+        def on_data_channel(webrtc, channel):
+            print("ON DATA CHANNEL")
+            if channel is None:
+                print('DATA CHANNEL: NOT AVAILABLE')
+            else:
+                print('DATA CHANNEL SETUP')                               
+            channel.connect('on-open', on_data_channel_open)
+            channel.connect('on-error', on_data_channel_error)
+            channel.connect('on-close', on_data_channel_close)
+            channel.connect('on-message-string', on_data_channel_message)
 
-    def start_pipeline(self):
-        print("START PIPE")
-        if self.pipe:
-            self.pipe.set_state(Gst.State.NULL)
-        self.pipe = Gst.parse_launch(PIPELINE_DESC)
-        self.webrtc = self.pipe.get_by_name('sendrecv')
+        def on_data_channel_error(channel):
+            print('DATA CHANNEL: ERROR')
+
+        def on_data_channel_open(channel):
+            print('DATA CHANNEL: OPENED')
+            client['send_channel'] = channel
+            self.clients[client["UUID"]] = client
+            if self.record:
+                msg = {"audio":False, "video":True, "UUID": client["UUID"]}
+                self.sendMessage(msg)
+
+        def on_data_channel_close(channel):
+            print('DATA CHANNEL: CLOSE')
+
+        def on_data_channel_message(channel, msg_raw):
+            try:
+                msg = json.loads(msg_raw)
+            except:
+                return
+            if 'candidates' in msg:
+                print("inbound ice")
+                for ice in msg['candidates']:
+                    self.handle_sdp(ice, client["UUID"])
+            elif 'pong' in msg: # Supported in v19 of VDO.Ninja
+                print('PONG:', msg['pong'])
+                client['ping'] = 0     
+                self.clients[client["UUID"]] = client                
+            elif 'bye' in msg: ## v19 of VDO.Ninja
+                print("PEER INTENTIONALLY HUNG UP")
+            else:
+                return
+
+        def on_stats(promise, abin, data):
+            promise.wait()
+            stats = promise.get_reply()
+            stats.foreach(foreach_stats)
+            
+        def foreach_stats(field_id, stats):
+            if stats.get_name() == "remote-inbound-rtp":
+                print(stats.to_string())
+            else:
+                print(stats.to_string())
+
+       
+        
+        def on_incoming_decodebin_stream(_, pad): # If daring to capture inbound video; support not assured at this point.
+            print("ON INCOMING")
+            if not pad.has_current_caps():
+                print (pad, 'has no caps, ignoring')
+                return
+
+            caps = pad.get_current_caps()
+            name = caps.to_string()
+            
+            print(caps)
+            print(name)
+            
+            print("--------------")
+            if name.startswith('video'):
+                q = Gst.ElementFactory.make('queue')
+                conv = Gst.ElementFactory.make('videoconvert')
+    #            sink = Gst.ElementFactory.make('filesink', "fsink")  # record inbound stream to file
+                sink = Gst.ElementFactory.make('autovideosink')
+    #            sink.set_property("location", str(time.time())+'.mkv')
+                self.pipe.add(q)
+                self.pipe.add(conv)
+                self.pipe.add(sink)
+                self.pipe.sync_children_states()
+                pad.link(q.get_static_pad('sink'))
+                q.link(conv)
+                conv.link(sink)
+            elif name.startswith('audio'):
+                q = Gst.ElementFactory.make('queue')
+                conv = Gst.ElementFactory.make('audioconvert')
+                resample = Gst.ElementFactory.make('audioresample')
+                sink = Gst.ElementFactory.make('autoaudiosink')
+                self.pipe.add(q)
+                self.pipe.add(conv)
+                self.pipe.add(resample)
+                self.pipe.add(sink)
+                self.pipe.sync_children_states()
+                pad.link(q.get_static_pad('sink'))
+                q.link(conv)
+                conv.link(resample)
+                resample.link(sink)
+
+        def on_incoming_stream( _, pad):
+            print("ON INCOMING STREAM !! ************* ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ .......$$$$$$$")
+            try:
+                if Gst.PadDirection.SRC != pad.direction:
+                    return
+            except:
+                return
+            print("INCOMING STREAM")
+            
+            print("INCOMING STREAM !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            queue = Gst.ElementFactory.make('queue')
+            queue.connect('pad-added', on_incoming_decodebin_stream)
+            self.pipe.add(queue)
+            queue.sync_state_with_parent()
+            client['webrtc'].link(queue)
+        
+        print("creating a new webrtc bin")
+        
+        started = True
+        if not self.pipe:
+            print("loading pipe")
+           
+            if self.record:
+                self.pipe = Gst.Pipeline.new('decode-pipeline')
+            else:
+                print(PIPELINE_DESC)
+                self.pipe = Gst.parse_launch(PIPELINE_DESC)
+            print(self.pipe)
+            started = False
+            
+            
+        if self.record:
+            client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
+            #client['webrtc'].set_property('bundle-policy', 'max-bundle') 
+            client['webrtc'].set_property('stun-server', "stun-server=stun://stun4.l.google.com:19302")
+            self.pipe.add(client['webrtc'])
+            
+            #direction = GstWebRTC.WebRTCRTPTransceiverDirection.SENDRECV
+            #caps = Gst.caps_from_string("application/x-rtp,media=video,encoding-name=VP8/9000,payload=96")
+            #client['webrtc'].emit('add-transceiver', direction, caps)
+            
+            client['qv'] = None
+            client['qa'] = None
+        elif not self.multiviewer:
+            client['webrtc'] = self.pipe.get_by_name('sendrecv')
+            client['qv'] = None
+            client['qa'] = None
+        else:
+            client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
+            client['webrtc'].set_property('bundle-policy', 'max-bundle') 
+            client['webrtc'].set_property('stun-server', "stun-server=stun://stun4.l.google.com:19302")
+            self.pipe.add(client['webrtc'])
+            
+            atee = self.pipe.get_by_name('audiotee')
+            vtee = self.pipe.get_by_name('videotee')
+            
+            client['qv'] = None
+            client['qa'] = None
+            
+            if vtee is not None:
+                qv = Gst.ElementFactory.make('queue', f"qv-{client['UUID']}")
+                self.pipe.add(qv)
+                if not Gst.Element.link(vtee, qv):
+                    return
+                if not Gst.Element.link(qv, client['webrtc']):
+                    return
+                if qv is not None: qv.sync_state_with_parent()
+                client['qv'] = qv
+            
+            if atee is not None:
+                qa = Gst.ElementFactory.make('queue', f"qa-{client['UUID']}")
+                self.pipe.add(qa)
+                if not Gst.Element.link(atee, qa):
+                    return
+                if not Gst.Element.link(qa, client['webrtc']):
+                    return
+                if qa is not None: qa.sync_state_with_parent()
+                client['qa'] = qa
+            
         try:
-            self.webrtc.set_property('bundle-policy', 'max-bundle') # not compatible with GST 1.4
-            self.webrtc.connect('notify::ice-connection-state', self.on_ice_connection_state)
-            self.webrtc.connect('notify::connection-state', self.on_connection_state)
-            self.webrtc.connect('notify::signaling-state', self.on_signaling_state)
+            client['webrtc'].connect('notify::ice-connection-state', on_ice_connection_state)
+            client['webrtc'].connect('notify::connection-state', on_connection_state)
+            client['webrtc'].connect('notify::signaling-state', on_signaling_state)
+                
         except Exception as e:
             print(e)
             pass
-        self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed)
-        self.webrtc.connect('on-ice-candidate', self.send_ice_candidate_message)
-        self.webrtc.connect('pad-added', self.on_incoming_stream)
-        self.pipe.set_state(Gst.State.PLAYING)
-
-    def stop_pipeline(self):
-        print("STOP PIPE")
-        if self.pipe:
-            self.pipe.set_state(Gst.State.NULL)                                     
-    async def handle_sdp(self, msg):
+            
+        if self.record:
+            client['webrtc'].connect('pad-added', on_incoming_stream)
+            client['webrtc'].connect('on-data-channel', on_data_channel)
+            client['webrtc'].connect('on-ice-candidate', send_ice_remote_candidate_message)
+        else:
+            client['webrtc'].connect('on-ice-candidate', send_ice_local_candidate_message)
+            client['webrtc'].connect('on-negotiation-needed', on_negotiation_needed)
+            
+        if not started and self.pipe.get_state(0)[1] is not Gst.State.PLAYING:
+            self.pipe.set_state(Gst.State.PLAYING)
+            
+        client['webrtc'].sync_state_with_parent()
+        self.clients[client["UUID"]] = client
+        
+    def handle_sdp(self, msg, UUID):
         print("HANDLE SDP")
-        assert (self.webrtc)
+        client = self.clients[UUID]
+        if not client or not client['webrtc']:
+            return
         if 'sdp' in msg:
             msg = msg
             assert(msg['type'] == 'answer')
@@ -239,121 +363,141 @@ class WebRTCClient:
             GstSdp.sdp_message_parse_buffer(bytes(sdp.encode()), sdpmsg)
             answer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.ANSWER, sdpmsg)
             promise = Gst.Promise.new()
-            self.webrtc.emit('set-remote-description', answer, promise)
+            client['webrtc'].emit('set-remote-description', answer, promise)
             promise.interrupt()
         elif 'candidate' in msg:
             candidate = msg['candidate']
             sdpmlineindex = msg['sdpMLineIndex']
-            self.webrtc.emit('add-ice-candidate', sdpmlineindex, candidate)
+            client['webrtc'].emit('add-ice-candidate', sdpmlineindex, candidate)
 
-    async def handle_offer(self, msg):
+    def on_answer_created(self, promise, _, client):
+        print("ON ANSWER CREATED")
+        promise.wait()
+        reply = promise.get_reply()
+        answer = reply.get_value('answer')
+        if not answer:
+            return
+        promise = Gst.Promise.new()
+        client['webrtc'].emit('set-local-description', answer, promise)
+        promise.interrupt()
+        print("SEND SDP ANSWER")
+        print(answer)
+        text = answer.sdp.as_text()
+        msg = {'description': {'type': 'answer', 'sdp': text}, 'UUID': client['UUID'], 'session': client['session']}
+        self.sendMessage(msg)
+            
+    async def handle_offer(self, msg, UUID):
         print("HANDLE SDP OFFER")
-        assert (self.webrtc)
+        client = self.clients[UUID]
+        if not client or not client['webrtc']:
+            return
         if 'sdp' in msg:
-            msg = msg
             assert(msg['type'] == 'offer')
             sdp = msg['sdp']
-#            print ('Received offer:\n%s' % sdp)
             res, sdpmsg = GstSdp.SDPMessage.new()
             GstSdp.sdp_message_parse_buffer(bytes(sdp.encode()), sdpmsg)
             offer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.OFFER, sdpmsg)
             promise = Gst.Promise.new()
-            self.webrtc.emit('set-remote-description', offer, promise)
+            client['webrtc'].emit('set-remote-description', offer, promise)
             promise.interrupt()
-            self.create_answer()
-
-    def on_data_channel(self, webrtc, channel):
-        if channel is None:
-            print('DATA CHANNEL: NOT AVAILABLE')
+            promise2 = Gst.Promise.new_with_change_func(self.on_answer_created, client['webrtc'], client)
+            client['webrtc'].emit('create-answer', None, promise2)
+        
+    async def start_pipeline(self, UUID):
+        print("START PIPE")
+        if self.multiviewer:
+            await self.createPeer(UUID)
         else:
-            print('DATA CHANNEL SETUP')                               
-        channel.connect('on-open', self.on_data_channel_open)
-        channel.connect('on-error', self.on_data_channel_error)
-        channel.connect('on-close', self.on_data_channel_close)
-        channel.connect('on-message-string', self.on_data_channel_message)
+            for uid in self.clients:
+                if uid != UUID:
+                    self.stop_pipeline(uid)
+                    break
+            if self.pipe:
+                self.pipe.set_state(Gst.State.NULL)
+                self.pipe = None
+            await self.createPeer(UUID)
 
-    def on_data_channel_error(self, channel):
-        print('DATA CHANNEL: ERROR')
+    def stop_pipeline(self, UUID):
+        print("STOP PIPE")
+        if not self.multiviewer:
+            if UUID in self.clients:
+                del self.clients[UUID]
+        elif UUID in self.clients:
+            atee = self.pipe.get_by_name('audiotee')
+            vtee = self.pipe.get_by_name('videotee')
 
-    def on_data_channel_open(self, channel):
-        print('DATA CHANNEL: OPENED')
+            if atee is not None and self.clients[UUID]['qa'] is not None: 
+                atee.unlink(self.clients[UUID]['qa'])
+            if vtee is not None and self.clients[UUID]['qv'] is not None: 
+                vtee.unlink(self.clients[UUID]['qv'])
 
-    def on_data_channel_close(self, channel):
-        print('DATA CHANNEL: CLOSE')
-
-    def on_data_channel_message(self, channel, msg_raw):
-        try:
-            msg = json.loads(msg_raw)
-        except:
-            return
-        if 'candidates' in msg:
-            for ice in msg['candidates']:
-                pass ## TODO: handle incoming ICE
-                ## await self.handle_sdp(ice)
-        elif 'pong' in msg: # Supported in v19 of VDO.Ninja
-            print('PONG:', msg['pong'])
-            self.ping = 0             
-        elif 'bye' in msg: ## v19 of VDO.Ninja
-            print("PEER INTENTIONALLY HUNG UP")
-        else:
-            return
-            #print('DATA CHANNEL: MESSAGE:', msg_raw)
-
-    def pingTimer(self):
-        if self.ping < 4:
-            self.ping += 1
-            try:
-                self.send_channel.emit('send-string', '{"ping":"'+str(time.time())+'"}')
-                print("PINGED")
-            except Exception as E:
-                print(E)
-                print("PING FAILED")
-            threading.Timer(3, self.pingTimer).start()
-        else:
-            print("NO HEARTBEAT")
-            self.stop_pipeline()
-
+            if self.clients[UUID]['webrtc'] is not None: 
+                self.pipe.remove(self.clients[UUID]['webrtc'])
+                self.clients[UUID]['webrtc'].set_state(Gst.State.NULL)
+            if self.clients[UUID]['qa'] is not None: 
+                self.pipe.remove(self.clients[UUID]['qa'])
+                self.clients[UUID]['qa'].set_state(Gst.State.NULL)
+            if self.clients[UUID]['qv'] is not None:
+                self.pipe.remove(self.clients[UUID]['qv'])
+                self.clients[UUID]['qv'].set_state(Gst.State.NULL)
+            del self.clients[UUID]
+            
+        if self.pipe:
+            if len(self.clients)==0:
+                self.pipe.set_state(Gst.State.NULL)
+                self.pipe = None
+            
     async def loop(self):
         assert self.conn
         print("WSS CONNECTED")
         async for message in self.conn:
             msg = json.loads(message)
-            if 'UUID' in msg:
+            if 'from' in msg:
+                UUID = msg['from']
+            elif 'UUID' in msg:
                 if (self.puuid != None) and (self.puuid != msg['UUID']):
                     continue
-                self.UUID = msg['UUID']
+                UUID = msg['UUID']
+            else:
+                continue
                 
-            if 'from' in msg:
-                self.UUID = msg['from']
-
+            if UUID not in self.clients:
+                self.clients[UUID] = {}
+                self.clients[UUID]["UUID"] = UUID
+                self.clients[UUID]["session"] = None
+                self.clients[UUID]["send_channel"] = None
+                self.clients[UUID]["timer"] = None
+                self.clients[UUID]["ping"] = 0
+                self.clients[UUID]["webrtc"] = None
+                
             if 'session' in msg:
-                self.session = msg['session']
+                if not self.clients[UUID]['session']:
+                    self.clients[UUID]['session'] = msg['session']
+                else:
+                    print("sessions don't match")
 
             if 'description' in msg:
                 msg = msg['description']
                 if 'type' in msg:
                     if msg['type'] == "offer":
-                        self.start_pipeline()
-                        await self.handle_offer(msg)
+                        await self.start_pipeline(UUID)
+                        await self.handle_offer(msg, UUID)
                     elif msg['type'] == "answer":
-                        await self.handle_sdp(msg)
-
+                        self.handle_sdp(msg, UUID)
             elif 'candidates' in msg:
                 for ice in msg['candidates']:
-                    await self.handle_sdp(ice)
+                    self.handle_sdp(ice, UUID)
 
             elif 'request' in msg:
                 if 'offerSDP' in  msg['request']:
-                    self.start_pipeline()
+                    await self.start_pipeline(UUID)
                 elif msg['request'] == 'play':
                     if self.puuid==None:
                         self.puuid = str(random.randint(10000000,99999999))
                     if 'streamID' in msg:
-                        if msg['streamID'] == self.peer_id:
-                            self.start_pipeline()
-            else:
-                print(message)
-                # return 1 ## disconnects on bad message
+                        if msg['streamID'] == self.stream_id:
+                            await self.start_pipeline(UUID)
+           
         return 0
 
 
@@ -366,12 +510,10 @@ def check_plugins(needed):
 
 WSS="wss://wss.vdo.ninja:443"
 
- ## Works with those cheap HDMI to USB 2.0 UVC capture dongle. Assumes just one UVC device is connected; see below for some others
-  ###  PIPELINE_DESC = "v4l2src device=/dev/video0 io-mode=2 ! image/jpeg,framerate=30/1,width=1920,height=1080 ! jpegparse ! nvjpegdec ! video/x-raw ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate="+bitrate+"000 ! video/x-h264, stream-format=(string)byte-stream ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtc stun-server=stun://stun4.l.google.com:19302 name=sendrecv pulsesrc device=alsa_input.usb-MACROSILICON_2109-02.analog-stereo ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv. "
-
 if __name__=='__main__':
     Gst.init(None)
-    
+    # Gst.debug_set_active(True)
+    # Gst.debug_set_default_threshold(3)
     error = False
     parser = argparse.ArgumentParser()
     parser.add_argument('--streamid', type=str, default=str(random.randint(1000000,9999999)), help='Stream ID of the peer to connect to')
@@ -391,9 +533,11 @@ if __name__=='__main__':
     parser.add_argument('--h264', action='store_true', help='For PC, instead of VP8, use x264.')
     parser.add_argument('--nvidia', action='store_true', help='Creates a pipeline optimised for nvidia hardware.')
     parser.add_argument('--rpi', action='store_true', help='Creates a pipeline optimised for raspberry pi hadware.')
+    parser.add_argument('--multiviewer', action='store_true', help='Allows for multiple viewers to watch a single encoded stream; will use more CPU and bandwidth.')
     parser.add_argument('--novideo', action='store_true', help='Disables video input.')
     parser.add_argument('--noaudio', action='store_true', help='Disables audio input.')
     parser.add_argument('--pipeline', type=str, help='A full custom pipeline')
+    parser.add_argument('--record', type=str, help='A remote stream ID to record to disk') ### Doens't work correctly yet. might be a gstreamer limitation.
     
     args = parser.parse_args()
      
@@ -426,7 +570,6 @@ if __name__=='__main__':
                     needed += ['nvjpeg']
 
             elif args.rpi:
-                #needed += ['omx']
                 needed += ['x264', 'video4linux2']
                 if not args.raw:
                     needed += ['jpeg']
@@ -485,12 +628,18 @@ if __name__=='__main__':
                     ## pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                 else:
                     pipeline_video_input += f' ! videoconvert ! x264enc bitrate={args.bitrate} speed-preset=ultrafast tune=zerolatency key-int-max=15 ! video/x-h264,profile=constrained-baseline'
-
-                pipeline_video_input += ' ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! queue ! sendrecv.'
+                    
+                if args.multiviewer:
+                    pipeline_video_input += ' ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! tee name=videotee '
+                else:
+                    pipeline_video_input += ' ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! queue ! sendrecv.'
 
             else:
                 # VP8
-                pipeline_video_input += f' ! videoconvert ! vp8enc deadline=1 target-bitrate={args.bitrate}000 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! sendrecv.'
+                if args.multiviewer:
+                    pipeline_video_input += f' ! videoconvert ! vp8enc deadline=1 target-bitrate={args.bitrate}000 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! tee name=videotee '
+                else:
+                    pipeline_video_input += f' ! videoconvert ! vp8enc deadline=1 target-bitrate={args.bitrate}000 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! queue ! sendrecv.'
 
         if not args.noaudio:
             if args.test:
@@ -504,20 +653,28 @@ if __name__=='__main__':
             else:
                 needed += ['alsa']
                 pipeline_audio_input += f'alsasrc device={args.alsa}'
+                
+            if args.multiviewer: # a 'tee' element may use more CPU or cause extra stuttering, so by default not enabled, but needed to support multiple viewers
+                pipeline_audio_input += ' ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! tee name=audiotee '
+            else:
+                pipeline_audio_input += ' ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! queue ! sendrecv.'
 
-            pipeline_audio_input += ' ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv.'
-
-        PIPELINE_DESC = f'webrtcbin name=sendrecv bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input}'
-        print('gst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
-
+        if args.record:
+            pass
+        elif not args.multiviewer:
+            PIPELINE_DESC = f'webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input}'
+            print('gst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
+        else:
+            PIPELINE_DESC = f'{pipeline_video_input} {pipeline_audio_input}'
+            print('Partial pipeline used: ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
+            
         if not check_plugins(needed) or error:
             sys.exit(1)
-
 
     print("\nAvailable options include --streamid, --bitrate, and --server. Default bitrate is 4000 (kbps)")
     print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}");
 
-    c = WebRTCClient(args.streamid, args.server)
+    c = WebRTCClient(args.streamid, args.server, args.multiviewer, args.record)
     asyncio.get_event_loop().run_until_complete(c.connect())
     res = asyncio.get_event_loop().run_until_complete(c.loop())
     sys.exit(res)
