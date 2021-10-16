@@ -624,7 +624,13 @@ if __name__=='__main__':
                 if args.nvidia:
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate={args.bitrate}000 ! video/x-h264,stream-format=(string)byte-stream'
                 elif args.rpi:
-                    pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! x264enc bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,stream-format=(string)byte-stream'
+                    if args.width>1280: ## x264enc works at 1080p30, but only for static scenes with a bitrate of around 2500 or less.
+                        width = 1280  ## 720p60 is more accessible with the PI4, versus 1080p30.  
+                        height = 720
+                    else:
+                        width = args.width
+                        height = args.height
+                    pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! x264enc bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,stream-format=(string)byte-stream'
                     ## pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                 else:
                     pipeline_video_input += f' ! videoconvert ! x264enc bitrate={args.bitrate} speed-preset=ultrafast tune=zerolatency key-int-max=15 ! video/x-h264,profile=constrained-baseline'
