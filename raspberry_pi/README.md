@@ -59,7 +59,8 @@ The hardware-encoder in the Raspberry Pi doesn't like USB-connect cameras, and o
 
 If using the CSI camera, even a raspberry Pi zero will work, although it might still be best to limit the resolution to 720p30 or 360p30 if using a raspberry pi zero w.
 
-To enable the CSI camera, you'll need to add `--rpicam` to the command-line, as the default is USB MPJEG.
+To enable the CSI camera, you'll need to add `--rpicam` to the command-line, as the default is USB MPJEG.  You may need to run `sudo raspi-config` ane enable the CSI camera inteface before the script will be able to use it.
+
 To enable RAW-mode (YUY2) via a USB Camera, instead of MJPEG, you'll need to add `--raw` to the command line, and probably limit the resolution to around 480p.
 
 ###### Please return to the parent folder for more details on how to run and configure
