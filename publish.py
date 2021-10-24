@@ -282,6 +282,7 @@ class WebRTCClient:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             #client['webrtc'].set_property('bundle-policy', 'max-bundle') 
             client['webrtc'].set_property('stun-server', "stun-server=stun://stun4.l.google.com:19302")
+            client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
             self.pipe.add(client['webrtc'])
             
             #direction = GstWebRTC.WebRTCRTPTransceiverDirection.SENDRECV
