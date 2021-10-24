@@ -51,13 +51,16 @@ cd raspberry_ninja
 python3 publish.py --streamid YOURSTREAMIDHERE --bitrate 4000
 ```
 
-If you are using a Raspberry Pi 4, then you should be pretty good to go at this point.
+If you are using a Raspberry Pi 4, then you should be pretty good to go at this point.  1080p30 with a USB camera might struggle with higher bitrates though.
 
 If you are using a Raspberry Pi 2 or 3, you might want to limit the resolution to 720p.  You may need to do this at a code level.
 
 The hardware-encoder in the Raspberry Pi doesn't like USB-connect cameras, and only really the CSI camera, so USB cameras will use software-based encoding by default. This means if you want to use the harware encoder with a USB device, you'll need to use a Jetson or modify the code to uncomment the line that enables the hardware encoder.  This however will cause the video to look like 8-bit graphics or something.
 
 If using the CSI camera, even a raspberry Pi zero will work, although it might still be best to limit the resolution to 720p30 or 360p30 if using a raspberry pi zero w.
+
+To enable the CSI camera, you'll need to add `--rpicam` to the command-line, as the default is USB MPJEG.
+To enable RAW-mode (YUY2) via a USB Camera, instead of MJPEG, you'll need to add `--raw` to the command line, and probably limit the resolution to around 480p.
 
 ###### Please return to the parent folder for more details on how to run and configure
 
