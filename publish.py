@@ -569,7 +569,7 @@ if __name__=='__main__':
                 if not args.raw:
                     needed += ['nvjpeg']
 
-            elif args.rpi:
+            elif args.rpi and not args.rpicam:
                 needed += ['x264', 'video4linux2']
                 if not args.raw:
                     needed += ['jpeg']
@@ -587,8 +587,7 @@ if __name__=='__main__':
                     pipeline_video_input = f'videotestsrc ! video/x-raw,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
 
             elif args.rpicam:
-                # TODO
-                # needed += ['rpicamsrc']
+                needed += ['rpicamsrc']
                 args.rpi = True
                 pipeline_video_input = f'rpicamsrc bitrate={args.bitrate}000 ! video/x-h264,profile=constrained-baseline,width={args.width},height={args.height},level=3.0 ! queue'
 
@@ -627,6 +626,8 @@ if __name__=='__main__':
                 # H264
                 if args.nvidia:
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate={args.bitrate}000 ! video/x-h264,stream-format=(string)byte-stream'
+                elif args.rpicam:
+                    pass
                 elif args.rpi:
                     if args.width>1280: ## x264enc works at 1080p30, but only for static scenes with a bitrate of around 2500 or less.
                         width = 1280  ## 720p60 is more accessible with the PI4, versus 1080p30.  
