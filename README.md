@@ -17,11 +17,14 @@ If you wish to play a video back, using a Raspberry pi, try this "kiosk" mode im
 
 See the `raspberry_pi` sub-folder for instructions on installing and setting up a Raspberry Pi. [Jump there now](raspberry_pi/README.md)
 
+A Raspberry Pi works fairly well with a CSI-connected camera, but USB-based cameras currently struggle a bit with them. As a result, consider buying an Nvidia Jetson Nano 2GB instead of a Raspberry Pi 4 if looking to jump into this all. 
 ### Setup for an Nvidia Jetson
 
 Please see the `nvidia_jetson` folder for details on installation. [Jump there now](nvidia_jetson/README.md)
 
 ![image](https://user-images.githubusercontent.com/2575698/127804651-fc8ce68e-3510-4cd0-9d5a-1953c6aac0d8.png) 
+
+Nvidia Jetsons work well with USB-connected cameras and have a selection of compatible CSI-cameras well. You may need to buy WiFi adapter if it is not included.
 
 ### Setup for Linux Desktops
 
