@@ -124,24 +124,39 @@ One viewer at a time can work at the moment, although I am hoping to address thi
 
 If you run with sudo, you might get a permissions error when using audio.
 
+### Hardware options
+
+There's plenty of options for the Rasbperry Pi and Nvidia Jetson when it comes to cameras and HDMI adapters.
+
+If low-light is important to you, the Sony IMX327 and IMX462 series of sensors might appeal to you. They are generally designed for security camera applications, but with the use of an IR Filter, you can make them adequate for use a standard video cameras.
+
+https://www.uctronics.com/arducam-for-raspberry-pi-ultra-low-light-camera-1080p-hd-wide-angle-pivariety-camera-module-based-on-1-2-7inch-2mp-starvis-sensor-imx462-compatible-with-raspberry-pi-isp-and-gstreamer-plugin.html
+
+https://www.amazon.ca/VEYE-MIPI-327E-forRaspberry-Jetson-XavierNX-YT0-95-4I/dp/B08QJ1BBM1
+
+https://www.e-consystems.com/usb-cameras/sony-starvis-imx462-ultra-low-light-camera.asp
+
+You can buy IR Filters, or you can buy lenses that come with IR filters, if needed, for pretty cheap. 
+https://fulekan.aliexpress.com/store/1862644
+
+As per HDMI adapters, a 1080p30 USB 2.0 HDMI to MJPEG adapter can usually be had for $10 to $20, although there are many fake offerings out there. I've tested a $12 MACROSILICON HDMI to USB adapter, and it works pretty well, although finding a legitimate one might be tricky. 
+
 ### Note:
 
 - Installation from source is pretty slow and problematic on a rpi; using system images makes using this so much easier.
 
 - Please use the provided backup server for development and testing purposes; that wss server is `wss:/apibackup.obs.ninja:443` and for viewing: `https://backup.vdo.ninja`
 
-- Passwords must be DISABLED explicitly as this code does not yet have the required crypto logic added yet.
+- Passwords must be DISABLED explicitly as this code does not yet have the required crypto logic added yet. Things will not playback if you leave off `&password=false`
 
-- The current code does not dynamically adjust resolution to combat frame loss; rather it will just drop frames. As a result, having a high quality connection between sender and viewer is required. 
+- The current code does not dynamically adjust resolution to combat frame loss; rather it will just drop frames. As a result, having a high quality connection between sender and viewer is required. Consider lowering the bitrate or resolution if problems persist.
 
 
 ### TODO:
 
-- Add in the support for multiple viewers (moderate)
-
 - Add an option for dynamic resolution, based on packet loss indicators. (advanced)
 
-- Add the ability to record an incoming stream directly to disk (steve)
+- Add the ability to record an incoming stream directly to disk (blocked by Gstreamer not supporting this yet)
 
 - Add support for passwords and group rooms (steve)
 
