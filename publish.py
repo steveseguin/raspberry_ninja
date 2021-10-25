@@ -455,6 +455,8 @@ class WebRTCClient:
         async for message in self.conn:
             msg = json.loads(message)
             if 'from' in msg:
+                if msg['from'] == self.puuid
+                    continue;
                 UUID = msg['from']
             elif 'UUID' in msg:
                 if (self.puuid != None) and (self.puuid != msg['UUID']):
