@@ -136,7 +136,7 @@ class WebRTCClient:
                 print("data channel not setup yet")
                 return
                 
-            if client['ping'] < 4:
+            if client['ping'] < 10:  ## time out only if 30 seconds passes wihtout a pong
                 client['ping'] += 1
                 self.clients[client["UUID"]] = client
                 try:
