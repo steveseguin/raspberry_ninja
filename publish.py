@@ -137,7 +137,7 @@ class WebRTCClient:
                 print("data channel not setup yet")
                 return
                 
-            if client['ping'] < 4:
+            if client['ping'] < 10:
                 client['ping'] += 1
                 self.clients[client["UUID"]] = client
                 try:
@@ -295,6 +295,7 @@ class WebRTCClient:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             #client['webrtc'].set_property('bundle-policy', 'max-bundle') 
             client['webrtc'].set_property('stun-server', "stun-server=stun://stun4.l.google.com:19302")
+            client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
             self.pipe.add(client['webrtc'])
             
             #direction = GstWebRTC.WebRTCRTPTransceiverDirection.SENDRECV
@@ -311,6 +312,7 @@ class WebRTCClient:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             client['webrtc'].set_property('bundle-policy', 'max-bundle') 
             client['webrtc'].set_property('stun-server', "stun-server=stun://stun4.l.google.com:19302")
+            client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
             self.pipe.add(client['webrtc'])
             
             atee = self.pipe.get_by_name('audiotee')
@@ -471,6 +473,8 @@ class WebRTCClient:
         async for message in self.conn:
             msg = json.loads(message)
             if 'from' in msg:
+                if msg['from'] == self.puuid:
+                    continue
                 UUID = msg['from']
             elif 'UUID' in msg:
                 if (self.puuid != None) and (self.puuid != msg['UUID']):
