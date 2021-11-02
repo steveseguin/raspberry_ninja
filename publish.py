@@ -170,7 +170,7 @@ class WebRTCClient:
             client['send_channel'] = channel
             self.clients[client["UUID"]] = client
             if self.record:
-                msg = {"audio":False, "video":True, "UUID": client["UUID"]}
+                msg = {"audio":True, "video":True, "UUID": client["UUID"]}
                 self.sendMessage(msg)
 
         def on_data_channel_close(channel):
@@ -212,47 +212,6 @@ class WebRTCClient:
                 print(stats.to_string())
 
        
-        
-        def on_incoming_decodebin_stream(_, pad): # If daring to capture inbound video; support not assured at this point.
-            if not pad.has_current_caps():
-                print (pad, 'has no caps, ignoring')
-                return
-
-            caps = pad.get_current_caps()
-            name = caps.to_string()
-            
-            print(caps)
-            print(name)
-            
-            print("--------------")
-            if name.startswith('video'):
-                q = Gst.ElementFactory.make('queue')
-                conv = Gst.ElementFactory.make('videoconvert')
-    #            sink = Gst.ElementFactory.make('filesink', "fsink")  # record inbound stream to file
-                sink = Gst.ElementFactory.make('autovideosink')
-    #            sink.set_property("location", str(time.time())+'.mkv')
-                self.pipe.add(q)
-                self.pipe.add(conv)
-                self.pipe.add(sink)
-                self.pipe.sync_children_states()
-                pad.link(q.get_static_pad('sink'))
-                q.link(conv)
-                conv.link(sink)
-            elif name.startswith('audio'):
-                q = Gst.ElementFactory.make('queue')
-                conv = Gst.ElementFactory.make('audioconvert')
-                resample = Gst.ElementFactory.make('audioresample')
-                sink = Gst.ElementFactory.make('autoaudiosink')
-                self.pipe.add(q)
-                self.pipe.add(conv)
-                self.pipe.add(resample)
-                self.pipe.add(sink)
-                self.pipe.sync_children_states()
-                pad.link(q.get_static_pad('sink'))
-                q.link(conv)
-                conv.link(resample)
-                resample.link(sink)
-
         def on_incoming_stream( _, pad):
             print("ON INCOMING STREAM !! ************* ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ .......$$$$$$$")
             try:
@@ -262,19 +221,34 @@ class WebRTCClient:
             except Exception as E:
                 print(E)
                 return
-            queue = Gst.ElementFactory.make('queue')
-            queue.connect('pad-added', on_incoming_decodebin_stream)
-            self.pipe.add(queue)
-            queue.sync_state_with_parent()
-            client['webrtc'].link(queue)
 
             caps = pad.get_current_caps()
             name = caps.to_string()
 
-            print(caps)
             print(name)
 
-            #self.pipe.set_state(Gst.State.PLAYING)
+            if "video" in name:
+                q = Gst.ElementFactory.make('queue')
+
+                sink = Gst.ElementFactory.make('filesink', "fsink")  # record inbound stream to file
+                sink.set_property("location", str(time.time())+'.mkv')
+                sink.set_property("name", "videosink")
+                self.pipe.add(q)
+                self.pipe.add(sink)
+                self.pipe.sync_children_states()
+                pad.link(q.get_static_pad('sink'))
+                q.link(sink)
+            elif "audio" in name:
+                q = Gst.ElementFactory.make('queue')
+                sink = Gst.ElementFactory.make('filesink', "fsink")  # record inbound stream to file
+                sink.set_property("name", "audiosink")
+                sink.set_property("location", str(time.time())+'.ogg')
+                self.pipe.add(q)
+                self.pipe.add(sink)
+                self.pipe.sync_children_states()
+                pad.link(q.get_static_pad('sink'))
+                q.link(sink)
+
 
         print("creating a new webrtc bin")
         
@@ -559,7 +533,7 @@ if __name__=='__main__':
     parser.add_argument('--novideo', action='store_true', help='Disables video input.')
     parser.add_argument('--noaudio', action='store_true', help='Disables audio input.')
     parser.add_argument('--pipeline', type=str, help='A full custom pipeline')
-    parser.add_argument('--record', type=str, help='A remote stream ID to record to disk') ### Doens't work correctly yet. might be a gstreamer limitation.
+    parser.add_argument('--record',  help='Specify a stream ID to record to disk. System will not publish a stream when enabled.') ### Doens't work correctly yet. might be a gstreamer limitation.
     
     args = parser.parse_args()
      
@@ -705,8 +679,12 @@ if __name__=='__main__':
         if not check_plugins(needed) or error:
             sys.exit(1)
 
-    print("\nAvailable options include --streamid, --bitrate, and --server. Default bitrate is 4000 (kbps)")
-    print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}");
+    if args.record:
+        print(f"\nYou can publish a stream to record at: https://vdo.ninja/?password=false&push={args.record}");
+        print("\nAvailable options include --record and --server.")
+    else:
+        print("\nAvailable options include --streamid, --bitrate, and --server. Default bitrate is 4000 (kbps)")
+        print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}");
 
     c = WebRTCClient(args.streamid, args.server, args.multiviewer, args.record)
     asyncio.get_event_loop().run_until_complete(c.connect())
