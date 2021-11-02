@@ -51,8 +51,9 @@ class WebRTCClient:
         
         if client and client['send_channel']:
             try:
+                #del msg['UUID']
                 client['send_channel'].emit('send-string', msg)
-                print("sent via datachannels")
+                print("a message was sent via datachannels")
             except Exception as e:
                 loop = asyncio.new_event_loop()
                 loop.run_until_complete(self.conn.send(msg))
@@ -136,7 +137,7 @@ class WebRTCClient:
                 print("data channel not setup yet")
                 return
                 
-            if client['ping'] < 10:  ## time out only if 30 seconds passes wihtout a pong
+            if client['ping'] < 4:
                 client['ping'] += 1
                 self.clients[client["UUID"]] = client
                 try:
@@ -179,18 +180,24 @@ class WebRTCClient:
             try:
                 msg = json.loads(msg_raw)
             except:
+                print("DID NOT GET JSON")
                 return
             if 'candidates' in msg:
-                print("inbound ice")
+                print("INBOUND ICE BUNDLE - DC")
                 for ice in msg['candidates']:
-                    self.handle_sdp(ice, client["UUID"])
+                    self.handle_sdp_ice(ice, client["UUID"])
             elif 'pong' in msg: # Supported in v19 of VDO.Ninja
                 print('PONG:', msg['pong'])
                 client['ping'] = 0     
                 self.clients[client["UUID"]] = client                
             elif 'bye' in msg: ## v19 of VDO.Ninja
                 print("PEER INTENTIONALLY HUNG UP")
+            elif 'description' in msg:
+                print("INCOMING SDP - DC")
+                if msg['description']['type'] == "offer":
+                    self.handle_offer(msg['description'], client['UUID'])
             else:
+                print("MISC DC DATA")
                 return
 
         def on_stats(promise, abin, data):
@@ -207,7 +214,6 @@ class WebRTCClient:
        
         
         def on_incoming_decodebin_stream(_, pad): # If daring to capture inbound video; support not assured at this point.
-            print("ON INCOMING")
             if not pad.has_current_caps():
                 print (pad, 'has no caps, ignoring')
                 return
@@ -251,18 +257,25 @@ class WebRTCClient:
             print("ON INCOMING STREAM !! ************* ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ .......$$$$$$$")
             try:
                 if Gst.PadDirection.SRC != pad.direction:
+                    print("pad direction wrong?")
                     return
-            except:
+            except Exception as E:
+                print(E)
                 return
-            print("INCOMING STREAM")
-            
-            print("INCOMING STREAM !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
             queue = Gst.ElementFactory.make('queue')
             queue.connect('pad-added', on_incoming_decodebin_stream)
             self.pipe.add(queue)
             queue.sync_state_with_parent()
             client['webrtc'].link(queue)
-        
+
+            caps = pad.get_current_caps()
+            name = caps.to_string()
+
+            print(caps)
+            print(name)
+
+            #self.pipe.set_state(Gst.State.PLAYING)
+
         print("creating a new webrtc bin")
         
         started = True
@@ -282,7 +295,6 @@ class WebRTCClient:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             #client['webrtc'].set_property('bundle-policy', 'max-bundle') 
             client['webrtc'].set_property('stun-server', "stun-server=stun://stun4.l.google.com:19302")
-            client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
             self.pipe.add(client['webrtc'])
             
             #direction = GstWebRTC.WebRTCRTPTransceiverDirection.SENDRECV
@@ -299,7 +311,6 @@ class WebRTCClient:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             client['webrtc'].set_property('bundle-policy', 'max-bundle') 
             client['webrtc'].set_property('stun-server', "stun-server=stun://stun4.l.google.com:19302")
-            client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
             self.pipe.add(client['webrtc'])
             
             atee = self.pipe.get_by_name('audiotee')
@@ -351,13 +362,12 @@ class WebRTCClient:
         client['webrtc'].sync_state_with_parent()
         self.clients[client["UUID"]] = client
         
-    def handle_sdp(self, msg, UUID):
-        print("HANDLE SDP")
+    def handle_sdp_ice(self, msg, UUID):
         client = self.clients[UUID]
         if not client or not client['webrtc']:
             return
         if 'sdp' in msg:
-            msg = msg
+            print("INCOMING ANSWER SDP TYPE: "+msg['type'])
             assert(msg['type'] == 'answer')
             sdp = msg['sdp']
 #            print ('Received answer:\n%s' % sdp)
@@ -368,9 +378,12 @@ class WebRTCClient:
             client['webrtc'].emit('set-remote-description', answer, promise)
             promise.interrupt()
         elif 'candidate' in msg:
+            print("HANDLE ICE")
             candidate = msg['candidate']
             sdpmlineindex = msg['sdpMLineIndex']
             client['webrtc'].emit('add-ice-candidate', sdpmlineindex, candidate)
+        else:
+            print("UNEXPECTED INCOMING")
 
     def on_answer_created(self, promise, _, client):
         print("ON ANSWER CREATED")
@@ -378,22 +391,23 @@ class WebRTCClient:
         reply = promise.get_reply()
         answer = reply.get_value('answer')
         if not answer:
+            print("Not answer created?")
             return
         promise = Gst.Promise.new()
         client['webrtc'].emit('set-local-description', answer, promise)
         promise.interrupt()
         print("SEND SDP ANSWER")
-        print(answer)
         text = answer.sdp.as_text()
         msg = {'description': {'type': 'answer', 'sdp': text}, 'UUID': client['UUID'], 'session': client['session']}
         self.sendMessage(msg)
             
-    async def handle_offer(self, msg, UUID):
+    def handle_offer(self, msg, UUID):
         print("HANDLE SDP OFFER")
         client = self.clients[UUID]
         if not client or not client['webrtc']:
             return
         if 'sdp' in msg:
+            print("INCOMDING OFFER SDP TYPE: "+msg['type']);
             assert(msg['type'] == 'offer')
             sdp = msg['sdp']
             res, sdpmsg = GstSdp.SDPMessage.new()
@@ -404,6 +418,8 @@ class WebRTCClient:
             promise.interrupt()
             promise2 = Gst.Promise.new_with_change_func(self.on_answer_created, client['webrtc'], client)
             client['webrtc'].emit('create-answer', None, promise2)
+        else:
+            print("No SDP as expected")
         
     async def start_pipeline(self, UUID):
         print("START PIPE")
@@ -455,8 +471,6 @@ class WebRTCClient:
         async for message in self.conn:
             msg = json.loads(message)
             if 'from' in msg:
-                if msg['from'] == self.puuid:
-                    continue
                 UUID = msg['from']
             elif 'UUID' in msg:
                 if (self.puuid != None) and (self.puuid != msg['UUID']):
@@ -477,7 +491,7 @@ class WebRTCClient:
             if 'session' in msg:
                 if not self.clients[UUID]['session']:
                     self.clients[UUID]['session'] = msg['session']
-                else:
+                elif self.clients[UUID]['session'] != msg['session']:
                     print("sessions don't match")
 
             if 'description' in msg:
@@ -485,12 +499,12 @@ class WebRTCClient:
                 if 'type' in msg:
                     if msg['type'] == "offer":
                         await self.start_pipeline(UUID)
-                        await self.handle_offer(msg, UUID)
+                        self.handle_offer(msg, UUID)
                     elif msg['type'] == "answer":
-                        self.handle_sdp(msg, UUID)
+                        self.handle_sdp_ice(msg, UUID)
             elif 'candidates' in msg:
                 for ice in msg['candidates']:
-                    self.handle_sdp(ice, UUID)
+                    self.handle_sdp_ice(ice, UUID)
 
             elif 'request' in msg:
                 if 'offerSDP' in  msg['request']:
@@ -591,6 +605,7 @@ if __name__=='__main__':
                     pipeline_video_input = f'videotestsrc ! video/x-raw,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
 
             elif args.rpicam:
+                # TODO
                 needed += ['rpicamsrc']
                 args.rpi = True
                 pipeline_video_input = f'rpicamsrc bitrate={args.bitrate}000 ! video/x-h264,profile=constrained-baseline,width={args.width},height={args.height},level=3.0 ! queue'
