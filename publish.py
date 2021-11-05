@@ -589,7 +589,7 @@ if __name__=='__main__':
     parser.add_argument('--novideo', action='store_true', help='Disables video input.')
     parser.add_argument('--noaudio', action='store_true', help='Disables audio input.')
     parser.add_argument('--pipeline', type=str, help='A full custom pipeline')
-    parser.add_argument('--record',  help='Specify a stream ID to record to disk. System will not publish a stream when enabled.') ### Doens't work correctly yet. might be a gstreamer limitation.
+    parser.add_argument('--record',  type=str, help='Specify a stream ID to record to disk. System will not publish a stream when enabled.') ### Doens't work correctly yet. might be a gstreamer limitation.
     
     args = parser.parse_args()
      
