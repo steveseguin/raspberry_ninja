@@ -267,14 +267,16 @@ class WebRTCClient:
             
         if self.record:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
-            #client['webrtc'].set_property('bundle-policy', 'max-bundle') 
+            client['webrtc'].set_property('bundle-policy', 'max-bundle') 
             client['webrtc'].set_property('stun-server', "stun-server=stun://stun4.l.google.com:19302")
             client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
             self.pipe.add(client['webrtc'])
             
-            #direction = GstWebRTC.WebRTCRTPTransceiverDirection.SENDRECV
-            #caps = Gst.caps_from_string("application/x-rtp,media=video,encoding-name=VP8/9000,payload=96")
-            #client['webrtc'].emit('add-transceiver', direction, caps)
+            if args.h264:
+                direction = GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY
+                caps = Gst.caps_from_string("application/x-rtp,media=video,encoding-name=H264,payload=102,clock-rate=90000,packetization-mode=(string)1");
+                tcvr = client['webrtc'].emit('add-transceiver', direction, caps)
+                tcvr.set_property("codec-preferences",caps) ## supported as of around June 2021 in gstreamer for answer side?
             
             client['qv'] = None
             client['qa'] = None
