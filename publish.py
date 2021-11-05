@@ -170,7 +170,7 @@ class WebRTCClient:
             client['send_channel'] = channel
             self.clients[client["UUID"]] = client
             if self.record:
-                msg = {"audio":True, "video":True, "UUID": client["UUID"]}
+                msg = {"audio":True, "video":True, "preferVideoCodec": "h264", "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
                 self.sendMessage(msg)
 
         def on_data_channel_close(channel):
@@ -229,26 +229,79 @@ class WebRTCClient:
 
             if "video" in name:
                 q = Gst.ElementFactory.make('queue')
+                q.set_property("max-size-bytes",0)
+                q.set_property("max-size-buffers",0)
+                q.set_property("max-size-time",0)
+                q.set_property("flush-on-eos",True)
+                sink = Gst.ElementFactory.make('filesink', "videosink")  # record inbound stream to file
 
-                sink = Gst.ElementFactory.make('filesink', "fsink")  # record inbound stream to file
-                sink.set_property("location", str(time.time())+'.mkv')
-                sink.set_property("name", "videosink")
+                if "H264" in name:
+                    sink.set_property("location", str(time.time())+'.h264')
+                    depay = Gst.ElementFactory.make('rtph264depay', "depay")
+                    depay.set_property("request-keyframe", True)  
+                    p = Gst.ElementFactory.make('h264parse', "parse")
+                    caps = Gst.ElementFactory.make("capsfilter", "caps")
+                    caps.set_property('caps', Gst.Caps('video/x-h264,stream-format=byte-stream'))
+                elif "VP8" in name: ## doesn't work for some reason yet?  stalls on trying to save
+                    sink.set_property("location", str(time.time())+'.vp8')
+                    depay = Gst.ElementFactory.make('rtpvp8depay', "depay")
+                    depay.set_property("request-keyframe", True)
+                    p = None
+                    caps = Gst.ElementFactory.make("capsfilter", "caps")
+                    caps.set_property('caps', Gst.Caps("video/x-vp8"))
+                else:
+                    print("UNKNOWN FORMAT - saving as raw RTP stream")
+                    sink.set_property("location", str(time.time())+'.unknown')
+                    depay = Gst.ElementFactory.make('queue', "depay")
+                    p = None
+                    caps = Gst.ElementFactory.make("queue", "caps")
+
+
+                self.pipe.add(caps)
                 self.pipe.add(q)
+                self.pipe.add(depay)
+                if p:
+                    self.pipe.add(p)
                 self.pipe.add(sink)
                 self.pipe.sync_children_states()
+
                 pad.link(q.get_static_pad('sink'))
-                q.link(sink)
+                q.link(depay)
+                if p:
+                    depay.link(p)
+                    p.link(caps)
+                else:
+                    depay.link(caps)
+                caps.link(sink)
             elif "audio" in name:
                 q = Gst.ElementFactory.make('queue')
-                sink = Gst.ElementFactory.make('filesink', "fsink")  # record inbound stream to file
-                sink.set_property("name", "audiosink")
-                sink.set_property("location", str(time.time())+'.ogg')
-                self.pipe.add(q)
-                self.pipe.add(sink)
-                self.pipe.sync_children_states()
-                pad.link(q.get_static_pad('sink'))
-                q.link(sink)
+                q.set_property("max-size-bytes",0)
+                q.set_property("max-size-buffers",0)
+                q.set_property("max-size-time",0)
+                q.set_property("flush-on-eos",True)
 
+                caps = Gst.ElementFactory.make("capsfilter", "audiocaps")
+                caps.set_property('caps', Gst.Caps('audio/x-opus'))
+
+                decode = Gst.ElementFactory.make("opusdec", "opusdec")
+
+                sink = Gst.ElementFactory.make('filesink', "audiosink")  # record inbound stream to file
+                sink.set_property("location", str(time.time())+'.wav')
+
+                depay = Gst.ElementFactory.make('rtpopusdepay', "audiodepay")
+
+                self.pipe.add(q)
+                self.pipe.add(depay)
+                self.pipe.add(decode)
+                self.pipe.add(sink)
+                self.pipe.add(caps)
+                self.pipe.sync_children_states()
+
+                pad.link(q.get_static_pad('sink'))
+                q.link(depay)
+                depay.link(caps)
+                caps.link(decode)
+                decode.link(sink)
 
         print("creating a new webrtc bin")
         
@@ -271,13 +324,13 @@ class WebRTCClient:
             client['webrtc'].set_property('stun-server', "stun-server=stun://stun4.l.google.com:19302")
             client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
             self.pipe.add(client['webrtc'])
-            
+
             if args.h264:
                 direction = GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY
                 caps = Gst.caps_from_string("application/x-rtp,media=video,encoding-name=H264,payload=102,clock-rate=90000,packetization-mode=(string)1");
                 tcvr = client['webrtc'].emit('add-transceiver', direction, caps)
                 tcvr.set_property("codec-preferences",caps) ## supported as of around June 2021 in gstreamer for answer side?
-            
+
             client['qv'] = None
             client['qa'] = None
         elif not self.multiviewer:
@@ -376,6 +429,7 @@ class WebRTCClient:
         promise.interrupt()
         print("SEND SDP ANSWER")
         text = answer.sdp.as_text()
+        print(text)
         msg = {'description': {'type': 'answer', 'sdp': text}, 'UUID': client['UUID'], 'session': client['session']}
         self.sendMessage(msg)
             
@@ -535,7 +589,7 @@ if __name__=='__main__':
     parser.add_argument('--novideo', action='store_true', help='Disables video input.')
     parser.add_argument('--noaudio', action='store_true', help='Disables audio input.')
     parser.add_argument('--pipeline', type=str, help='A full custom pipeline')
-    parser.add_argument('--record', type=str, help='Specify a stream ID to record to disk. System will not publish a stream when enabled.') ### Doens't work correctly yet. might be a gstreamer limitation.
+    parser.add_argument('--record',  help='Specify a stream ID to record to disk. System will not publish a stream when enabled.') ### Doens't work correctly yet. might be a gstreamer limitation.
     
     args = parser.parse_args()
      
@@ -670,6 +724,7 @@ if __name__=='__main__':
                 pipeline_audio_input += ' ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! queue ! sendrecv.'
 
         if args.record:
+            args.h264 = True
             pass
         elif not args.multiviewer:
             PIPELINE_DESC = f'webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input}'
