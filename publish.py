@@ -170,7 +170,7 @@ class WebRTCClient:
             client['send_channel'] = channel
             self.clients[client["UUID"]] = client
             if self.record:
-                msg = {"audio":True, "video":True, "preferVideoCodec": "h264", "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
+                msg = {"audio":True, "video":True, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
                 self.sendMessage(msg)
 
         def on_data_channel_close(channel):
