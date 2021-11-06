@@ -1,6 +1,8 @@
 # <img src="https://user-images.githubusercontent.com/2575698/107161314-f6523f80-6969-11eb-9e9b-9135554b87b5.png"  width="50" />  Raspberry Ninja
 Turn your Raspberry Pi or Nvidia Jetson into a ninja-cam with hardware-acceleration enabled! This lets you publish live streaming video and audio directly to your web browser or OBS instance using VDO.Ninja.  Achieve very low streaming latency over the Internet or a LAN; all for free.
 
+It also has the ability to record remote VDO.Ninja streams to disk, without needing to transcode, and can broadcast a lwo-latency video stream to multiple viewers at  time.
+
 ### Preface
 
 The core concepts and code used in this project can be reused for other projects; most Linux systems, and a large variety of embedded systems; potentially even smartphones. There's a focus of supporting Raspberry Pis and Nvidia Jetson systems, which includes offering pre-built images and install scripts. Other Linux system users should still be able to use the code, but setup support will be limited.
