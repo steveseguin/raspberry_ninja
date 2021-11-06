@@ -79,6 +79,7 @@ optional arguments:
   --novideo             Disables video input.
   --noaudio             Disables audio input.
   --pipeline PIPELINE   A full custom pipeline
+  --record STREAMID     Specify a stream ID to record; this will disable publishing mode
 
 ```
 
