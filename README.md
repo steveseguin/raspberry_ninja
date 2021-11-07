@@ -159,7 +159,7 @@ As per HDMI adapters, a 1080p30 USB 2.0 HDMI to MJPEG adapter can usually be had
 
 - Add an option for dynamic resolution, based on packet loss indicators. (advanced)
 
-- Add the ability to record an incoming stream directly to disk (blocked by Gstreamer not supporting this yet)
+- Fix VP8/VP9 recordings and add muxing to the H264 recordings (moderate)
 
 - Add support for passwords and group rooms (steve)
 
