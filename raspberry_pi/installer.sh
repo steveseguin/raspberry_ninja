@@ -40,6 +40,7 @@ sudo apt-get install -y libselinux-dev
 sudo apt-get install -y libmount-dev
 sudo apt-get install libelf-dev -y
 sudo apt-get install libdbus-1-dev -y
+sudo apt-get install woof -y
 
 
 # Get the required libraries
