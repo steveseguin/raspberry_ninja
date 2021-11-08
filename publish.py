@@ -286,7 +286,7 @@ class WebRTCClient:
                 decode = Gst.ElementFactory.make("opusdec", "opusdec")
 
                 sink = Gst.ElementFactory.make('filesink', "audiosink")  # record inbound stream to file
-                sink.set_property("location", str(time.time())+'.wav')
+                sink.set_property("location", str(time.time())+'.pcm')
 
                 depay = Gst.ElementFactory.make('rtpopusdepay', "audiodepay")
 
