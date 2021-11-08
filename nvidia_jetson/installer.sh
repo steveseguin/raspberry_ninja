@@ -42,7 +42,8 @@ sudo apt-get install ccache curl bison flex \
 	libjpeg8-dev libgif-dev pkg-config zlib1g-dev libmp3lame-dev \
 	libmpeg2-4-dev libopencore-amrnb-dev libopencore-amrwb-dev libcurl4-openssl-dev \
 	libsidplay1-dev libx264-dev libusb-1.0 pulseaudio libpulse-dev -y
-	
+
+sudo apt-get install woof -y
 sudo apt-get install libatk1.0-dev -y
 sudo apt-get install -y libgdk-pixbuf2.0-dev
 sudo apt-get install libffi6 libffi-dev -y
