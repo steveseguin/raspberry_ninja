@@ -161,9 +161,17 @@ As per HDMI adapters, a 1080p30 USB 2.0 HDMI to MJPEG adapter can usually be had
 
 - Fix VP8/VP9 recordings and add muxing to the H264 recordings (moderate)
 
+- Add a jitter buffer to the recording mode (moderate)
+
 - Add support for passwords and group rooms (steve)
 
 - Make easier to use for novice users; perhaps adding a local web-interface or config file accessible via an SD card reader via Windows. These options could then allow for setting of wifi passwords, device, settings, stream IDs, etc, without needing to SSH in or using nano/vim. (moderate)
+
+- Add a QR-code reader mode to the app, as to setup Stream ID, bitrate, and WiFi passwords using a little website tool. (moderate)
+
+- Enable the rpi-camera by default in the rpi image. forgot to do that. (steve)
+
+- Get the Hardware encoder to work via USB on a RPI -- there's some issue currently with the gstreamerr and pi encoder currently. (?)
 
 ### Further Reading:
 
