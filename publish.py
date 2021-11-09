@@ -642,7 +642,7 @@ if __name__=='__main__':
                 # TODO
                 needed += ['rpicamsrc']
                 args.rpi = True
-                pipeline_video_input = f'rpicamsrc bitrate={args.bitrate}000 ! video/x-h264,profile=constrained-baseline,width={args.width},height={args.height},level=3.0 ! queue'
+                pipeline_video_input = f'rpicamsrc bitrate={args.bitrate}000 ! video/x-h264,profile=constrained-baseline,width={args.width},height={args.height},framerate=(fraction){args.framerate}/1,level=3.0 ! queue'
 
             elif args.nvidiacsi:
                 # TODO:
