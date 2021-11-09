@@ -170,6 +170,7 @@ As per HDMI adapters, a 1080p30 USB 2.0 HDMI to MJPEG adapter can usually be had
 - Add a QR-code reader mode to the app, as to setup Stream ID, bitrate, and WiFi passwords using a little website tool. (moderate)
 
 - Enable the rpi-camera by default in the rpi image. forgot to do that. (steve)
+-- Add drivers for Arducam as default in installation build script and include in image
 
 - Get the Hardware encoder to work via USB on a RPI -- there's some issue currently with the gstreamerr and pi encoder currently. (?)
 
