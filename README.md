@@ -173,6 +173,8 @@ As per HDMI adapters, a 1080p30 USB 2.0 HDMI to MJPEG adapter can usually be had
 
 - Get the Hardware encoder to work via USB on a RPI -- there's some issue currently with the gstreamerr and pi encoder currently. (?)
 
+- Have gstreamer/python automatically detect the input devices, settings, system, and configure things automatically.  Allowing for burn, plug, and boot, without needing to log in via SSH at all.
+
 ### Further Reading:
 
 Details on WebRTC mechanics, Gstreamer, debugging issues, and discussion of Hardware encoders:
