@@ -161,6 +161,8 @@ As per HDMI adapters, a 1080p30 USB 2.0 HDMI to MJPEG adapter can usually be had
 
 - Fix VP8/VP9 recordings and add muxing to the H264 recordings (moderate)
 
+- Have an option to "playback" an incoming stream full-screened on a pi or jetson, to use as an input to an ATEM mixer.
+
 - Add a jitter buffer to the recording mode (moderate)
 
 - Add support for passwords and group rooms (steve)
