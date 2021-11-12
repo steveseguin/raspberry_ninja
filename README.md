@@ -167,7 +167,7 @@ Please share with the community what works well for you and what did not.
 
 - Installation from source is pretty slow and problematic on a rpi; using system images makes using this so much easier.
 
-- Please use the provided backup server for development and testing purposes; that wss server is `wss:/apibackup.obs.ninja:443` and for viewing: `https://backup.vdo.ninja`
+- Please use the provided backup server for development and testing purposes; that wss server is `wss://apibackup.obs.ninja:443` and for viewing: `https://backup.vdo.ninja`
 
 - Passwords must be DISABLED explicitly as this code does not yet have the required crypto logic added yet. Things will not playback if you leave off `&password=false`
 
