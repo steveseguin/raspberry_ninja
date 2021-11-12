@@ -19,7 +19,8 @@ If you wish to play a video back, using a Raspberry pi, try this "kiosk" mode im
 
 See the `raspberry_pi` sub-folder for instructions on installing and setting up a Raspberry Pi. [Jump there now](raspberry_pi/README.md)
 
-A Raspberry Pi works fairly well with a CSI-connected camera, but USB-based cameras currently struggle a bit with them. As a result, consider buying an Nvidia Jetson Nano 2GB instead of a Raspberry Pi 4 if looking to jump into this all. 
+A Raspberry Pi works fairly well with a CSI-connected camera, but USB-based cameras currently struggle a bit with them. As a result, consider buying an Nvidia Jetson Nano 2GB instead of a Raspberry Pi if looking to jump into this all. Also, the RPI Zero W 1 and RPi 3 both don't have the greatest WiFi built-in, while the Raspberry Pi Zero 2 seems to work rather well. Without good connectivity, you may find yourself facing quite a few frame-drops.
+
 ### Setup for an Nvidia Jetson
 
 Please see the `nvidia_jetson` folder for details on installation. [Jump there now](nvidia_jetson/README.md)
@@ -129,20 +130,26 @@ If you run with sudo, you might get a permissions error when using audio.
 
 ### Hardware options
 
-There's plenty of options for the Rasbperry Pi and Nvidia Jetson when it comes to cameras and HDMI adapters.
+There's plenty of options for the Rasbperry Pi and Nvidia Jetson when it comes to cameras and HDMI adapters. The easiest option for a Raspberry Pi is to use one of the official Raspberry Pi camera. These are normally just plug an play on both platforms and well supported.
 
-If low-light is important to you, the Sony IMX327 and IMX462 series of sensors might appeal to you. They are generally designed for security camera applications, but with the use of an IR Filter, you can make them adequate for use a standard video cameras.
+If low-light is important to you, the Sony IMX327 and IMX462 series of sensors might appeal to you. They are generally designed for security camera applications, but with the use of an IR Filter, you can make them adequate for use a standard video cameras. These options may require additional gstreamer and driver work to have work however.
 
-https://www.uctronics.com/arducam-for-raspberry-pi-ultra-low-light-camera-1080p-hd-wide-angle-pivariety-camera-module-based-on-1-2-7inch-2mp-starvis-sensor-imx462-compatible-with-raspberry-pi-isp-and-gstreamer-plugin.html
+Links for such low-light cameras: 
 
-https://www.amazon.ca/VEYE-MIPI-327E-forRaspberry-Jetson-XavierNX-YT0-95-4I/dp/B08QJ1BBM1
+https://www.uctronics.com/arducam-for-raspberry-pi-ultra-low-light-camera-1080p-hd-wide-angle-pivariety-camera-module-based-on-1-2-7inch-2mp-starvis-sensor-imx462-compatible-with-raspberry-pi-isp-and-gstreamer-plugin.html (requires some extra driver install work currently - will try to support in the future natively)
 
-https://www.e-consystems.com/usb-cameras/sony-starvis-imx462-ultra-low-light-camera.asp
+https://www.amazon.ca/VEYE-MIPI-327E-forRaspberry-Jetson-XavierNX-YT0-95-4I/dp/B08QJ1BBM1 (requires some extra driver install work)
 
-You can buy IR Filters, or you can buy lenses that come with IR filters, if needed, for pretty cheap. 
+https://www.e-consystems.com/usb-cameras/sony-starvis-imx462-ultra-low-light-camera.asp  (USB-based, so might be best suitable for a Jetson at the moment)
+
+You can buy IR Filters, or you can buy lenses that come with IR filters, if needed, for pretty cheap. Many are designed for security applications, so be aware.
 https://fulekan.aliexpress.com/store/1862644
 
-As per HDMI adapters, a 1080p30 USB 2.0 HDMI to MJPEG adapter can usually be had for $10 to $20, although there are many fake offerings out there. I've tested a $12 MACROSILICON HDMI to USB adapter, and it works pretty well, although finding a legitimate one might be tricky. 
+As per HDMI adapters, a 1080p30 USB 2.0 HDMI to MJPEG adapter can usually be had for $10 to $20, although there are many fake offerings out there. I've tested a $12 MACROSILICON HDMI to USB adapter, and it works pretty well with the Jetson, although finding a legitimate one might be tricky. 
+
+There's also an option for an HDMI to CSI adapter for Raspberry Pis, https://www.amazon.ca/Geekworm-Raspberry-Supports-1080p25fps-Compatible/dp/B0899L6ZXZ/ , although the frame rate of this option is limited to 1080p25 and its more expensive than the HDMI to USB alternative.
+
+Please share with the community what works well for you and what did not. 
 
 ### Note:
 
