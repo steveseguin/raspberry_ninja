@@ -39,7 +39,7 @@ Python3 is also required, along with `websockets`.  If you have PIP installed, `
 
 ### Usage
 
-You should be able to run the script simply with `python3 publish.py`, however lots of options are available for customizing as desired.
+You should be able to run the publshing script simply with `python3 publish.py`, however lots of options are available for customizing as desired.
 
 ```
 $ python3 publish.py
@@ -128,11 +128,21 @@ One viewer at a time can work at the moment, although I am hoping to address thi
 
 If you run with sudo, you might get a permissions error when using audio.
 
+### Auto-starting the script on boot
+
+A guide on how to setup a RPI or how to configure those system to auto-publish on boot is soon to come. For now, there are plenty of guides online to get you started.
+
 ### Hardware options
 
-There's plenty of options for the Rasbperry Pi and Nvidia Jetson when it comes to cameras and HDMI adapters. The easiest option for a Raspberry Pi is to use one of the official Raspberry Pi camera. These are normally just plug an play on both platforms and well supported.
+Of the Raspberry Pi devices, the Raspberry Pi 4 or the Raspberry Pi Zero 2 are so far the best options on this front, depending on your needs. Any of the Nvidia Jetson devices should work fine, but only the Jetson Nano 2GB, 4GB, and NX have been tested and validated. If you wish to use other Jetson devices, you'll need to setup and install Gstreamer 1.19 yourself on those systems, as no pre-built image will be provided at this time. (Unless someone wishes to donate the hardware that is)  Any other Linux system or SBC embedded system is on the user to setup and install at this point, but they should closely follow the same steps that the Nvidia Jetson uses.
 
-If low-light is important to you, the Sony IMX327 and IMX462 series of sensors might appeal to you. They are generally designed for security camera applications, but with the use of an IR Filter, you can make them adequate for use a standard video cameras. These options may require additional gstreamer and driver work to have work however.
+#### Camera options
+
+There's plenty of options for the Rasbperry Pi and Nvidia Jetson when it comes to cameras and HDMI adapters. The easiest option for a Raspberry Pi is to use one of the official Raspberry Pi camera. These are normally just plug an play on both platforms and well supported. 
+
+USB cameras are options, but currently with Raspberry Pi devices these are only supported up to around 720p30. USB 3.0 devices are even less supported, as you need to ensure the Raspberry Pi you are using supports USB 3.0; for example, a Camlink will not work on a Raspberry Pi 3.
+
+If low-light is important to you, the Sony IMX327 and IMX462 series of sensors might appeal to you. They are generally designed for security camera applications, but with the use of an IR Filter, you can make them adequate for use a standard video cameras. These options may require additional gstreamer and driver work to have work however, so they are for more advanced-users at this time.
 
 Links for such low-light cameras: 
 
@@ -140,14 +150,16 @@ https://www.uctronics.com/arducam-for-raspberry-pi-ultra-low-light-camera-1080p-
 
 https://www.amazon.ca/VEYE-MIPI-327E-forRaspberry-Jetson-XavierNX-YT0-95-4I/dp/B08QJ1BBM1 (requires some extra driver install work)
 
-https://www.e-consystems.com/usb-cameras/sony-starvis-imx462-ultra-low-light-camera.asp  (USB-based, so might be best suitable for a Jetson at the moment)
+https://www.e-consystems.com/usb-cameras/sony-starvis-imx462-ultra-low-light-camera.asp  (USB-based, so might be best suitable for a Jetson at the moment, and may not require complex drivers)
 
 You can buy IR Filters, or you can buy lenses that come with IR filters, if needed, for pretty cheap. Many are designed for security applications, so be aware.
 https://fulekan.aliexpress.com/store/1862644
 
-As per HDMI adapters, a 1080p30 USB 2.0 HDMI to MJPEG adapter can usually be had for $10 to $20, although there are many fake offerings out there. I've tested a $12 MACROSILICON HDMI to USB adapter, and it works pretty well with the Jetson, although finding a legitimate one might be tricky. 
+#### HDMI options
 
-There's also an option for an HDMI to CSI adapter for Raspberry Pis, https://www.amazon.ca/Geekworm-Raspberry-Supports-1080p25fps-Compatible/dp/B0899L6ZXZ/ , although the frame rate of this option is limited to 1080p25 and its more expensive than the HDMI to USB alternative.
+As per HDMI adapters, a 1080p30 USB 2.0 HDMI to MJPEG adapter can usually be had for $10 to $20, although there are many fake offerings out there. I've tested a $12 MACROSILICON HDMI to USB adapter, and it works pretty well with the Jetson, although finding a legitimate one might be tricky. On a Raspberry Pi, I can only get these USB-based HDMI adapters to work okay up to around 720p30 resolution, due to software glitch in the Raspberry Pi hardware encoding drivers used by Gstreamer.
+
+There's another option though, and that is to use an HDMI to CSI adapter for Raspberry Pis, https://www.amazon.ca/Geekworm-Raspberry-Supports-1080p25fps-Compatible/dp/B0899L6ZXZ/ , although the frame rate of this option is limited to 1080p25 and its more expensive than the HDMI to USB alternative. I currently have not validated if this option works and do not know if additional drivers are required to make it work.
 
 Please share with the community what works well for you and what did not. 
 
