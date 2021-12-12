@@ -76,7 +76,7 @@ cd raspberry_ninja
 cd raspberry_pi
 sudo vi raspininja.service
 ```
-To use VIM, press 'i' to enter text edit mode.  `:wq` will let you save and exit.
+To use VIM, press `i` to enter text edit mode.  `:wq` will let you save and exit.
 
 Once done editing the file, you can set it up to auto launch on load and to start running immediately.
 ```
