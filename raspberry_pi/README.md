@@ -65,3 +65,30 @@ To enable RAW-mode (YUY2) via a USB Camera, instead of MJPEG, you'll need to add
 
 ###### Please return to the parent folder for more details on how to run and configure
 
+## Setting up auto-boot
+
+There is a service file included in the raspberry_pi folder that sets the raspberry pi up to auto-boot.  You will need to modify it a tiny bit with the settings to launch by default, such as specifying the stream ID and camera settings, such as --rpicam or --rpi or --hdmi, etc.
+
+To edit the file, you can use VIM.
+```
+cd ~
+cd raspberry_ninja
+cd raspberry_pi
+sudo vi raspininja.service
+```
+To use VIM, press 'i' to enter text edit mode.  `:wq` will let you save and exit.
+
+Once done editing the file, you can set it up to auto launch on load and to start running immediately.
+```
+sudo cp raspininja.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable raspininja
+sudo systemctl restart raspininja
+```
+To check if there were any errors, you can run the status command:
+```
+sudo systemctl status raspininja
+```
+
+Things should now auto-boot on system boot, and restart if things crash.  
+
