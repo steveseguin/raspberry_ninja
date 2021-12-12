@@ -1,0 +1,14 @@
+[Unit]
+Description=Raspberry Ninja as a system service
+After=multi-user.target
+
+[Service]
+User=root
+Group=root
+Type=idle
+Restart=on-abnormal
+RestartSec=5s
+ExecStart=/usr/bin/python3 /home/pi/raspberry_ninja/publish.py --rpi 
+
+[Install]
+WantedBy=multi-user.target
