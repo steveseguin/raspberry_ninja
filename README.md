@@ -21,6 +21,9 @@ See the `raspberry_pi` sub-folder for instructions on installing and setting up 
 
 A Raspberry Pi works fairly well with a CSI-connected camera, but USB-based cameras currently struggle a bit with them. As a result, consider buying an Nvidia Jetson Nano 2GB instead of a Raspberry Pi if looking to jump into this all. Also, the RPI Zero W 1 and RPi 3 both don't have the greatest WiFi built-in, while the Raspberry Pi Zero 2 seems to work rather well. Without good connectivity, you may find yourself facing quite a few frame-drops.
 
+![image](https://user-images.githubusercontent.com/2575698/146033825-38107de7-9cb7-47dc-ba1a-2c286116de0b.png)
+
+
 ### Setup for an Nvidia Jetson
 
 Please see the `nvidia_jetson` folder for details on installation. [Jump there now](nvidia_jetson/README.md)
