@@ -8,7 +8,7 @@ Group=pi
 Type=idle
 Restart=always
 RestartSec=5s
-ExecStart=/usr/bin/python3 /home/pi/raspberry_ninja/publish.py --rpi --streamid xxxx123abc
+ExecStart=/usr/bin/python3 /home/pi/raspberry_ninja/publish.py --rpi 
 
 [Install]
 WantedBy=multi-user.target
