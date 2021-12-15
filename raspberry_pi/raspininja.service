@@ -1,13 +1,12 @@
 [Unit]
 Description=Raspberry Ninja as a system service
-After=multi-user.target
+After=network-online.target
+Requires=network-online.target
 
 [Service]
 User=pi
 Group=pi
 Type=idle
-After=network-online.target
-Requires=network-online.target
 Restart=always
 RestartSec=5s
 ExecStart=/usr/bin/python3 /home/pi/raspberry_ninja/publish.py --test
