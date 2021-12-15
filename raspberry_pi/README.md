@@ -92,3 +92,45 @@ sudo systemctl status raspininja
 
 Things should now auto-boot on system boot, and restart if things crash.  
 
+
+## Optimizing the Pi to reduce packet loss
+
+Before: ![image](https://user-images.githubusercontent.com/2575698/146271521-ed9f8742-d584-4214-938c-687388b658bf.png)
+
+After: ![image](https://user-images.githubusercontent.com/2575698/146271560-852984cb-6cd0-47d2-a03d-c2e78358652a.png)
+
+The Raspberry Pi doesn't have the great WiFi adapter, and even the Ethernet has some issues.  By applying some optimizations to the Raspbian OS, you can increase stability, resulting in less packet loss, and in turn, a more stable frame rate.
+
+Feel free to tinker with the settings or offer new tweaks, although the following changes resulted in a rather sharp improvement. 
+
+On my pi4, with active cooling, I locked the CPU cores at a fixed 1500mhz.
+```
+arm_freq=1500
+force_turbo=1
+```
+I did this by adding the above to `/boot/config.txt`
+
+You'll need to adjust the arm_freq to match what your device can handle; 700 and up, depending. A stable CPU seems to help, and a bit more CPU overhead can help too. 
+
+Next,  added the following to this file:  `/boot/cmdline.txt`
+```
+isolcpus=0
+```
+This removes core 0 from user access, and allows it to be dedicated as a core for the wifi stack. Or so that's my understanding.  This won't work with a single-core raspberry Pi I guess, and may hinder h264-software based encoding options, but it did make an improvement (x264 vs rpicam)
+
+I also added a bunch of buffers to the gstreamer-python code; some did more harm then good, but overall no great impact.  I left them in to just make me feel better, but you can set limits on them if there are problems. These should be updated on Github now, so be sure to pull the most recent code.
+
+Also, if using ethernet, to avoid packet loss on the Pi4 when connected to gigabit, run the following: 
+```
+sudo ethtool -s eth0 speed 100 duplex full autoneg off
+```
+You may want to it autorun on load, just to be safe, but if you're not using Ethernet, it may not be needed.
+
+Finally, just to add some buffering onto the Viewer side as well, in Chrome (edge/electron), I added &buffer=300 to the view link.  The VDO.Ninja player has like 40 to 70ms already added, but increasing it to 300 or so will help pre-empt any jitter delays, avoiding sudden frame loss. This is not required, but seems to help a bit at the cost of added latency.  You may want to increase it upwards of 1000ms to see if it helps further.
+
+If using the buffer option, the view link might look like this `https://vdo.ninja/?password=false&view=9324925&buffer=300`
+
+The buffer command is compatible with OBS v27.2 on PC and newer, but not earlier versions on PC.
+
+
+
