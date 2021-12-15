@@ -564,8 +564,10 @@ WSS="wss://wss.vdo.ninja:443"
 
 if __name__=='__main__':
     Gst.init(None)
-    # Gst.debug_set_active(True)
-    # Gst.debug_set_default_threshold(3)
+
+    Gst.debug_set_active(False)  ## disable logging to help reduce CPU load?
+    Gst.debug_set_default_threshold(0)
+
     error = False
     parser = argparse.ArgumentParser()
     parser.add_argument('--streamid', type=str, default=str(random.randint(1000000,9999999)), help='Stream ID of the peer to connect to')
@@ -639,10 +641,9 @@ if __name__=='__main__':
                     pipeline_video_input = f'videotestsrc ! video/x-raw,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
 
             elif args.rpicam:
-                # TODO
                 needed += ['rpicamsrc']
                 args.rpi = True
-                pipeline_video_input = f'rpicamsrc bitrate={args.bitrate}000 ! video/x-h264,profile=constrained-baseline,width={args.width},height={args.height},framerate=(fraction){args.framerate}/1,level=3.0 ! queue'
+                pipeline_video_input = f'rpicamsrc bitrate={args.bitrate}000 ! video/x-h264,profile=constrained-baseline,width={args.width},height={args.height},framerate=(fraction){args.framerate}/1,level=3.0 ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 '
 
             elif args.nvidiacsi:
                 # TODO:
@@ -694,9 +695,9 @@ if __name__=='__main__':
                     pipeline_video_input += f' ! videoconvert ! x264enc bitrate={args.bitrate} speed-preset=ultrafast tune=zerolatency key-int-max=15 ! video/x-h264,profile=constrained-baseline'
                     
                 if args.multiviewer:
-                    pipeline_video_input += ' ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! tee name=videotee '
+                    pipeline_video_input += ' ! h264parse config-interval=-1 ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! tee name=videotee '
                 else:
-                    pipeline_video_input += ' ! h264parse ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! queue ! sendrecv.'
+                    pipeline_video_input += ' ! h264parse config-interval=-1 ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000  ! sendrecv.'
 
             else:
                 # VP8
