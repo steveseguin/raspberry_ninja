@@ -99,18 +99,18 @@ Before: ![image](https://user-images.githubusercontent.com/2575698/146271521-ed9
 
 After: ![image](https://user-images.githubusercontent.com/2575698/146271560-852984cb-6cd0-47d2-a03d-c2e78358652a.png)
 
-The Raspberry Pi doesn't have the great WiFi adapter, and even the Ethernet has some issues.  By applying some optimizations to the Raspbian OS, you can increase stability, resulting in less packet loss, and in turn, a more stable frame rate.
+The Raspberry Pi doesn't have the greatest WiFi adapter, and even the Ethernet has some issues, so it needs some added love to keep up.  By applying some optimizations to the Raspbian OS, you can increase stability, resulting in less packet loss, and in turn, a more stable frame rate.
 
-Feel free to tinker with the settings or offer new tweaks, although the following changes resulted in a rather sharp improvement. 
+The following changes resulted in a rather sharp improvement in frame rate stability; if you find more tweaks, please submit them! :D
 
-On my pi4, with active cooling, I locked the CPU cores at a fixed 1500mhz.
+Okay, the first optimization was with my pi4 that has active cooling; I locked the CPU cores at a fixed 1500mhz.
 ```
 arm_freq=1500
 force_turbo=1
 ```
-I did this by adding the above to `/boot/config.txt`
+To do that, I added the above to `/boot/config.txt`
 
-You'll need to adjust the arm_freq to match what your device can handle; 700 and up, depending. A stable CPU seems to help, and a bit more CPU overhead can help too. 
+You'll need to adjust the arm_freq to match what your device can handle; 700 and up, depending on model and cooling. A stable CPU seems to help, and a bit more CPU overhead can help too. 
 
 Next,  added the following to this file:  `/boot/cmdline.txt`
 ```
