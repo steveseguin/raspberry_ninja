@@ -5,11 +5,7 @@
 
 It is recommended to use the provided raspberry pi image, as the install process is otherwise quite challenging.
 
-If using a Raspberry Pi Zero, using a CSI Raspicam is probably the best bet, as using a USB-based camera will likely not perform that well. Any of the Raspberry Pis will use the hardware-encoder when a CSI camera, although you need to specify via command line arguments to use the CSI camera.
-
-If using a USB 2.0 camera (default mode), an overclocked Raspberry Pi 4 or 400 is recommend to achieve 1080p30.. A Raspberry Pi 2 or 3 with a USB camera can be set to do 360p60, 480p, or 720p30. The default target resolution is currently 1080p30. The USB-based camera pipeline will be partially hardware-accelerated, doing some of the encoding at a software-level, but this is for the best if you have a Raspberry Pi 4 or faster to work with.
-
-Using a CSI-based camera with a Raspberry Pi will currently give better results than a USB-based one.
+If using a Raspberry Pi Zero, using a CSI Raspivid-supported camera is probably the best bet, as using a USB-based camera will likely not perform that well. 
 
 #### Installing from the provided image
 
@@ -91,6 +87,17 @@ sudo systemctl status raspininja
 ```
 
 Things should now auto-boot on system boot, and restart if things crash.  
+
+
+## Details about cameras and performance
+
+If using a USB 2.0 camera (default mode), an overclocked Raspberry Pi 4 or 400 is recommend to achieve 1080p30, but 720p30 is more typical.  A Raspberry Pi 2 or 3 with a USB camera can be set to do 360p60, 480p, or 720p30. The default target resolution is currently 1080p30. The USB-based camera pipeline will be partially hardware-accelerated, doing some of the encoding at a software-level. It might be possible to get full hardware-encoding to work with USB devices, but there seems to be some upstream bugs blocking that.
+
+You may need to account for color profiles and more when setting up a USB camera; raw mode or Mjpeg mode are common, and Mjpeg I think is the default set currently.
+
+Using a CSI-based camera with a Raspberry Pi will currently give better results than a USB-based one; or at least. The official Raspberry Pi cameras can work with `--rpicam`, and the results are quite good. Some other knock off cameras can still be hardware encoded, but may need to be specified with `--v4l2`, which doesn't work quite as well as the official source element. Still, the results are good up to 1080p30.
+
+There are some non-supported cameras that use the CSI port, like the Arducam Sony IMX327 sensor-based cameras, as those may not have any proper driver support added. You can get those to work if they offer Gstreamer-based drivers though, however installing them may prove quite challenging. I'll provide pre-built images that support such devices when I have them working.
 
 
 ## Optimizing the Pi to reduce packet loss
