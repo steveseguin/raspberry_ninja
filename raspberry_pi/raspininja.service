@@ -9,6 +9,8 @@ Group=pi
 Type=idle
 Restart=always
 RestartSec=5s
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStartPre=vcgencmd get_camera
 ExecStart=/usr/bin/python3 /home/pi/raspberry_ninja/publish.py --test
 
 [Install]
