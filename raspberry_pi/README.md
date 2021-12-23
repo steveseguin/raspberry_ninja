@@ -110,14 +110,13 @@ The Raspberry Pi doesn't have the greatest WiFi adapter, and even the Ethernet h
 
 The following changes resulted in a rather sharp improvement in frame rate stability; if you find more tweaks, please submit them! :D
 
-Okay, the first optimization was with my pi4 that has active cooling; I locked the CPU cores at a fixed 1500mhz.
+Okay, the first optimization was with my pi4 that has active cooling; I locked the CPU cores into performance mode with the force_turbo flag.
 ```
-arm_freq=1500
 force_turbo=1
 ```
 To do that, I added the above to `/boot/config.txt`
 
-You'll need to adjust the arm_freq to match what your device can handle; 700 and up, depending on model and cooling. A stable CPU seems to help, and a bit more CPU overhead can help too. 
+You'll might need to adjust your arm_freq to match what your device can handle also, depending on model and cooling. A stable CPU seems to help.
 
 Next,  added the following to this file:  `/boot/cmdline.txt`
 ```
