@@ -17,13 +17,15 @@ gi.require_version('GstSdp', '1.0')
 from gi.repository import GstSdp
                                
 class WebRTCClient:
-    def __init__(self, stream_id, server, multiviewer, record):
+    def __init__(self, stream_id, server, multiviewer, record, midi):
         self.conn = None
         self.pipe = None
         self.server = server
         self.stream_id = stream_id
         self.multiviewer = multiviewer
         self.record = record
+        self.midi = midi
+        self.midi_thread = None
         self.puuid = None
         self.clients = {}
         
@@ -90,13 +92,14 @@ class WebRTCClient:
             element.emit('create-offer', None, promise)
 
         def send_ice_local_candidate_message(_, mlineindex, candidate):
+            if " TCP " in candidate: ##  I Can revisit another time, but for now, this isn't needed: TODO: optimize
+                return
             icemsg = {'candidates': [{'candidate': candidate, 'sdpMLineIndex': mlineindex}], 'session':client['session'], 'type':'local', 'UUID':client['UUID']}
             self.sendMessage(icemsg)
             
         def send_ice_remote_candidate_message(_, mlineindex, candidate):
             icemsg = {'candidates': [{'candidate': candidate, 'sdpMLineIndex': mlineindex}], 'session':client['session'], 'type':'remote', 'UUID':client['UUID']}
             self.sendMessage(icemsg)
-
         
         def on_signaling_state(p1, p2):
             print("ON SIGNALING STATE CHANGE: {}".format(client['webrtc'].get_property(p2.name)))
@@ -155,6 +158,7 @@ class WebRTCClient:
             print("ON DATA CHANNEL")
             if channel is None:
                 print('DATA CHANNEL: NOT AVAILABLE')
+                return
             else:
                 print('DATA CHANNEL SETUP')                               
             channel.connect('on-open', on_data_channel_open)
@@ -172,11 +176,15 @@ class WebRTCClient:
             if self.record:
                 msg = {"audio":True, "video":True, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
                 self.sendMessage(msg)
+            elif self.midi:
+                msg = {"audio":False, "video":False, "allowmidi":True, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
+                self.sendMessage(msg)
 
         def on_data_channel_close(channel):
             print('DATA CHANNEL: CLOSE')
 
         def on_data_channel_message(channel, msg_raw):
+            print("ON DATA CHANNEL MESSAGE *******************************************")
             try:
                 msg = json.loads(msg_raw)
             except:
@@ -196,9 +204,72 @@ class WebRTCClient:
                 print("INCOMING SDP - DC")
                 if msg['description']['type'] == "offer":
                     self.handle_offer(msg['description'], client['UUID'])
+            elif 'midi' in msg:
+                print(msg)
+                vdo2midi(msg['midi'])
             else:
                 print("MISC DC DATA")
                 return
+
+        def vdo2midi(midi):
+            print(midi)
+            try:
+                midiout = rtmidi.MidiOut()
+                midiout.open_port(0) 
+                midiout.send_message(midi['d'])
+            except Exception as E:
+                print(E)
+            
+        def sendMIDI(data, template):
+            print(data)
+            if data:
+                 template['midi']['d'] = data[0];
+                 template['midi']['t'] = data[1];
+                 data = json.dumps(template)
+                 for client in self.clients:
+                      if self.clients[client]['send_channel']:
+                           try:
+                               self.clients[client]['send_channel'].emit('send-string', data)
+                           except:
+                               pass
+                
+        def midi2vdo(midi):
+            #midiout = rtmidi.MidiOut()
+            #out_ports = midiout.get_ports()
+            print("MIDI 2 VDO started. Initializing any connected MIDI Devices...")
+            in_ports = False
+            self.midiin = rtmidi.MidiIn()
+            while True:
+                in_ports_new = self.midiin.get_ports()
+                if in_ports_new != in_ports:
+                    if self.midiin:
+                        print("MIDI device(s) added or removed; reinitializing...")
+                        self.midiin.close_port()
+                    while True:
+                        in_ports = self.midiin.get_ports()
+                        for i in range(len(in_ports)):
+                            if "Midi Through" in in_ports[i]:
+                                continue
+                            break
+                        if i < len(in_ports):
+                            self.midiin.open_port(i)
+                            print(i)
+                            break
+                        else:
+                            time.sleep(0.5)
+
+                    template = {}
+                    template['midi'] = {}
+                    template['midi']['d'] = []
+                    template['midi']['t'] = 0
+                    if self.puuid:
+                        template['from'] = self.puuid
+                    self.midiin.cancel_callback()
+                    self.midiin.set_callback(sendMIDI, template)
+                else:
+                    time.sleep(4)
+                    
+
 
         def on_stats(promise, abin, data):
             promise.wait()
@@ -311,13 +382,19 @@ class WebRTCClient:
            
             if self.record:
                 self.pipe = Gst.Pipeline.new('decode-pipeline')
+            elif len(PIPELINE_DESC)<=1:
+                self.pipe = Gst.Pipeline.new('data-only-pipeline')
             else:
                 print(PIPELINE_DESC)
                 self.pipe = Gst.parse_launch(PIPELINE_DESC)
             print(self.pipe)
             started = False
             
-            
+
+        client['webrtc'] = self.pipe.get_by_name('sendrecv')
+        client['qv'] = None
+        client['qa'] = None        
+    
         if self.record:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             client['webrtc'].set_property('bundle-policy', 'max-bundle') 
@@ -331,12 +408,8 @@ class WebRTCClient:
                 tcvr = client['webrtc'].emit('add-transceiver', direction, caps)
                 tcvr.set_property("codec-preferences",caps) ## supported as of around June 2021 in gstreamer for answer side?
 
-            client['qv'] = None
-            client['qa'] = None
-        elif not self.multiviewer:
-            client['webrtc'] = self.pipe.get_by_name('sendrecv')
-            client['qv'] = None
-            client['qa'] = None
+        elif (not self.multiviewer) and client['webrtc']:
+            pass
         else:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             client['webrtc'].set_property('bundle-policy', 'max-bundle') 
@@ -346,9 +419,6 @@ class WebRTCClient:
             
             atee = self.pipe.get_by_name('audiotee')
             vtee = self.pipe.get_by_name('videotee')
-            
-            client['qv'] = None
-            client['qa'] = None
             
             if vtee is not None:
                 qv = Gst.ElementFactory.make('queue', f"qv-{client['UUID']}")
@@ -369,7 +439,14 @@ class WebRTCClient:
                     return
                 if qa is not None: qa.sync_state_with_parent()
                 client['qa'] = qa
-            
+
+            if self.midi and (self.midi_thread == None):
+                #client['webrtc'].set_state(Gst.State.READY)
+                self.midi_thread = threading.Thread(target=midi2vdo, args=(self.midi,))
+                self.midi_thread.start()
+                print(self.midi_thread)
+                print("MIDI THREAD STARTED")
+
         try:
             client['webrtc'].connect('notify::ice-connection-state', on_ice_connection_state)
             client['webrtc'].connect('notify::connection-state', on_connection_state)
@@ -381,16 +458,23 @@ class WebRTCClient:
             
         if self.record:
             client['webrtc'].connect('pad-added', on_incoming_stream)
-            client['webrtc'].connect('on-data-channel', on_data_channel)
             client['webrtc'].connect('on-ice-candidate', send_ice_remote_candidate_message)
+            client['webrtc'].connect('on-data-channel', on_data_channel)
         else:
             client['webrtc'].connect('on-ice-candidate', send_ice_local_candidate_message)
             client['webrtc'].connect('on-negotiation-needed', on_negotiation_needed)
-            
+            #client['webrtc'].connect('on-data-channel', on_data_channel)
+ 
         if not started and self.pipe.get_state(0)[1] is not Gst.State.PLAYING:
             self.pipe.set_state(Gst.State.PLAYING)
-            
+                           
+        client['webrtc'].connect('on-ice-candidate', send_ice_local_candidate_message)
         client['webrtc'].sync_state_with_parent()
+
+        if not self.record and not client['send_channel']:
+            channel = client['webrtc'].emit('create-data-channel', 'sendChannel', None)
+            on_data_channel(client['webrtc'], channel)
+
         self.clients[client["UUID"]] = client
         
     def handle_sdp_ice(self, msg, UUID):
@@ -592,7 +676,8 @@ if __name__=='__main__':
     parser.add_argument('--noaudio', action='store_true', help='Disables audio input.')
     parser.add_argument('--pipeline', type=str, help='A full custom pipeline')
     parser.add_argument('--record',  type=str, help='Specify a stream ID to record to disk. System will not publish a stream when enabled.') ### Doens't work correctly yet. might be a gstreamer limitation.
-    
+    parser.add_argument('--midi', action='store_true', help='Transparent MIDI bridge mode; no video or audio.')
+
     args = parser.parse_args()
      
     if Gst.Registry.get().find_plugin("rpicamsrc"):
@@ -605,6 +690,15 @@ if __name__=='__main__':
     if args.pipeline is not None:
         PIPELINE_DESC = args.pipeline
         print('We assume you have tested your custom pipeline with: gst-launch-1.0 ' + args.pipeline.replace('(', '\\(').replace('(', '\\)'))
+    elif args.midi:
+        try:
+            import rtmidi
+        except:
+            print("You must install RTMIDI first; sudo pip3 install rtmidi")
+            sys.exit()
+        args.multiviewer = True;
+        PIPELINE_DESC = ""; 
+        pass
     else:
         pipeline_video_input = ''
         pipeline_audio_input = ''
@@ -744,7 +838,7 @@ if __name__=='__main__':
         print("\nAvailable options include --streamid, --bitrate, and --server. Default bitrate is 4000 (kbps)")
         print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}");
 
-    c = WebRTCClient(args.streamid, args.server, args.multiviewer, args.record)
+    c = WebRTCClient(args.streamid, args.server, args.multiviewer, args.record, args.midi)
     asyncio.get_event_loop().run_until_complete(c.connect())
     res = asyncio.get_event_loop().run_until_complete(c.loop())
     sys.exit(res)
