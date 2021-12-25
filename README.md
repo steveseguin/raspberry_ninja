@@ -179,6 +179,8 @@ If using a virtual MIDI device on the remote viewer's computer, such as `loopMID
 
 Please note, the raspberry_ninja publish.py script can both send and recieve MIDI commands over a single peer connection, which is a bit different than how video/audio work currently. It's also different than how browser to browser currently is setup, where a sender won't ever request MIDI data, yet the raspberry_ninja code does allow the sender to both send and receive MIDI data.
 
+midi demo video: https://youtu.be/Gry9UFtOTmQ
+
 ### Note:
 
 - Installation from source is pretty slow and problematic on a rpi; using system images makes using this so much easier.
