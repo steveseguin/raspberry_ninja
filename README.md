@@ -84,6 +84,7 @@ optional arguments:
   --noaudio             Disables audio input.
   --pipeline PIPELINE   A full custom pipeline
   --record STREAMID     Specify a stream ID to record; this will disable publishing mode
+  --midi                MIDI transport; can forward/recieve MIDI to remote browser/device
 
 ```
 
@@ -165,6 +166,18 @@ As per HDMI adapters, a 1080p30 USB 2.0 HDMI to MJPEG adapter can usually be had
 There's another option though, and that is to use an HDMI to CSI adapter for Raspberry Pis, https://www.amazon.ca/Geekworm-Raspberry-Supports-1080p25fps-Compatible/dp/B0899L6ZXZ/ , although the frame rate of this option is limited to 1080p25 and its more expensive than the HDMI to USB alternative. I currently have not validated if this option works and do not know if additional drivers are required to make it work.
 
 Please share with the community what works well for you and what did not. 
+
+#### MIDI options
+
+When using the `--midi` parameter, video and audio are disabled. Instead, the script can send and recieve MIDI commands over VDO.Ninja.  Supports plug-and-play, although you will need to install `rtmidi` using pip3 first.
+
+Incoming MIDI messages will be forwarded to the first MIDI device connected to the Pi.  Adding `&midiout` to the viewer's view-link will have that remote browser send any MIDI messages (such as from a USB DJ Controller) to the raspberry_ninja publish.py script, which will then be forwarded to the first local MIDI device
+
+Outgoing MIDI messages will be sent to connected viewers, and if those connected viewers have `&midiin` added to their view-links, those MIDI commands will be forwarded to the connected MIDI devices.
+
+If using a virtual MIDI device on the remote viewer's computer, such as `loopMIDI`, you can target that as both a source and target for MIDI commands. This is especially useful for connecting VDO.Ninja to DJ software applilcations, like Mixxx or Serato DJ Pro, which supports mapping pf MIDI inputs/outputs.
+
+Please note, the raspberry_ninja publish.py script can both send and recieve MIDI commands over a single peer connection, which is a bit different than how video/audio work currently. It's also different than how browser to browser currently is setup, where a sender won't ever request MIDI data, yet the raspberry_ninja code does allow the sender to both send and receive MIDI data.
 
 ### Note:
 
