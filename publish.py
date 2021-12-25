@@ -720,7 +720,7 @@ if __name__=='__main__':
         try:
             import rtmidi
         except:
-            print("You must install RTMIDI first; sudo pip3 install rtmidi python-rtmidi")
+            print("You must install RTMIDI first; pip3 install python-rtmidi")
             sys.exit()
         args.multiviewer = True;
         PIPELINE_DESC = ""; 
