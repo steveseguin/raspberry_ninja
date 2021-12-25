@@ -26,6 +26,8 @@ class WebRTCClient:
         self.record = record
         self.midi = midi
         self.midi_thread = None
+        self.midiout = None
+        self.midiout_ports = None
         self.puuid = None
         self.clients = {}
         
@@ -184,7 +186,6 @@ class WebRTCClient:
             print('DATA CHANNEL: CLOSE')
 
         def on_data_channel_message(channel, msg_raw):
-            print("ON DATA CHANNEL MESSAGE *******************************************")
             try:
                 msg = json.loads(msg_raw)
             except:
@@ -212,19 +213,41 @@ class WebRTCClient:
                 return
 
         def vdo2midi(midi):
-            print(midi)
+            #print(midi)
             try:
-                midiout = rtmidi.MidiOut()
-                midiout.open_port(0) 
-                midiout.send_message(midi['d'])
+                if self.midiout == None:
+                    self.midiout = rtmidi.MidiOut()
+
+                new_out_port = self.midiout.get_ports() # a bit inefficient, but safe
+                if new_out_port != self.midiout_ports:
+                    print("New MIDI Out device(s) initializing...")
+                    self.midiout_ports = new_out_port
+                    #print(self.midiout_ports)
+                    try:
+                        self.midiout.close_port()
+                    except:
+                        pass
+
+                    for i in range(len(self.midiout_ports)):
+                        if "Midi Through" in self.midiout_ports[i]:
+                            continue
+                        break
+                    if i < len(self.midiout_ports):
+                        self.midiout.open_port(i)
+                        print(i) ## midi output device
+                    else:
+                        return ## no MIDI out found; skipping
+                    
+                self.midiout.send_message(midi['d'])
+                #print("midi processed")
             except Exception as E:
                 print(E)
             
         def sendMIDI(data, template):
-            print(data)
+            #print(data)
             if data:
                  template['midi']['d'] = data[0];
-                 template['midi']['t'] = data[1];
+                 #template['midi']['t'] = data[1];  ## since this is real-time midi, i don't see the point in including this
                  data = json.dumps(template)
                  for client in self.clients:
                       if self.clients[client]['send_channel']:
@@ -234,34 +257,37 @@ class WebRTCClient:
                                pass
                 
         def midi2vdo(midi):
-            #midiout = rtmidi.MidiOut()
-            #out_ports = midiout.get_ports()
-            print("MIDI 2 VDO started. Initializing any connected MIDI Devices...")
-            in_ports = False
+            in_ports = None
             self.midiin = rtmidi.MidiIn()
             while True:
                 in_ports_new = self.midiin.get_ports()
                 if in_ports_new != in_ports:
+                    in_ports = in_ports_new
                     if self.midiin:
-                        print("MIDI device(s) added or removed; reinitializing...")
-                        self.midiin.close_port()
+                        print("New MIDI Input device(s) initializing...")
+                        try:
+                            self.midiin.close_port()
+                        except:
+                            pass
                     while True:
-                        in_ports = self.midiin.get_ports()
+                        print(in_ports)
                         for i in range(len(in_ports)):
                             if "Midi Through" in in_ports[i]:
                                 continue
                             break
                         if i < len(in_ports):
                             self.midiin.open_port(i)
-                            print(i)
+                            print(i) ## midi input device
                             break
                         else:
                             time.sleep(0.5)
+                            in_ports = self.midiin.get_ports()
+                            
 
                     template = {}
                     template['midi'] = {}
                     template['midi']['d'] = []
-                    template['midi']['t'] = 0
+                    #template['midi']['t'] = 0 ## I don't see the point in including this currently
                     if self.puuid:
                         template['from'] = self.puuid
                     self.midiin.cancel_callback()
@@ -694,7 +720,7 @@ if __name__=='__main__':
         try:
             import rtmidi
         except:
-            print("You must install RTMIDI first; sudo pip3 install rtmidi")
+            print("You must install RTMIDI first; sudo pip3 install rtmidi python-rtmidi")
             sys.exit()
         args.multiviewer = True;
         PIPELINE_DESC = ""; 
