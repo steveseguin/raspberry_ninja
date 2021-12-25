@@ -17,7 +17,7 @@ sudo apt-get install build-essential cmake libtool libc6 libc6-dev unzip wget li
 sudo pip3 install scikit-build
 sudo pip3 install ninja 
 sudo pip3 install websockets
-sudo pip3 install rtmidi python-rtmidi
+pip3 install python-rtmidi
 
 sudo apt-get install apt-transport-https ca-certificates -y
 
