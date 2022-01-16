@@ -11,6 +11,7 @@ If using a Raspberry Pi Zero, using a CSI Raspivid-supported camera is probably 
 
 Download and extract the image file:
 https://drive.google.com/file/d/1veyVEu5Mg2eG2yD2A00cVKZHNEuHVDES/view?usp=sharing
+(** note, Someone reported that their macOS system could not unzip it, but worked fine on Windows)
 
 Write the image to a SD / microSD card; at least 8GB in size is needed, using the appropriate tool. 
 
