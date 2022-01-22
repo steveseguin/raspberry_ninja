@@ -108,7 +108,7 @@ Before: ![image](https://user-images.githubusercontent.com/2575698/146271521-ed9
 
 After: ![image](https://user-images.githubusercontent.com/2575698/146271560-852984cb-6cd0-47d2-a03d-c2e78358652a.png)
 
-The Raspberry Pi doesn't have the greatest WiFi adapter, and even the Ethernet has some issues, so it needs some added love to keep up.  By applying some optimizations to the Raspbian OS, you can increase stability, resulting in less packet loss, and in turn, a more stable frame rate.
+The Raspberry Pi doesn't have the greatest WiFi adapter, and even the Ethernet has some issues, so it needs some added love to keep up.  By applying some optimizations to the Raspbian OS, you can increase stability, resulting in less packet loss, and in turn, a more stable frame rate. (Some of these changes are already applied to the provided Raspberry Pi image (v3), but they will need to be manually applied if building from scratch.)
 
 The following changes resulted in a rather sharp improvement in frame rate stability; if you find more tweaks, please submit them! :D
 
@@ -116,7 +116,7 @@ Okay, the first optimization was with my pi4 that has active cooling; I locked t
 ```
 force_turbo=1
 ```
-To do that, I added the above to `/boot/config.txt`
+To do that, I added the above to `/boot/config.txt`.
 
 You'll might need to adjust your arm_freq to match what your device can handle also, depending on model and cooling. A stable CPU seems to help.
 
@@ -132,6 +132,8 @@ Also, if using Ethernet, to avoid packet loss on the Pi4 when connected to gigab
 ```
 sudo ethtool -s eth0 speed 100 duplex full autoneg off
 ```
+You can make this change apply no boot by editing `/etc/rc.local` and adding `ethtool --change enp1s0 speed 100 duplex full autoneg off` before the `exit 0` line.
+
 This reduces the speed to 100mbps, instead of gigabit, but it also can dramatically reduce packet loss on a Raspberry Pi. 100mbps is more than enough anyways.
 You may want to have the command auto-run on boot, just to be safe, but if you're not using Ethernet, it may not be needed. 
 
