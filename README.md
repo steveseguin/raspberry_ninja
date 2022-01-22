@@ -146,7 +146,7 @@ There's plenty of options for the Rasbperry Pi and Nvidia Jetson when it comes t
 
 USB cameras are options, but currently with Raspberry Pi devices these are only supported up to around 720p30. USB 3.0 devices are even less supported, as you need to ensure the Raspberry Pi you are using supports USB 3.0; for example, a Camlink will not work on a Raspberry Pi 3.
 
-If low-light is important to you, the Sony IMX327 and IMX462 series of sensors might appeal to you. They are generally designed for security camera applications, but with the use of an IR Filter, you can make them adequate for use a standard video cameras. These options may require additional gstreamer and driver work to have work however, so they are for more advanced-users at this time.
+If low-light is important to you, the Sony IMX327 and IMX462 series of sensors might appeal to you. They are generally designed for security camera applications, but with the use of an IR Filter, you can make them adequate for use a standard video cameras. These options may require additional gstreamer and driver work to have work however, so they are for more advanced-users at this time.  Having purchased an IMX327 for myself, the low light is incredible, but driver support requires significant effort to get working on a Raspberry Pi. ISP processing on a Pi is limited as well, so white-balance, HDR, and exposure controls might be insufficient for your application.
 
 Links for such low-light cameras: 
 
