@@ -163,13 +163,17 @@ https://fulekan.aliexpress.com/store/1862644
 
 As per HDMI adapters, a 1080p30 USB 2.0 HDMI to MJPEG adapter can usually be had for $10 to $20, although there are many fake offerings out there. I've tested a $12 MACROSILICON HDMI to USB adapter, and it works pretty well with the Jetson, although finding a legitimate one might be tricky. On a Raspberry Pi, I can only get these USB-based HDMI adapters to work okay up to around 720p30 resolution, due to software glitch in the Raspberry Pi hardware encoding drivers used by Gstreamer.
 
-There's another option though, and that is to use an HDMI to CSI adapter for Raspberry Pis, such as https://www.amazon.ca/Geekworm-Raspberry-Supports-1080p25fps-Compatible/dp/B0899L6ZXZ/ , although the frame rate of an HDMI to CSI option is limited to 1080p25 and its more expensive than the HDMI to USB alternative. I currently have not validated if this option works and do not know if additional drivers are required to make it work.
+There's another option though, and that is to use an HDMI to CSI adapter for Raspberry Pis, such as https://www.amazon.ca/Geekworm-Raspberry-Supports-1080p25fps-Compatible/dp/B0899L6ZXZ/ , although the frame rate of an HDMI to CSI option is limited to 1080p25 and its more expensive than the HDMI to USB alternative. 
 
-There are different HDMI to CSI2 boards, and they might look similar, they are not definitely equal.
+(I am currently trying to validate if a cheap HDMI to CSI adapter will work well; will update once I know more)
+
+Please note before buying that there are different HDMI to CSI2 boards, and they might look similar, but they are definitely note equal.  
 
 - C779 boards (geekworm) do not support audio (hardware problem) and do not auto-detect the correct HDMI signal settings, making it quite challenging to use. But it is often the cheapest option.
 - C780 boards supposedly has fixed the audio issue of the C779 boards, but it's unclear if its still a qualty option due to lack of testing it yet.
 - Boards by Auvidea, like the B100 or B102, have audio support via I2S and should handle signal/resolution detection better. These are more expensive options though. There is mention of RPi Compute Module support with some of these Auvidea boards as well.
+
+HDMI to CSI boards are not plug-and-play currently, as they do require a couple tweaks to the boot file at the very least; perhaps even more changes.
 
 Please share with the community what works well for you and what did not. 
 
