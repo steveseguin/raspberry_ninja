@@ -693,8 +693,13 @@ if __name__=='__main__':
     parser.add_argument('--nvidiacsi', action='store_true', help='Sets the input to the nvidia csi port.')
     parser.add_argument('--alsa', type=str, default='default', help='Use alsa audio input.')
     parser.add_argument('--pulse', type=str, help='Use pulse audio (or pipewire) input.')
+    parser.add_argument('--zerolatency', action='store_true', help='A mode designed for the lowest audio latency')
     parser.add_argument('--raw', action='store_true', help='Opens the V4L2 device with raw capabilities.')
-    parser.add_argument('--h264', action='store_true', help='For PC, instead of VP8, use x264.')
+    parser.add_argument('--bt601', action='store_true', help='Use colormetery bt601 mode; enables raw mode also')
+    parser.add_argument('--h264', action='store_true', help='Prioritize h264 over vp8')
+    parser.add_argument('--x264', action='store_true', help='Prioritizes x264 encoder over hardware encoder')
+    parser.add_argument('--vp8', action='store_true', help='Prioritizes vp8 codec over h264; software encoder')
+    parser.add_argument('--omx', action='store_true', help='Try to use the OMX driver for encoding video; not recommended')
     parser.add_argument('--nvidia', action='store_true', help='Creates a pipeline optimised for nvidia hardware.')
     parser.add_argument('--rpi', action='store_true', help='Creates a pipeline optimised for raspberry pi hadware.')
     parser.add_argument('--multiviewer', action='store_true', help='Allows for multiple viewers to watch a single encoded stream; will use more CPU and bandwidth.')
@@ -729,6 +734,18 @@ if __name__=='__main__':
         pipeline_video_input = ''
         pipeline_audio_input = ''
 
+        if args.bt601:
+           args.raw = True
+
+        if args.zerolatency:
+           args.novideo = True
+
+        if args.nvidia or args.rpi or args.x264:
+           args.h264 = True
+
+        if args.vp8:
+           args.h264 = False
+ 
         if args.hdmi:
             args.v4l2 = '/dev/v4l/by-id/usb-MACROSILICON_USB_Video-video-index0'
             args.alsa = 'hw:MS2109'
@@ -783,7 +800,11 @@ if __name__=='__main__':
 
                 if args.raw:
                     if args.rpi:
-                        pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1 ! capssetter caps="video/x-raw,format=YUY2,colorimetry=(string)2:4:5:4"'  ## bt601 is another option,etc.
+                        if args.bt601:
+                            pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1,colorimetry=(string)bt601'  ## bt601 is another option,etc.
+                        else:
+                            pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1 ! capssetter caps="video/x-raw,format=YUY2,colorimetry=(string)2:4:5:4"'
+
                     else:
                         pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
 
@@ -796,7 +817,7 @@ if __name__=='__main__':
                     else:
                         pipeline_video_input += ' ! jpegdec'
 
-            if args.h264 or args.nvidia or args.rpi:
+            if args.h264:
                 # H264
                 if args.nvidia:
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate={args.bitrate}000 ! video/x-h264,stream-format=(string)byte-stream'
@@ -809,22 +830,42 @@ if __name__=='__main__':
                     else:
                         width = args.width
                         height = args.height
-                    pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! x264enc bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,stream-format=(string)byte-stream'
+                    if args.omx:
+                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc  target-bitrate={args.bitrate}000 qos=true control-rate=1 ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
+                    elif args.x264:
+                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! queue max-size-buffers=1 ! x264enc bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
+                    else:
+                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true ! video/x-h264,level=(string)4'
+
                     ## pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                 else:
-                    pipeline_video_input += f' ! videoconvert ! x264enc bitrate={args.bitrate} speed-preset=ultrafast tune=zerolatency key-int-max=15 ! video/x-h264,profile=constrained-baseline'
+                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=1 ! x264enc bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline'
                     
                 if args.multiviewer:
-                    pipeline_video_input += ' ! h264parse config-interval=-1 ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! tee name=videotee '
+                    pipeline_video_input += ' ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! h264parse config-interval=-1 ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! tee name=videotee '
                 else:
-                    pipeline_video_input += ' ! h264parse config-interval=-1 ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! rtph264pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000  ! sendrecv.'
+                    pipeline_video_input += ' ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! h264parse config-interval=-1 ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000  ! sendrecv.'
 
             else:
                 # VP8
-                if args.multiviewer:
-                    pipeline_video_input += f' ! videoconvert ! vp8enc deadline=1 target-bitrate={args.bitrate}000 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! tee name=videotee '
+                if args.rpi:
+                    if args.width>1280: ## x264enc works at 1080p30, but only for static scenes with a bitrate of around 2500 or less.
+                        width = 1280  ## 720p60 is more accessible with the PI4, versus 1080p30.
+                        height = 720
+                    else:
+                        width = args.width
+                        height = args.height
+
+                    if args.multiviewer:
+                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! vp8enc deadline=1 target-bitrate={args.bitrate}000 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! tee name=videotee '
+                    else:
+                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! queue max-size-buffers=1 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! queue ! sendrecv.'
+                # need to add an nvidia vp8 hardware encoder option.
                 else:
-                    pipeline_video_input += f' ! videoconvert ! vp8enc deadline=1 target-bitrate={args.bitrate}000 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! queue ! sendrecv.'
+                    if args.multiviewer:
+                        pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=1 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! tee name=videotee '
+                    else:
+                        pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=1 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! queue ! sendrecv.'
 
         if not args.noaudio:
             if args.test:
@@ -839,16 +880,22 @@ if __name__=='__main__':
                 needed += ['alsa']
                 pipeline_audio_input += f'alsasrc device={args.alsa}'
                 
-            if args.multiviewer: # a 'tee' element may use more CPU or cause extra stuttering, so by default not enabled, but needed to support multiple viewers
-                pipeline_audio_input += ' ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! tee name=audiotee '
+
+            if args.zerolatency:
+               pipeline_audio_input += ' ! queue max-size-buffers=2 leaky=downstream ! audioresample quality=0 resample-method=0 ! audioconvert ! opusenc bitrate-type=0 bitrate=16000 inband-fec=false audio-type=2051 frame-size=20 ! rtpopuspay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
             else:
-                pipeline_audio_input += ' ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! queue ! sendrecv.'
+               pipeline_audio_input += ' ! queue max-size-buffers=3 leaky=downstream ! audioresample quality=0 resample-method=0 ! audioconvert ! opusenc bitrate-type=1 bitrate=64000 inband-fec=true ! rtpopuspay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
+
+            if args.multiviewer: # a 'tee' element may use more CPU or cause extra stuttering, so by default not enabled, but needed to support multiple viewers
+                pipeline_audio_input += ' ! tee name=audiotee '
+            else:
+                pipeline_audio_input += ' ! sendrecv.'
 
         if args.record:
             args.h264 = True
             pass
         elif not args.multiviewer:
-            PIPELINE_DESC = f'webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input}'
+            PIPELINE_DESC = f'webrtcbin  name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input}'
             print('gst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
         else:
             PIPELINE_DESC = f'{pipeline_video_input} {pipeline_audio_input}'
