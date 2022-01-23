@@ -101,6 +101,8 @@ Using a CSI-based camera with a Raspberry Pi will currently give better results 
 
 There are some non-supported cameras that use the CSI port, like the Arducam Sony IMX327 sensor-based cameras, as those may not have any proper driver support added. You can get those to work if they offer Gstreamer-based drivers though, however installing them may prove quite challenging. I'll provide pre-built images that support such devices when I have them working.
 
+Lastly, unless using the RPi Compute Module, any HDMI to CSI adapter for the RPi will be limited to 25-fps.
+
 
 ## Optimizing the Pi to reduce packet loss
 
