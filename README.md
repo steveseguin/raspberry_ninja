@@ -159,21 +159,22 @@ https://www.e-consystems.com/usb-cameras/sony-starvis-imx462-ultra-low-light-cam
 You can buy IR Filters, or you can buy lenses that come with IR filters, if needed, for pretty cheap. Many are designed for security applications, so be aware.
 https://fulekan.aliexpress.com/store/1862644
 
-#### HDMI options
+#### HDMI Input options
 
-As per HDMI adapters, a 1080p30 USB 2.0 HDMI to MJPEG adapter can usually be had for $10 to $20, although there are many fake offerings out there. I've tested a $12 MACROSILICON HDMI to USB adapter, and it works pretty well with the Jetson, although finding a legitimate one might be tricky. On a Raspberry Pi, I can only get these USB-based HDMI adapters to work okay up to around 720p30 resolution, due to software glitch in the Raspberry Pi hardware encoding drivers used by Gstreamer.
+As per HDMI adapters, a 1080p30 USB 2.0 HDMI to MJPEG adapter can usually be had for $10 to $20, although there are many fake offerings out there. I've tested a $12 MACROSILICON HDMI to USB adapter, and it works pretty well with the Jetson (and OK with the RPI), although finding a legitimate one might be tricky. On a Raspberry Pi 4, 1080p30 is posssible with the HDMI to USB adapter, but audio currently then goes out of sync; at 720p though, audio stays in sync with the video. Audio sync issues might be resolved in the future with more system tuning.
 
-There's another option though, and that is to use an HDMI to CSI adapter for Raspberry Pis, such as https://www.amazon.ca/Geekworm-Raspberry-Supports-1080p25fps-Compatible/dp/B0899L6ZXZ/ , although the frame rate of an HDMI to CSI option is limited to 1080p25 and its more expensive than the HDMI to USB alternative. 
+There's another option though, and that is to use an HDMI to CSI adapter for Raspberry Pis, such as the C780A ($29 USD) https://www.aliexpress.com/item/1005002861310912.html, although the frame rate of an HDMI to CSI option is limited to 1080p25 (due to 2 CSI lanes only). It's also slightly more expensive than the HDMI to USB alternative. The RPi Compute Module boards seem to have four-lanes of CSI available though, so 30-fps might be achivable there if you buy the compatible board (C780B ?)
 
-(I am currently trying to validate if a cheap HDMI to CSI adapter will work well; will update once I know more)
+Audio is also more challenging when dealing with the HDMI to CSI adapters, as you need to connect audio from the board via I2S to the RPi. This isn't easy to do with some of the HDMI to CSI boards, but there are a couple options where this is a trival step.
 
-Please note before buying that there are different HDMI to CSI2 boards, and they might look similar, but they are definitely note equal.  
+Please note before buying that there are different HDMI to CSI2 boards, and they might look similar, but they are definitely not equal.  
 
-- C779 boards (geekworm) do not support audio (hardware problem) and do not auto-detect the correct HDMI signal settings, making it quite challenging to use. But it is often the cheapest option.
-- C780 boards supposedly has fixed the audio issue of the C779 boards, but it's unclear if its still a qualty option due to lack of testing it yet.
-- Boards by Auvidea, like the B100 or B102, have audio support via I2S and should handle signal/resolution detection better. These are more expensive options though. There is mention of RPi Compute Module support with some of these Auvidea boards as well.
+- C779 boards do not support audio (hardware problem), making it quite challenging to use. But it is often the cheapest option. I don't recommend this option.
+- C780 boards supposedly has fixed the audio issue of the C779 boards, but they remain untested by me yet. It appears they have good audio support and a 4-lane option (C780B) for the RPi Compute module boards, but most users will proabably need the two-lane C780A.  
+- Boards by Auvidea, like the B100 or B102, have audio support via I2S and should handle signal/resolution detection better. These are more expensive options though. There is mention of RPi Compute Module support with some of these Auvidea boards as well. I haven't tested these boards yet.
+- I haven't tested the HC100 board yet, but it seems similar to the B100. Might require some light soldering to get audio support.
 
-HDMI to CSI boards are not plug-and-play currently, as they do require a couple tweaks to the boot file at the very least; perhaps even more changes.
+HDMI to CSI boards are not plug-and-play currently, as they do require a couple tweaks to the boot file at the very least, and maybe an update to the EDID file. (script provided for that). Depending on the video input signal, you might need to further tweak settings, such as colorimetery settings. This not really an issue with the HDMI to USB adapters, as they convert to a very standard MJPEG format, making them more plug and play friendly.
 
 Please share with the community what works well for you and what did not. 
 
