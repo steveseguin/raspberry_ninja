@@ -10,7 +10,9 @@ If using a Raspberry Pi Zero, using a CSI Raspivid-supported camera is probably 
 #### Installing from the provided image
 
 Download and extract the image file:
-https://drive.google.com/file/d/1veyVEu5Mg2eG2yD2A00cVKZHNEuHVDES/view?usp=sharing
+https://drive.google.com/file/d/1veyVEu5Mg2eG2yD2A00cVKZHNEuHVDES/view?usp=sharing  (version 2)
+
+.. and the new Version 3 beta is here for testing: https://drive.google.com/file/d/1f1PCEpKBLT3KVZSRR6pYwywt9TKjPmwW/view?usp=sharing
 
 (** note, Someone reported that their macOS system could not unzip it, but worked fine on Windows)
 
@@ -20,7 +22,17 @@ On Windows, you can use Win32DiskImager (https://sourceforge.net/projects/win32d
 
 (balenaEtcher also works for writing the image, but using the official Raspberry Pi image writer may have problems.)
 
-To connect, use a display and keyboard, or you can SSH into it as SSH on port 22 if enabled.
+#### Setting up and connecting
+
+Before loading the uSD card into your RPi, you can configure some basic settings on the drive itself via Windows/Mac/Linux.
+
+You can open `X:/boot/config.txt` in notepad to uncomment a line to enable support for the HDMI to CSI adapter
+
+You can also setup the WiFi by creating a copy of `X:/boot/wpa_supplicant.conf.sample` named `wpa_supplicant.conf`.  Editing that file, change the ssid and psk lines with your WiFi's SSID and password.  This will ensure it auto connects to your WiFi on first boot.
+
+To connect, use a display and keyboard, or you can SSH into it as SSH on port 22 if enabled.  If you didn't configure the WiFi, you connect either via USB or Ethernet instead. Refer to the Raspberry Pi documentation for more help on that topic.
+
+#### Login info
 
 Login information for the device is:
 ```
@@ -28,7 +40,9 @@ username: pi
 password: raspberry
 ```
 
-You can then run `sudo raspi-config` from the command-line to configure the Pi as needed. If using the Raspberry Pi camera or another CSI-based camera, you'll want to make sure it's enabled there. 
+You can then run `sudo raspi-config` from the command-line to configure the Pi as needed. If using the Raspberry Pi camera or another CSI-based camera, you'll want to make sure it's enabled there if using any CSI-based device.
+
+You will probably want to also update the pi with `sudo apt-get update && sudo apt-get upgrade`, to snure it's up to date.  You can also run `sudo raspi-config` and update the RPi that way, along with updating the bootloader if desired.
 
 #### Installing from scratch
 
@@ -138,6 +152,9 @@ You can make this change apply no boot by editing `/etc/rc.local` and adding `et
 
 This reduces the speed to 100mbps, instead of gigabit, but it also can dramatically reduce packet loss on a Raspberry Pi. 100mbps is more than enough anyways.
 You may want to have the command auto-run on boot, just to be safe, but if you're not using Ethernet, it may not be needed. 
+
+You can further optimize the system by disabling Bluetooth and disabling network sleep mode.  For details on what you can try there, see this guide: 
+https://forums.raspberrypi.com/viewtopic.php?t=138312&start=50#p1094659   You might want to keep audio on and other deviations from those instructions, if bothering to follow it at all.
 
 Finally, just to add some buffering onto the Viewer side as well, in Chrome (edge/electron), I added &buffer=300 to the view link.  The VDO.Ninja player has like 40 to 70ms already added, but increasing it to 300 or so will help pre-empt any jitter delays, avoiding sudden frame loss. This is not required, but seems to help a bit at the cost of added latency.  You may want to increase it upwards of 1000ms to see if it helps further, or go without any added buffer entirely.
 
