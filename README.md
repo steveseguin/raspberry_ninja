@@ -169,11 +169,11 @@ Audio is also more challenging when dealing with the HDMI to CSI adapters, as yo
 
 Please note before buying that there are different HDMI to CSI2 boards, and they might look similar, but they are definitely not equal.  
 
-- X630 boards seem to have a solder-free audio support and 1080p25 support; there's a nice YouTube guide on setting it up https://www.youtube.com/watch?v=lJL2Ihs1aYg and a kit available to make it all a breeze; https://geekworm.com/products/x630?variant=39772641165400.
+- X630 boards seem to have a solder-free audio support (via an addon board; X630-A2) and 1080p25 support; there's a nice YouTube guide on setting it up https://www.youtube.com/watch?v=lJL2Ihs1aYg and a kit available to make it all a breeze; https://geekworm.com/products/x630?variant=39772641165400.
 - C779 boards do not support audio (hardware problem), making it quite challenging to use. But it is often the cheapest option. I don't recommend this option.
 - C780 boards supposedly has fixed the audio issue of the C779 boards, but they remain untested by me yet. It appears they have good audio support and a 4-lane option (C780B) for the RPi Compute module boards, but most users will proabably need the two-lane C780A.  
-- Boards by Auvidea, like the B100 or B102, have audio support via I2S and should handle signal/resolution detection better. These are more expensive options though. There is mention of RPi Compute Module support with some of these Auvidea boards as well. I haven't tested these boards yet.
-- I haven't tested the Geekworm HC100 board yet, but it seems similar to the B100. Might require some light soldering to get audio support.
+- Boards by Auvidea, like the B100, B101, or B102, have audio support via I2S it seems. These are more expensive options though, and there is mention of RPi Compute Module support with some of these Auvidea boards as well. I haven't tested these boards yet.
+- I haven't tested the Geekworm HC100 board yet, but it seems similar to the B100/B101. Might require some light soldering to get audio support? Not sure.
 
 HDMI to CSI boards are not plug-and-play currently, as they do require a couple tweaks to the boot file at the very least, and maybe an update to the EDID file. (script provided for that). Depending on the video input signal, you might need to further tweak settings, such as colorimetery settings. This not really an issue with the HDMI to USB adapters, as they convert to a very standard MJPEG format, making them more plug and play friendly.
 
