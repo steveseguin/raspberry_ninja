@@ -28,7 +28,7 @@ Before loading the uSD card into your RPi, you can configure some basic settings
 
 You can setup the WiFi by creating a copy of `X:/boot/wpa_supplicant.conf.sample` named `wpa_supplicant.conf`.  Editing that file, change the ssid and psk lines with your WiFi's SSID and password.  This will ensure it auto connects to your WiFi on first boot.
 
-You can also open `X:/boot/config.txt` in notepad to uncomment a line to enable support for the HDMI to CSI adapter.  There's a file also called `setup_c779.sh` in the raspberry_pi folder that has the steps needed to get the C779 HDMI to CSI adapter working; just run it once the pi boots. Probalby not needed with the B10X boards though, but can't confirm.  You will want to run it before connecting any input to the HDMI input port.
+You can also open `X:/boot/config.txt` in notepad to uncomment a line to enable support for the HDMI to CSI adapter.  There's a file also called `setup_c779.sh` in the raspberry_pi folder that also needs to be run once booted in, if using the C779 HDMI to CSI adapter at least. Probably not needed with the B10X boards, but can't confirm.  You will want to run it before connecting any input to the HDMI input port.
 
 To connect, use a display and keyboard, or you can SSH into it as SSH on port 22 if enabled.  If you didn't configure the WiFi, you connect either via USB or Ethernet instead. Refer to the Raspberry Pi documentation for more help on that topic.
 
