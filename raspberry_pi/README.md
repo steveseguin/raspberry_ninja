@@ -32,6 +32,8 @@ You can also open `X:/boot/config.txt` in notepad to uncomment a line to enable 
 
 To connect, use a display and keyboard, or you can SSH into it as SSH on port 22 if enabled.  If you didn't configure the WiFi, you connect either via USB or Ethernet instead. Refer to the Raspberry Pi documentation for more help on that topic.
 
+Note: By default the provided image will have SSH enabled, so if security is a concern, disable SSH. It is also suggested that you change the username and password to something more secure. I woudld also suggest not installing any BTC wallets on this image or anything like that, as security can't be guaranteed.
+
 #### Login info
 
 Login information for the device is:
