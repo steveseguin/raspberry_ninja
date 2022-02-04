@@ -715,6 +715,9 @@ if __name__=='__main__':
         args.rpi=True
     elif Gst.Registry.get().find_plugin("nvvidconv"):
         args.nvidia=True
+        if Gst.Registry.get().find_plugin("nvarguscamerasrc"):
+            if not args.nvidiacsi:
+                print("\nIf using the Nvidia CSI camera, you'll want to use --nvidiacsi to enable it.\n")
     
     needed = ["nice", "webrtc", "dtls", "srtp", "rtp", "sctp", "rtpmanager"]
     
@@ -783,8 +786,7 @@ if __name__=='__main__':
                 pipeline_video_input = f'rpicamsrc bitrate={args.bitrate}000 ! video/x-h264,profile=constrained-baseline,width={args.width},height={args.height},framerate=(fraction){args.framerate}/1,level=3.0 ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 '
 
             elif args.nvidiacsi:
-                # TODO:
-                # needed += ['nvarguscamerasrc']
+                needed += ['nvarguscamerasrc']
                 args.nvidia = True
                 pipeline_video_input = f'nvarguscamerasrc ! video/x-raw(memory:NVMM),width=(int){args.width},height=(int){args.height},format=(string)NV12,framerate=(fraction){args.framerate}/1'
 
