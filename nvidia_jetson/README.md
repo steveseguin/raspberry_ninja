@@ -21,7 +21,7 @@ The **Jetson Nano-4GB image**, with Gstreamer 1.19.2:
 ```
 https://drive.google.com/file/d/10jC3O44NL7xm-CS-nsVlZKXczsF3YHn0/view?usp=sharing
 ```
-*** You may want to use the installer install of trying the Nana 4GB image at the moment; there's a boot issue it seems with it now.
+*** You may want to use the installer instead of trying the Nana 4GB image at the moment; there's a boot issue it seems with it now.
 
 The **Jetson Xavier NX image**, with Gstreamer 1.19.2:
 ```
