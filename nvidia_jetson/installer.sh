@@ -1,30 +1,14 @@
-#ninja@ninja-desktop:~$ chmod +x test.sh
-#ninja@ninja-desktop:~$ sudo ./test.sh
-
 sudo apt-get update
 sudo apt-get upgrade -y
-sudo apt-get dist-upgrade -y
 
-sudo apt-get install ubuntu-release-upgrader-core -y
-
-sudo apt-get remove --purge chromium-browser chromium-browser-l10n -y
-sudo dpkg --purge --force-all libopencv-dev  ## this seems needed for the Jetson Nano 4GB ?
-sudo apt purge unity
 sudo apt-get --fix-broken install -y
-
-sudo rm /etc/update-manager/release-upgrades
-sudo do-release-upgrade
-
-for f in /etc/apt/sources.list.d/*; do
-  sudo sed -i 's/^\#\s*//' $f
-done
 
 sudo apt-get install python3-pip -y
 sudo apt-get install git -y
 sudo apt-get install cmake -y
 sudo apt-get install build-essential yasm cmake libtool libc6 libc6-dev unzip wget libnuma1 libnuma-dev -y
 sudo pip3 install scikit-build
-sudo pip3 install ninja 
+sudo pip3 install ninja
 sudo pip3 install websockets
 pip3 install python-rtmidi
 
@@ -35,14 +19,14 @@ sudo apt-get install apt-transport-https ca-certificates -y
 #sudo apt-get install python3-gi -y
 
 sudo apt-get install ccache curl bison flex \
-	libasound2-dev libbz2-dev libcap-dev libdrm-dev libegl1-mesa-dev \
-	libfaad-dev libgl1-mesa-dev libgles2-mesa-dev libgmp-dev libgsl0-dev \
-	libjpeg-dev libmms-dev libmpg123-dev libogg-dev libopus-dev \
-	liborc-0.4-dev libpango1.0-dev libpng-dev librtmp-dev \
-	libtheora-dev libtwolame-dev libvorbis-dev libwebp-dev \
-	libjpeg8-dev libgif-dev pkg-config zlib1g-dev libmp3lame-dev \
-	libmpeg2-4-dev libopencore-amrnb-dev libopencore-amrwb-dev libcurl4-openssl-dev \
-	libsidplay1-dev libx264-dev libusb-1.0 pulseaudio libpulse-dev -y
+        libasound2-dev libbz2-dev libcap-dev libdrm-dev libegl1-mesa-dev \
+        libfaad-dev libgl1-mesa-dev libgles2-mesa-dev libgmp-dev libgsl0-dev \
+        libjpeg-dev libmms-dev libmpg123-dev libogg-dev libopus-dev \
+        liborc-0.4-dev libpango1.0-dev libpng-dev librtmp-dev \
+        libtheora-dev libtwolame-dev libvorbis-dev libwebp-dev \
+        libjpeg8-dev libgif-dev pkg-config zlib1g-dev libmp3lame-dev \
+        libmpeg2-4-dev libopencore-amrnb-dev libopencore-amrwb-dev libcurl4-openssl-dev \
+        libsidplay1-dev libx264-dev libusb-1.0 pulseaudio libpulse-dev -y
 
 sudo apt-get install woof -y
 sudo apt-get install libatk1.0-dev -y
