@@ -18,10 +18,8 @@ https://drive.google.com/file/d/1WTsW_dWkggGhQXa8p9yOIz3E4tYcl6ee/view?usp=shari
 ```
 
 The **Jetson Nano-4GB image**, with Gstreamer 1.19.2:
-```
-https://drive.google.com/file/d/1PWZdQ-Yrw30rE6jknKz_R0brjlavVniX/view?usp=sharing
-```
-*** You may want to use the installer instead of trying the Nana 4GB image at the moment. Since there are three varieties of 4GB boards, this image may not work on newer models.
+
+You may want to use the installer instead of trying the Nano 4GB image at the moment. It's not proving easy to create universal images for the 4GB model, particularly given that there are different revisions of the 4GB board.
 
 The **Jetson Xavier NX image**, with Gstreamer 1.19.2:
 ```
