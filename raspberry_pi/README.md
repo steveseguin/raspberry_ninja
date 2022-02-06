@@ -164,5 +164,22 @@ If using the buffer option, the view link might look like this `https://vdo.ninj
 
 The buffer command is compatible with OBS v27.2 on PC and newer, but not earlier versions on PC.
 
+### Firmware
 
+Updating the firmware for the Raspberry Pi 4 might help with some USB controller or networking issues. 
+```
+# check if newest version is needed
+sudo rpi-eeprom-update
+
+# If not up to date, then we can update
+sudo raspi-config
+# Advanced Options -> Bootloader Version -> Latest
+# Reboot when prompted
+```
+You can also try updating the firmware/system for other RPI boards using
+```
+sudo apt update
+sudo apt full-upgrade
+sudo reboot
+```
 
