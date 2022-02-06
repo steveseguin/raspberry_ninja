@@ -750,7 +750,7 @@ if __name__=='__main__':
            args.h264 = False
  
         if args.hdmi:
-            args.v4l2 = '/dev/v4l/by-id/usb-MACROSILICON_USB_Video-video-index0'
+            args.v4l2 = '/dev/v4l/by-id/usb-MACROSILICON_*'
             args.alsa = 'hw:MS2109'
             if args.raw:
                 args.width = 1280
