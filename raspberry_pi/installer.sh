@@ -9,6 +9,7 @@ export GIT_SSL_NO_VERIFY=1
 
 sudo apt-get update
 sudo apt-get upgrade -y
+sudo apt-get full-upgrade -y 
 sudo apt-get dist-upgrade -y
 sudo apt-get install vim -y
 
