@@ -5,3 +5,8 @@ sudo rpi-eeprom-update
 sudo raspi-config
 # Advanced Options -> Bootloader Version -> Latest
 # Reboot when prompted
+
+## For non RPI4 systems, you can try instead, or also.
+sudo apt update
+sudo apt full-upgrade
+sudo reboot
