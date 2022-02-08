@@ -46,7 +46,13 @@ You should be able to run the publshing script simply with `python3 publish.py`,
 
 ```
 $ python3 publish.py
+```
 
+To get the list of support commands with your version of the code, run `python3 publish.py --help`.
+
+Sample help output: ( what's shown below may not be up-to-date)
+
+```
 usage: publish.py [-h] [--streamid STREAMID] [--server SERVER]
                   [--bitrate BITRATE] [--width WIDTH] [--height HEIGHT]
                   [--framerate FRAMERATE] [--test] [--hdmi] [--v4l2 V4L2]
@@ -77,6 +83,7 @@ optional arguments:
   --alsa ALSA           Use alsa audio input.
   --pulse PULSE         Use pulse audio (or pipewire) input.
   --raw                 Opens the V4L2 device with raw capabilities.
+  --bt601               Changes the input color profile when in raw mode to BT601
   --h264                For PC, instead of VP8, use x264.
   --vp8                 VP8 encoder instead of h264; likely software-based
   --nvidia              Creates a pipeline optimised for nvidia hardware.
