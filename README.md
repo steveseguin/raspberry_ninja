@@ -48,7 +48,7 @@ You should be able to run the publshing script simply with `python3 publish.py`,
 $ python3 publish.py
 ```
 
-To get the list of support commands with your version of the code, run `python3 publish.py --help`.
+To get the list of supported commands with your version of the code, run `python3 publish.py --help`.
 
 Sample help output: ( what's shown below may not be up-to-date)
 
