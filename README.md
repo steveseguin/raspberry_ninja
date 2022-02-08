@@ -19,7 +19,7 @@ If you wish to play a video back, using a Raspberry pi, try this "kiosk" mode im
 
 See the `raspberry_pi` sub-folder for instructions on installing and setting up a Raspberry Pi. [Jump there now](raspberry_pi/README.md)
 
-A Raspberry Pi works fairly well with a CSI-connected camera, but USB-based cameras currently struggle a bit with them. As a result, consider buying an Nvidia Jetson Nano 2GB instead of a Raspberry Pi if looking to jump into this all. Also, the RPI Zero W 1 and RPi 3 both don't have the greatest WiFi built-in, while the Raspberry Pi Zero 2 seems to work rather well. Without good connectivity, you may find yourself facing quite a few frame-drops.
+A Raspberry Pi works fairly well with a CSI-connected camera, but USB-based cameras currently struggle a bit with older Raspberry Pi models. As a result, consider buying an Nvidia Jetson Nano 2GB instead of a Raspberry Pi if looking to jump into this all. Also, the RPI Zero W 1 and RPi 3 both don't have the greatest WiFi built-in, while the Raspberry Pi Zero 2 seems to work rather well. Without good connectivity, you may find yourself facing frame-drops and stutter.  HDMI to CSI adapters do work, but they may be limited to 25-fps and can be finicky still with some camera sources; audio over HDMI is also a bit tricky to setup currently.
 
 ![image](https://user-images.githubusercontent.com/2575698/146033910-3c54ba8c-1d3e-4073-bc59-e190decaca63.png)
 
@@ -132,7 +132,7 @@ Pulse audio and ALSA audio command-line arguments can be passed to setup audio, 
 Ensure the pi/jetson is connected to the Internet, via Ethernet is recommended for best performance.  You'll also very likely need to ensure a camera and/or microphone input are connected; this can also be a USB UVC device, supported CSI-based camera, or other selectable media inputs. It technically might be possible to even select a pipe to stream from, although this is a fairly advanced option.
 
 Run using:
-`python3 publish.py --streamid SomeStreamID --bitrate 4000`
+`python3 publish.py --streamid SomeStreamID --bitrate 2000`
 
 In Chrome, open this link to view:
 `https://vdo.ninja/?password=false&view=SomeStreamID`
@@ -143,7 +143,7 @@ If you run with sudo, you might get a permissions error when using audio.
 
 ### Auto-starting the script on boot
 
-A guide on how to setup a RPI or how to configure those system to auto-publish on boot is soon to come. For now, there are plenty of guides online to get you started.
+A guide on how to setup a RPI to auto-stream on boot can be found in the Rasbperry Pi folder, along with details on how to configure the WiFi SSID and password without needing to SSH in first.
 
 ### Hardware options
 
@@ -155,7 +155,7 @@ There's plenty of options for the Rasbperry Pi and Nvidia Jetson when it comes t
 
 USB cameras are options, but currently with Raspberry Pi devices these are only supported up to around 720p30. USB 3.0 devices are even less supported, as you need to ensure the Raspberry Pi you are using supports USB 3.0; for example, a Camlink will not work on a Raspberry Pi 3.
 
-If low-light is important to you, the Sony IMX327 and IMX462 series of sensors might appeal to you. They are generally designed for security camera applications, but with the use of an IR Filter, you can make them adequate for use a standard video cameras. These options may require additional gstreamer and driver work to have work however, so they are for more advanced-users at this time.  Having purchased an IMX327 for myself, the low light is incredible, but driver support requires significant effort to get working on a Raspberry Pi. ISP processing on a Pi is limited as well, so white-balance, HDR, and exposure controls might be insufficient for your application.
+If low-light is important to you, the Sony IMX327 and IMX462 series of sensors might appeal to you. They are generally designed for security camera applications, but with the use of an IR Filter, you can make them adequate for use a standard video cameras. These options may require additional gstreamer and driver work to have work however, so they are for more advanced-users at this time.  Having purchased an IMX327 for myself, the low-light is incredible, but driver support requires significant effort to get working on a Raspberry Pi. ISP processing on a Pi is limited as well, so white-balance, HDR, and exposure controls might be insufficient for your application.
 
 Links for such low-light cameras: 
 
@@ -170,7 +170,7 @@ https://fulekan.aliexpress.com/store/1862644
 
 #### HDMI Input options
 
-As per HDMI adapters, a 1080p30 USB 2.0 HDMI to MJPEG adapter can usually be had for $10 to $20, although there are many fake offerings out there. I've tested a $12 MACROSILICON HDMI to USB adapter, and it works pretty well with the Jetson (and OK with the RPI), although finding a legitimate one might be tricky. On a Raspberry Pi 4, 1080p30 is posssible with the HDMI to USB adapter, but audio currently then goes out of sync; at 720p though, audio stays in sync with the video. Audio sync issues might be resolved in the future with more system tuning.
+As per HDMI adapters, a 1080p30 USB 2.0 HDMI to MJPEG adapter can usually be had for $10 to $20, although there are many fake offerings out there. I've tested a $12 MACROSILICON HDMI to USB adapter, and it works pretty well with the Jetson (and OK with the RPI), although finding a legitimate one might be tricky. On a Raspberry Pi 4, 1080p30 is posssible with the HDMI to USB adapter, but audio currently then goes out of sync; at 720p though, audio stays in sync with the video more frequently. Audio sync issues might be resolved in the future with more system tuning.
 
 There's another option though, and that is to use an HDMI to CSI adapter for Raspberry Pis, such as the C780A ($29 USD) https://www.aliexpress.com/item/1005002861310912.html, although the frame rate of an HDMI to CSI option is limited to 1080p25 (due to 2 CSI lanes only). It's also slightly more expensive than the HDMI to USB alternative. The RPi Compute Module boards seem to have four-lanes of CSI available though, so 30-fps might be achivable there if you buy the compatible board (C780B ?)
 
@@ -206,7 +206,7 @@ midi demo video: https://youtu.be/Gry9UFtOTmQ
 
 - Installation from source is pretty slow and problematic on a rpi; using system images makes using this so much easier.
 
-- Please use the provided backup server for development and testing purposes; that wss server is `wss://apibackup.obs.ninja:443` and for viewing: `https://backup.vdo.ninja`
+- Please use the provided backup server for development purposes; that wss server is `wss://apibackup.vdo.ninja:443` and for viewing: `https://backup.vdo.ninja`
 
 - Passwords must be DISABLED explicitly as this code does not yet have the required crypto logic added yet. Things will not playback if you leave off `&password=false`
 
@@ -231,10 +231,7 @@ midi demo video: https://youtu.be/Gry9UFtOTmQ
 
 - Add a QR-code reader mode to the app, as to setup Stream ID, bitrate, and WiFi passwords using a little website tool. (moderate)
 
-- Enable the rpi-camera by default in the rpi image. forgot to do that. (steve)
 -- Add drivers for Arducam as default in installation build script and include in image
-
-- Get the Hardware encoder to work via USB on a RPI -- there's some issue currently with the gstreamerr and pi encoder currently. (?)
 
 - Have gstreamer/python automatically detect the input devices, settings, system, and configure things automatically.  Allowing for burn, plug, and boot, without needing to log in via SSH at all.
 
