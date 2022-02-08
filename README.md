@@ -78,10 +78,12 @@ optional arguments:
   --pulse PULSE         Use pulse audio (or pipewire) input.
   --raw                 Opens the V4L2 device with raw capabilities.
   --h264                For PC, instead of VP8, use x264.
+  --vp8                 VP8 encoder instead of h264; likely software-based
   --nvidia              Creates a pipeline optimised for nvidia hardware.
   --rpi                 Creates a pipeline optimised for raspberry pi hadware.
   --novideo             Disables video input.
   --noaudio             Disables audio input.
+  --omx                 An alternative hardware encoder for the RPi; glitches, but faster?
   --pipeline PIPELINE   A full custom pipeline
   --record STREAMID     Specify a stream ID to record; this will disable publishing mode
   --midi                MIDI transport; can forward/recieve MIDI to remote browser/device
