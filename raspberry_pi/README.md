@@ -69,11 +69,11 @@ After cloning the code repository, if you have any problems or wish to update to
 
 If using an **original Raspberry Pi Zero**, an official Raspberry Pi CSI camera is probably the best bet, as using a USB-based camera will likely not perform that well. USB works pretty okay on a Raspberry Pi 4, as it has enough excess CPU cores to handle decoding motion jpeg, audio encoding, and the network overhead, but the Pi Zero original does not.
 
-On a Pi Zero W original, 640x360p30 works fairly well via a USB camera. At 1080p though, frame rates drop down to around 10-fps though.  With an official CSI camera, 1080p30 is possible on a Pi Zero W original, but you might get the occassional frame hiccup still.
+On a Pi Zero W original, 640x360p30 works fairly well via a USB camera. At 1080p though, frame rates drop down to around 5 to 10-fps though (10-fps with omx, but glitches a bit).  With an official CSI camera, 1080p30 is possible on a Pi Zero W original, but you might get the occassional frame hiccup still.
 
 Some USB devices may struggle with audio/video syncronization. Video normally is low latency, but audio can sometimes drift a second or two behind the video with USB audio devices. We're trying to understand what causes this issue still; dropping the video resolution/frame rate can sometimes help though. It also doesn't seem to manifest itself when using Firefox as the viewer; just Chromium-based browsers.
 
-If you are using a Raspberry Pi 4, then you should be pretty good to go at this point, even at 1080p30 over USB. You might contend with audio/video sycronization issues if using a USB camera/audio source still, but hopefully that issue can be resolved shortly. 
+If you are using a Raspberry Pi 4, then you should be pretty good to go at this point, even at 1080p30 MJPEG over USB 2.0 seems to work well there. You might contend with audio/video sycronization issues if using a USB camera/audio source still, but hopefully that issue can be resolved shortly. 
 
 If you are using a Raspberry Pi 2 or 3, you might want to limit the resolution to 720p, at least if using a USB camera source.
 
@@ -81,7 +81,9 @@ If using the CSI camera, the hardware encoder often works quite well, although i
 
 To enable the CSI camera, you'll need to add `--rpicam` to the command-line, as the default is USB MPJEG.  You may need to run `sudo raspi-config` ane enable the CSI camera inteface before the script will be able to use it. Some CSI cameras must be run with `--v4l2` instead, and some others require custom drivers to be installed first. Sticking with the official raspberry pi cameras is your best bet, but the $40 HDMI-to-CSI adapter and some knock off Raspberry Pi CSI cameras often will work pretty well too.
 
-To enable RAW-mode (YUY2) via a USB Camera, instead of MJPEG, you'll need to add `--raw` to the command line, and probably limit the resolution to around 480p.
+To enable RAW-mode (YUY2) via a USB Camera, instead of MJPEG, you'll need to add `--raw` to the command line, and probably limit the resolution to around 480p. 
+
+If using an HDMI adapter as a camera source, you may need to adjust things at a code level to account for the color-profiles of your camera source. `--bt601` is an option for one stanard profile, with the default profile set at `coloimetry=2:4:5:4` for a Raspberry Pi. 10-bit and interlaced video probably isn't a good idea to attempt to use, and if possible setting the HDMI output of your camera to 8-bit 1080p24,25 or 30 is the highest you should probably go.
 
 ###### Please return to the parent folder for more details on how to run and configure
 
