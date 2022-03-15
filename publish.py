@@ -682,7 +682,8 @@ if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--streamid', type=str, default=str(random.randint(1000000,9999999)), help='Stream ID of the peer to connect to')
     parser.add_argument('--server', type=str, default=WSS, help='Handshake server to use, eg: "wss://wss.vdo.ninja:443"')
-    parser.add_argument('--bitrate', type=int, default=4000, help='Sets the video bitrate. This is not adaptive, so packet loss and insufficient bandwidth will cause frame loss')
+    parser.add_argument('--bitrate', type=int, default=4000, help='Sets the video bitrate; kbps. This is not adaptive, so packet loss and insufficient bandwidth will cause frame loss')
+    parser.add_argument('--audiobitrate', type=int, default=64, help='Sets the audio bitrate; kbps.')
     parser.add_argument('--width', type=int, default=1920, help='Sets the video width. Make sure that your input supports it.')
     parser.add_argument('--height', type=int, default=1080, help='Sets the video height. Make sure that your input supports it.')
     parser.add_argument('--framerate', type=int, default=30, help='Sets the video framerate. Make sure that your input supports it.')
@@ -700,6 +701,7 @@ if __name__=='__main__':
     parser.add_argument('--x264', action='store_true', help='Prioritizes x264 encoder over hardware encoder')
     parser.add_argument('--vp8', action='store_true', help='Prioritizes vp8 codec over h264; software encoder')
     parser.add_argument('--omx', action='store_true', help='Try to use the OMX driver for encoding video; not recommended')
+    parser.add_argument('--vorbis', action='store_true', help='Try to use the OMX driver for encoding video; not recommended')
     parser.add_argument('--nvidia', action='store_true', help='Creates a pipeline optimised for nvidia hardware.')
     parser.add_argument('--rpi', action='store_true', help='Creates a pipeline optimised for raspberry pi hadware.')
     parser.add_argument('--multiviewer', action='store_true', help='Allows for multiple viewers to watch a single encoded stream; will use more CPU and bandwidth.')
@@ -880,13 +882,15 @@ if __name__=='__main__':
 
             else:
                 needed += ['alsa']
-                pipeline_audio_input += f'alsasrc device={args.alsa}'
+                pipeline_audio_input += f'alsasrc device={args.alsa} use-driver-timestamps=TRUE'
                 
 
             if args.zerolatency:
-               pipeline_audio_input += ' ! queue max-size-buffers=2 leaky=downstream ! audioresample quality=0 resample-method=0 ! audioconvert ! opusenc bitrate-type=0 bitrate=16000 inband-fec=false audio-type=2051 frame-size=20 ! rtpopuspay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
+               pipeline_audio_input += ' ! queue max-size-buffers=2 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=0 bitrate=16000 inband-fec=false audio-type=2051 frame-size=20 ! rtpopuspay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
+            elif args.vorbis:
+               pipeline_audio_input += f' ! queue max-size-buffers=3 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! vorbisenc bitrate={args.audiobitrate}000 ! rtpvorbispay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=VORBIS,payload=100' 
             else:
-               pipeline_audio_input += ' ! queue max-size-buffers=3 leaky=downstream ! audioresample quality=0 resample-method=0 ! audioconvert ! opusenc bitrate-type=1 bitrate=64000 inband-fec=true ! rtpopuspay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
+               pipeline_audio_input += f' ! queue max-size-buffers=3 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=1 bitrate={args.audiobitrate}000  inband-fec=true ! rtpopuspay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
 
             if args.multiviewer: # a 'tee' element may use more CPU or cause extra stuttering, so by default not enabled, but needed to support multiple viewers
                 pipeline_audio_input += ' ! tee name=audiotee '
