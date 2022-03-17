@@ -45,7 +45,6 @@ class WebRTCClient:
         else:
             msg = json.dumps({"request":"seed","streamID":self.stream_id})
             await self.conn.send(msg)
-        print(msg)
         
         
     def sendMessage(self, msg): # send message to wss
