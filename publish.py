@@ -694,7 +694,7 @@ if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--streamid', type=str, default=str(random.randint(1000000,9999999)), help='Stream ID of the peer to connect to')
     parser.add_argument('--room', type=str, default=None, help='optional - Room name of the peer to join')
-    parser.add_argument('--server', type=str, default=WSS, help='Handshake server to use, eg: "wss://wss.vdo.ninja:443"')
+    parser.add_argument('--server', type=str, default=None, help='Handshake server to use, eg: "wss://wss.vdo.ninja:443"')
     parser.add_argument('--bitrate', type=int, default=4000, help='Sets the video bitrate; kbps. This is not adaptive, so packet loss and insufficient bandwidth will cause frame loss')
     parser.add_argument('--audiobitrate', type=int, default=64, help='Sets the audio bitrate; kbps.')
     parser.add_argument('--width', type=int, default=1920, help='Sets the video width. Make sure that your input supports it.')
@@ -923,15 +923,22 @@ if __name__=='__main__':
         if not check_plugins(needed) or error:
             sys.exit(1)
 
+    if args.server:
+        server = "&wss="+args.server.split("wss://")[-1];
+        args.server = "wss://"+args.server.split("wss://")[-1]
+    else:
+        args.server = WSS
+        server = ""
+
     if args.record:
-        print(f"\nYou can publish a stream to record at: https://vdo.ninja/?password=false&push={args.record}");
+        print(f"\nYou can publish a stream to record at: https://vdo.ninja/?password=false&push={args.record}{server}");
         print("\nAvailable options include --record and --server.")
     elif args.room:
         print("\nAvailable options include --streamid, --bitrate, and --server. Default bitrate is 4000 (kbps)")
-        print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}&room={args.room}&scene");
+        print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}&room={args.room}&scene{server}");
     else:
         print("\nAvailable options include --streamid, --bitrate, and --server. Default bitrate is 4000 (kbps)")
-        print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}");
+        print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}{server}");
 
     c = WebRTCClient(args.streamid, args.server, args.multiviewer, args.record, args.midi, args.room)
     asyncio.get_event_loop().run_until_complete(c.connect())
