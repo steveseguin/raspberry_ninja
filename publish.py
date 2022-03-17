@@ -17,11 +17,12 @@ gi.require_version('GstSdp', '1.0')
 from gi.repository import GstSdp
                                
 class WebRTCClient:
-    def __init__(self, stream_id, server, multiviewer, record, midi):
+    def __init__(self, stream_id, server, multiviewer, record, midi, room_name):
         self.conn = None
         self.pipe = None
         self.server = server
         self.stream_id = stream_id
+        self.room_name = room_name
         self.multiviewer = multiviewer
         self.record = record
         self.midi = midi
@@ -38,9 +39,13 @@ class WebRTCClient:
         if args.record:
             msg = json.dumps({"request":"play","streamID":args.record})
             await self.conn.send(msg)
+        elif args.room:
+            msg = json.dumps({"request":"joinroom","roomid":self.room_name})
+            await self.conn.send(msg)
         else:
             msg = json.dumps({"request":"seed","streamID":self.stream_id})
             await self.conn.send(msg)
+        print(msg)
         
         
     def sendMessage(self, msg): # send message to wss
@@ -612,6 +617,7 @@ class WebRTCClient:
         print("WSS CONNECTED")
         async for message in self.conn:
             msg = json.loads(message)
+
             if 'from' in msg:
                 if msg['from'] == self.puuid:
                     continue
@@ -621,6 +627,11 @@ class WebRTCClient:
                     continue
                 UUID = msg['UUID']
             else:
+                if self.room_name:
+                    if 'request' in msg:
+                        if msg['request'] == 'listing':
+                            msg = json.dumps({"request":"seed","streamID":self.stream_id})
+                            await self.conn.send(msg)
                 continue
                 
             if UUID not in self.clients:
@@ -681,6 +692,7 @@ if __name__=='__main__':
     error = False
     parser = argparse.ArgumentParser()
     parser.add_argument('--streamid', type=str, default=str(random.randint(1000000,9999999)), help='Stream ID of the peer to connect to')
+    parser.add_argument('--room', type=str, default=None, help='optional - Room name of the peer to join')
     parser.add_argument('--server', type=str, default=WSS, help='Handshake server to use, eg: "wss://wss.vdo.ninja:443"')
     parser.add_argument('--bitrate', type=int, default=4000, help='Sets the video bitrate; kbps. This is not adaptive, so packet loss and insufficient bandwidth will cause frame loss')
     parser.add_argument('--audiobitrate', type=int, default=64, help='Sets the audio bitrate; kbps.')
@@ -913,11 +925,14 @@ if __name__=='__main__':
     if args.record:
         print(f"\nYou can publish a stream to record at: https://vdo.ninja/?password=false&push={args.record}");
         print("\nAvailable options include --record and --server.")
+    elif args.room:
+        print("\nAvailable options include --streamid, --bitrate, and --server. Default bitrate is 4000 (kbps)")
+        print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}&room={args.room}&scene");
     else:
         print("\nAvailable options include --streamid, --bitrate, and --server. Default bitrate is 4000 (kbps)")
         print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}");
 
-    c = WebRTCClient(args.streamid, args.server, args.multiviewer, args.record, args.midi)
+    c = WebRTCClient(args.streamid, args.server, args.multiviewer, args.record, args.midi, args.room)
     asyncio.get_event_loop().run_until_complete(c.connect())
     res = asyncio.get_event_loop().run_until_complete(c.loop())
     sys.exit(res)
