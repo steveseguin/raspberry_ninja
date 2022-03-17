@@ -35,7 +35,6 @@ class WebRTCClient:
     async def connect(self):
         sslctx = ssl.create_default_context()
         self.conn = await websockets.connect(self.server, ssl=sslctx)
-        
         if args.record:
             msg = json.dumps({"request":"play","streamID":args.record})
             await self.conn.send(msg)
@@ -616,11 +615,14 @@ class WebRTCClient:
         print("WSS CONNECTED")
         async for message in self.conn:
             msg = json.loads(message)
-
             if 'from' in msg:
+                if self.puuid==None:
+                    self.puuid = str(random.randint(10000000,99999999))
                 if msg['from'] == self.puuid:
                     continue
                 UUID = msg['from']
+                if ('UUID' in msg) and (msg['UUID'] != self.puuid):
+                    continue
             elif 'UUID' in msg:
                 if (self.puuid != None) and (self.puuid != msg['UUID']):
                     continue
