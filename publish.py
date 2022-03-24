@@ -17,7 +17,7 @@ gi.require_version('GstSdp', '1.0')
 from gi.repository import GstSdp
                                
 class WebRTCClient:
-    def __init__(self, stream_id, server, multiviewer, record, midi, room_name):
+    def __init__(self, stream_id, server, multiviewer, record, midi, room_name, rotation):
         self.conn = None
         self.pipe = None
         self.server = server
@@ -31,6 +31,7 @@ class WebRTCClient:
         self.midiout_ports = None
         self.puuid = None
         self.clients = {}
+        self.rotate = int(rotation)
         
     async def connect(self):
         sslctx = ssl.create_default_context()
@@ -184,6 +185,12 @@ class WebRTCClient:
             elif self.midi:
                 msg = {"audio":False, "video":False, "allowmidi":True, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
                 self.sendMessage(msg)
+            elif self.rotate:
+                msg = {"info":{"rotate_video":self.rotate}, "UUID": client["UUID"]}
+                print(msg)
+                self.sendMessage(msg)
+
+            
 
         def on_data_channel_close(channel):
             print('DATA CHANNEL: CLOSE')
@@ -704,6 +711,7 @@ if __name__=='__main__':
     parser.add_argument('--hdmi', action='store_true', help='Try to setup a HDMI dongle')
     parser.add_argument('--v4l2',type=str, default='/dev/video0', help='Sets the V4L2 input device.')
     parser.add_argument('--rpicam', action='store_true', help='Sets the RaspberryPi input device.')
+    parser.add_argument('--rotate', type=int, default=0, help='Rotates the camera in degrees; 0 (default), 90, 180, 270 are possible values.')
     parser.add_argument('--nvidiacsi', action='store_true', help='Sets the input to the nvidia csi port.')
     parser.add_argument('--alsa', type=str, default='default', help='Use alsa audio input.')
     parser.add_argument('--pulse', type=str, help='Use pulse audio (or pipewire) input.')
@@ -940,7 +948,7 @@ if __name__=='__main__':
         print("\nAvailable options include --streamid, --bitrate, and --server. Default bitrate is 4000 (kbps)")
         print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}{server}");
 
-    c = WebRTCClient(args.streamid, args.server, args.multiviewer, args.record, args.midi, args.room)
+    c = WebRTCClient(args.streamid, args.server, args.multiviewer, args.record, args.midi, args.room, args.rotate)
     asyncio.get_event_loop().run_until_complete(c.connect())
     res = asyncio.get_event_loop().run_until_complete(c.loop())
     sys.exit(res)
