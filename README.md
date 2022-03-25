@@ -92,7 +92,7 @@ optional arguments:
   --noaudio             Disables audio input.
   --omx                 An alternative hardware encoder for the RPi; glitches, but faster?
   --pipeline PIPELINE   A full custom pipeline
-  --record STREAMID     Specify a stream ID to record; this will disable publishing mode
+  --record STREAMID     Specify a remote stream ID to record; this will disable publishing mode
   --midi                MIDI transport; can forward/recieve MIDI to remote browser/device
   --save                Will save a local copy of the outbound stream to disk (MKV format)
   --rotate DEGREES      Will rotate the video by 90, 180 , or 270 degrees
