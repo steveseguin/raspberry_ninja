@@ -94,7 +94,8 @@ optional arguments:
   --pipeline PIPELINE   A full custom pipeline
   --record STREAMID     Specify a stream ID to record; this will disable publishing mode
   --midi                MIDI transport; can forward/recieve MIDI to remote browser/device
-
+  --save                Will save a local copy of the outbound stream to disk (MKV format)
+  --rotate              Will rotate the video by 90, 180 , or 270 degrees
 ```
 
 ##### Changing video input sources
