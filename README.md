@@ -96,6 +96,7 @@ optional arguments:
   --midi                MIDI transport; can forward/recieve MIDI to remote browser/device
   --save                Will save a local copy of the outbound stream to disk (MKV format)
   --rotate DEGREES      Will rotate the video by 90, 180 , or 270 degrees
+  --multiviewer         Allows for multiple viewers at a time; this can increase bandwidth usage of course
 ```
 
 ##### Changing video input sources
