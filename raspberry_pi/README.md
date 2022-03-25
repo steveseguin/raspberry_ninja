@@ -186,4 +186,14 @@ sudo apt update
 sudo apt full-upgrade
 sudo reboot
 ```
+### Problem with Raspberry Pi Camera and Pi Zero 2
 
+I ran into an issue where the RPI Camera (v1.3 and v2.x) were not working on my Raspberry Pi Zero 2.
+
+Typically you'd check `sudo raspi-config` and make sure the camera is enabled via the interface options.  If that doens't work, you'd then check to make sure the cable on the camera board is not loose.
+
+None of those worked, but adding the following to the `/boot/config.txt` and rebooting file fixed things.
+```
+start_file=start_x.elf
+fixup_file=fixup_x.dat
+```
