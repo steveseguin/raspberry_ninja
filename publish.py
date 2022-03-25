@@ -17,7 +17,7 @@ gi.require_version('GstSdp', '1.0')
 from gi.repository import GstSdp
                                
 class WebRTCClient:
-    def __init__(self, stream_id, server, multiviewer, record, midi, room_name, rotation):
+    def __init__(self, stream_id, server, multiviewer, record, midi, room_name, rotation, save_file):
         self.conn = None
         self.pipe = None
         self.server = server
@@ -32,6 +32,11 @@ class WebRTCClient:
         self.puuid = None
         self.clients = {}
         self.rotate = int(rotation)
+        self.save_file = save_file
+        if self.save_file:
+            self.pipe = Gst.parse_launch(PIPELINE_DESC)
+            self.pipe.set_state(Gst.State.PLAYING)
+            print("RECORDING TO DISK STARTED")
         
     async def connect(self):
         sslctx = ssl.create_default_context()
@@ -190,7 +195,6 @@ class WebRTCClient:
                 print(msg)
                 self.sendMessage(msg)
 
-            
 
         def on_data_channel_close(channel):
             print('DATA CHANNEL: CLOSE')
@@ -211,6 +215,7 @@ class WebRTCClient:
                 self.clients[client["UUID"]] = client                
             elif 'bye' in msg: ## v19 of VDO.Ninja
                 print("PEER INTENTIONALLY HUNG UP")
+                self.stop_pipeline(client['UUID'])
             elif 'description' in msg:
                 print("INCOMING SDP - DC")
                 if msg['description']['type'] == "offer":
@@ -582,7 +587,9 @@ class WebRTCClient:
                 if uid != UUID:
                     self.stop_pipeline(uid)
                     break
-            if self.pipe:
+            if self.save_file:
+                pass
+            elif self.pipe:
                 self.pipe.set_state(Gst.State.NULL)
                 self.pipe = None
             await self.createPeer(UUID)
@@ -613,7 +620,9 @@ class WebRTCClient:
             del self.clients[UUID]
             
         if self.pipe:
-            if len(self.clients)==0:
+            if self.save_file:
+                pass
+            elif len(self.clients)==0:
                 self.pipe.set_state(Gst.State.NULL)
                 self.pipe = None
             
@@ -730,7 +739,9 @@ if __name__=='__main__':
     parser.add_argument('--noaudio', action='store_true', help='Disables audio input.')
     parser.add_argument('--pipeline', type=str, help='A full custom pipeline')
     parser.add_argument('--record',  type=str, help='Specify a stream ID to record to disk. System will not publish a stream when enabled.') ### Doens't work correctly yet. might be a gstreamer limitation.
+    parser.add_argument('--save', action='store_true', help='Save a copy of the outbound stream to disk. Publish Live + Store the video.')
     parser.add_argument('--midi', action='store_true', help='Transparent MIDI bridge mode; no video or audio.')
+    
 
     args = parser.parse_args()
      
@@ -753,8 +764,8 @@ if __name__=='__main__':
         except:
             print("You must install RTMIDI first; pip3 install python-rtmidi")
             sys.exit()
-        args.multiviewer = True;
-        PIPELINE_DESC = ""; 
+        args.multiviewer = True
+        PIPELINE_DESC = ""
         pass
     else:
         pipeline_video_input = ''
@@ -771,7 +782,7 @@ if __name__=='__main__':
 
         if args.vp8:
            args.h264 = False
- 
+           
         if args.hdmi:
             args.v4l2 = '/dev/v4l/by-id/usb-MACROSILICON_*'
             args.alsa = 'hw:MS2109'
@@ -779,7 +790,16 @@ if __name__=='__main__':
                 args.width = 1280
                 args.height = 720
                 args.framerate = 10
+                
+        if args.save:
+            args.multiviewer = True
 
+        saveAudio = ""
+        saveVideo = ""
+        if args.save:
+            saveAudio = ' ! tee name=saveaudiotee ! queue ! mux.audio_0 saveaudiotee.'
+            saveVideo = ' ! tee name=savevideotee ! queue ! mux.video_0 savevideotee.'
+                
         if not args.novideo:
             if args.nvidia:
                 needed += ['omx', 'nvvidconv']
@@ -806,7 +826,12 @@ if __name__=='__main__':
             elif args.rpicam:
                 needed += ['rpicamsrc']
                 args.rpi = True
-                pipeline_video_input = f'rpicamsrc bitrate={args.bitrate}000 ! video/x-h264,profile=constrained-baseline,width={args.width},height={args.height},framerate=(fraction){args.framerate}/1,level=3.0 ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 '
+                
+                rotate = ""
+                if args.rotate:
+                    rotate = " rotation="+str(int(args.rotate))
+                    args.rotate = 0
+                pipeline_video_input = f'rpicamsrc bitrate={args.bitrate}000{rotate} ! video/x-h264,profile=constrained-baseline,width={args.width},height={args.height},framerate=(fraction){args.framerate}/1,level=3.0 ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 '
 
             elif args.nvidiacsi:
                 needed += ['nvarguscamerasrc']
@@ -815,7 +840,7 @@ if __name__=='__main__':
 
             elif args.v4l2:
                 needed += ['video4linux2']
-                pipeline_video_input = f'v4l2src device={args.v4l2} io-mode=2'
+                pipeline_video_input = f'v4l2src device={args.v4l2} io-mode=2 do-timestamp=true'
                 if not os.path.exists(args.v4l2):
                     print(f"The video input {args.v4l2} does not exists.")
                     error = True
@@ -842,6 +867,7 @@ if __name__=='__main__':
                     else:
                         pipeline_video_input += ' ! jpegdec'
 
+
             if args.h264:
                 # H264
                 if args.nvidia:
@@ -866,10 +892,7 @@ if __name__=='__main__':
                 else:
                     pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=1 ! x264enc bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline'
                     
-                if args.multiviewer:
-                    pipeline_video_input += ' ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! h264parse config-interval=-1 ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! tee name=videotee '
-                else:
-                    pipeline_video_input += ' ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! h264parse config-interval=-1 ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000  ! sendrecv.'
+                pipeline_video_input += f' ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! h264parse {saveVideo} ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
 
             else:
                 # VP8
@@ -881,16 +904,15 @@ if __name__=='__main__':
                         width = args.width
                         height = args.height
 
-                    if args.multiviewer:
-                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! vp8enc deadline=1 target-bitrate={args.bitrate}000 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! tee name=videotee '
-                    else:
-                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! queue max-size-buffers=1 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! queue ! sendrecv.'
+                    pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! queue max-size-buffers=1 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97'
                 # need to add an nvidia vp8 hardware encoder option.
                 else:
-                    if args.multiviewer:
-                        pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=1 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! tee name=videotee '
-                    else:
-                        pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=1 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! queue ! sendrecv.'
+                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=1 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97'
+                    
+            if args.multiviewer:
+                pipeline_video_input += ' ! tee name=videotee '
+            else:
+                pipeline_video_input += ' ! queue ! sendrecv. '
 
         if not args.noaudio:
             if args.test:
@@ -905,29 +927,33 @@ if __name__=='__main__':
                 needed += ['alsa']
                 pipeline_audio_input += f'alsasrc device={args.alsa} use-driver-timestamps=TRUE'
                 
-
             if args.zerolatency:
-               pipeline_audio_input += ' ! queue max-size-buffers=2 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=0 bitrate=16000 inband-fec=false audio-type=2051 frame-size=20 ! rtpopuspay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
+               pipeline_audio_input += f' ! queue max-size-buffers=2 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=0 bitrate=16000 inband-fec=false audio-type=2051 frame-size=20 {saveAudio} ! rtpopuspay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
             elif args.vorbis:
-               pipeline_audio_input += f' ! queue max-size-buffers=3 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! vorbisenc bitrate={args.audiobitrate}000 ! rtpvorbispay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=VORBIS,payload=100' 
+               pipeline_audio_input += f' ! queue max-size-buffers=3 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! vorbisenc bitrate={args.audiobitrate}000 {saveAudio} ! rtpvorbispay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=VORBIS,payload=100' 
             else:
-               pipeline_audio_input += f' ! queue max-size-buffers=3 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=1 bitrate={args.audiobitrate}000  inband-fec=true ! rtpopuspay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
+               pipeline_audio_input += f' ! queue max-size-buffers=3 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=1 bitrate={args.audiobitrate}000 inband-fec=true {saveAudio} ! rtpopuspay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
 
             if args.multiviewer: # a 'tee' element may use more CPU or cause extra stuttering, so by default not enabled, but needed to support multiple viewers
                 pipeline_audio_input += ' ! tee name=audiotee '
             else:
-                pipeline_audio_input += ' ! sendrecv.'
+                pipeline_audio_input += ' ! queue ! sendrecv. '
+                
+        pipeline_save = ""
+        if args.save:
+           pipeline_save = " matroskamux name=mux ! queue ! filesink sync=true location="+str(int(time.time()))+".mkv "   
 
         if args.record:
             args.h264 = True
             pass
         elif not args.multiviewer:
-            PIPELINE_DESC = f'webrtcbin  name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input}'
+            PIPELINE_DESC = f'webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
             print('gst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
         else:
-            PIPELINE_DESC = f'{pipeline_video_input} {pipeline_audio_input}'
+            PIPELINE_DESC = f'{pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
             print('Partial pipeline used: ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
             
+        
         if not check_plugins(needed) or error:
             sys.exit(1)
 
@@ -948,7 +974,7 @@ if __name__=='__main__':
         print("\nAvailable options include --streamid, --bitrate, and --server. Default bitrate is 4000 (kbps)")
         print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}{server}");
 
-    c = WebRTCClient(args.streamid, args.server, args.multiviewer, args.record, args.midi, args.room, args.rotate)
+    c = WebRTCClient(args.streamid, args.server, args.multiviewer, args.record, args.midi, args.room, args.rotate, args.save)
     asyncio.get_event_loop().run_until_complete(c.connect())
     res = asyncio.get_event_loop().run_until_complete(c.loop())
     sys.exit(res)
