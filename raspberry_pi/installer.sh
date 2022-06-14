@@ -32,7 +32,7 @@ sudo apt-get install ccache curl bison flex \
 	libjpeg-dev libmms-dev libmpg123-dev libogg-dev libopus-dev \
 	liborc-0.4-dev libpango1.0-dev libpng-dev librtmp-dev \
 	libtheora-dev libtwolame-dev libvorbis-dev libwebp-dev \
-	libjpeg8-dev libgif-dev pkg-config zlib1g-dev libmp3lame-dev \
+	libgif-dev pkg-config zlib1g-dev libmp3lame-dev \
 	libmpeg2-4-dev libopencore-amrnb-dev libopencore-amrwb-dev libcurl4-openssl-dev \
 	libsidplay1-dev libx264-dev libusb-1.0 pulseaudio libpulse-dev \
 	libomxil-bellagio-dev libfreetype6-dev checkinstall fonts-freefont-ttf -y
@@ -48,7 +48,7 @@ sudo apt-get install woof -y
 
 
 # Get the required libraries
-sudo apt-get install -y --force-yes autotools-dev automake autoconf \
+sudo apt-get install autotools-dev automake autoconf \
 	autopoint libxml2-dev zlib1g-dev libglib2.0-dev \
 	pkg-config bison flex  gtk-doc-tools libasound2-dev \
 	libgudev-1.0-dev libxt-dev libvorbis-dev libcdparanoia-dev \
@@ -60,9 +60,9 @@ sudo apt-get install -y --force-yes autotools-dev automake autoconf \
 	libcdaudio-dev libdc1394-22-dev ladspa-sdk libass-dev \
 	libcurl4-gnutls-dev libdca-dev libdvdnav-dev \
 	libexempi-dev libexif-dev libfaad-dev libgme-dev libgsm1-dev \
-	libiptcdata0-dev libkate-dev libmimic-dev libmms-dev \
+	libiptcdata0-dev libkate-dev libmms-dev \
 	libmodplug-dev libmpcdec-dev libofa0-dev libopus-dev \
-	librsvg2-dev librtmp-dev libschroedinger-dev libslv2-dev \
+	librsvg2-dev librtmp-dev \
 	libsndfile1-dev libsoundtouch-dev libspandsp-dev libx11-dev \
 	libxvidcore-dev libzbar-dev libzvbi-dev liba52-0.7.4-dev \
 	libcdio-dev libdvdread-dev libmad0-dev libmp3lame-dev \
@@ -80,19 +80,19 @@ sudo apt-get install policykit-1-gnome -y
 cd ~
 git clone https://github.com/mesonbuild/meson.git
 cd meson
-git checkout 0.59.2  ## 1.6.2 is an older vesrion; should be compatible with 1.16.3 though, and bug fixes!!
+git checkout 0.61.5  ## 1.6.2 is an older vesrion; should be compatible with 1.16.3 though, and bug fixes!!
 git fetch --all
 sudo python3 setup.py install
 
-
+sudo apt-get install flex bison -y
 sudo apt-get install libwebrtc-audio-processing-dev -y
+
 cd ~
-wget http://freedesktop.org/software/pulseaudio/webrtc-audio-processing/webrtc-audio-processing-0.3.1.tar.xz
-tar xvf webrtc-audio-processing-0.3.1.tar.xz
-cd webrtc-audio-processing-0.3.1
-./configure 
-make
-sudo make install
+git clone https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git
+cd webrtc-audio-processing
+meson . build -Dprefix=$PWD/install
+ninja -C build -j1
+ninja -C build install
 sudo ldconfig
 
 cd ~
@@ -115,13 +115,13 @@ make -j4
 sudo make install
 
 
-sudo apt-get install libdrm-dev -y
+sudo apt-get install libdrm-dev libgmp-dev -y
 cd ~
 [ ! -d FFmpeg ] && git clone https://github.com/FFmpeg/FFmpeg.git
 cd FFmpeg
 git pull
 make distclean 
-sudo ./configure --extra-cflags="-I/usr/local/include" --extra-ldflags="-L/usr/local/lib" --enable-libopencore-amrnb  --enable-librtmp --enable-libopus --enable-libopencore-amrwb --enable-gmp --enable-version3 --enable-libdrm --enable-shared  --enable-pic --enable-libvpx --enable-libfdk-aac --target-os=linux --enable-gpl --enable-omx --enable-omx-rpi --enable-pthreads --enable-hardcoded-tables  --enable-omx --enable-nonfree --enable-libfreetype --enable-libx264 --enable-libmp3lame --enable-mmal --enable-indev=alsa --enable-outdev=alsa --disable-vdpau --extra-ldflags="-latomic"
+sudo ./configure --extra-cflags="-I/usr/local/include" --extra-ldflags="-L/usr/local/lib" --enable-libopencore-amrnb  --enable-librtmp --enable-libopus --enable-libopencore-amrwb --enable-gmp --enable-version3 --enable-libdrm --enable-shared  --enable-pic --enable-libvpx --enable-libfdk-aac --target-os=linux --enable-gpl --enable-omx --enable-omx-rpi --enable-pthreads --enable-hardcoded-tables  --enable-omx --enable-nonfree --enable-libfreetype --enable-libx264 --enable-mmal --enable-indev=alsa --enable-outdev=alsa --disable-vdpau --extra-ldflags="-latomic"
 libtoolize
 make -j4
 libtoolize
@@ -129,10 +129,10 @@ sudo make install -j4
 sudo ldconfig
 
 cd ~
-wget https://download.gnome.org/sources/glib/2.70/glib-2.70.0.tar.xz
-sudo rm glib-2.70.0 -r || true
-tar -xvf glib-2.70.0.tar.xz
-cd glib-2.70.0
+wget https://download.gnome.org/sources/glib/2.72/glib-2.72.2.tar.xz
+sudo rm glib-2.72.2 -r || true
+tar -xvf glib-2.72.2.tar.xz
+cd glib-2.72.2
 mkdir build
 cd build
 meson --prefix=/usr/local -Dman=false ..
@@ -153,10 +153,10 @@ sudo libtoolize
 
 
 cd ~
-wget https://download.gnome.org/sources/gobject-introspection/1.70/gobject-introspection-1.70.0.tar.xz
-sudo rm  gobject-introspection-1.70.0 -r || true
-tar -xvf gobject-introspection-1.70.0.tar.xz
-cd gobject-introspection-1.70.0
+wget https://download.gnome.org/sources/gobject-introspection/1.72/gobject-introspection-1.72.0.tar.xz
+sudo rm  gobject-introspection-1.72.0 -r || true
+tar -xvf gobject-introspection-1.72.0.tar.xz
+cd gobject-introspection-1.72.0
 mkdir build
 cd build
 sudo meson --prefix=/usr/local --buildtype=release  ..
@@ -172,67 +172,8 @@ sudo apt-get install -y libepoxy-dev
 sudo apt-get install -y libatk-bridge2.0
 
 
-cd ~
-[ ! -d src ] && mkdir src
-cd src
-[ ! -d gstreamer ] && mkdir gstreamer
-cd gstreamer
-
-[ ! -d gstreamer ] && git clone git://anongit.freedesktop.org/git/gstreamer/gstreamer
-[ ! -d gst-plugins-base ] && git clone git://anongit.freedesktop.org/git/gstreamer/gst-plugins-base
-[ ! -d gst-plugins-good ] && git clone git://anongit.freedesktop.org/git/gstreamer/gst-plugins-good
-[ ! -d gst-plugins-bad ] && git clone git://anongit.freedesktop.org/git/gstreamer/gst-plugins-bad
-[ ! -d gst-plugins-ugly ] && git clone git://anongit.freedesktop.org/git/gstreamer/gst-plugins-ugly
-[ ! -d gst-omx ] && git clone git://anongit.freedesktop.org/git/gstreamer/gst-omx
-[ ! -d gst-python ] && git clone git://anongit.freedesktop.org/git/gstreamer/gst-python
-[ ! -d gst-rtsp-server ] && git clone git://anongit.freedesktop.org/git/gstreamer/gst-rtsp-server
-[ ! $RPI ] && [ ! -d gstreamer-vaapi ] && git clone git://anongit.freedesktop.org/git/gstreamer/gstreamer-vaapi
-
-
 export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
 export LD_LIBRARY_PATH=/usr/local/lib/
-
-
-cd gstreamer
-git pull
-sudo rm -r build || true
-[ ! -d build ] && mkdir build
-cd build
-sudo meson --prefix=/usr/local -Dbuildtype=release -Dgst_debug=false -Dgtk_doc=disabled
-cd ..
-sudo ninja -C build install -j4
-cd ..
-
-cd gst-plugins-base
-git pull
-sudo rm -r build  || true
-[ ! -d build ] && mkdir build
-cd build
-sudo meson --prefix=/usr/local -Dbuildtype=release -Dgst_debug=false -Dgtk_doc=disabled
-cd ..
-sudo ninja -C build install -j4
-cd ..
-
-cd gst-plugins-good
-git pull
-sudo rm -r build  || true
-[ ! -d build ] && mkdir build
-cd build
-sudo meson --prefix=/usr/local -Dbuildtype=release -Dgst_debug=false -Dgtk_doc=disabled 
-cd ..
-sudo ninja -C build install -j4
-cd ..
-
-cd gst-plugins-ugly
-git pull
-sudo rm -r build  || true
-[ ! -d build ] && mkdir build
-cd build
-sudo meson --prefix=/usr/local -Dbuildtype=release -Dgst_debug=false -Dgtk_doc=disabled
-cd ..
-sudo ninja -C build install -j4
-cd ..
-
 
 cd ~
 git clone https://github.com/libnice/libnice.git
@@ -255,33 +196,22 @@ sudo make install -j4
 sudo ldconfig
 sudo libtoolize
 
+cd ~
+[ ! -d gstreamer ] && git clone git://anongit.freedesktop.org/git/gstreamer/gstreamer
 
-cd gst-plugins-bad
+cd gstreamer
 git pull
-sudo rm -r build  || true
+sudo rm -r build || true
 [ ! -d build ] && mkdir build
-sudo meson build --prefix=/usr/local -Dbuildtype=release -Dgst_debug=false -Dgtk_doc=disabled -Dexamples=disabled -Dx11=disabled -Dglx=disabled -Dopengl=disabled -D target=rpi -D header_path=/opt/vc/include/IL/ 
-sudo ninja -C build install -j4
+cd build
+sudo meson --prefix=/usr/local -Dbuildtype=release -Dgst-plugins-base:gl_winsys=egl  
+cd ..
+sudo ninja -C build install -j1
 cd ..
 
-cd gst-python
-git pull
-sudo rm -r build  || true
-[ ! -d build ] && mkdir build
-sudo meson build --prefix=/usr/local -Dbuildtype=release -Dgst_debug=false -Dgtk_doc=disabled
-sudo ninja -C build install -j4
-cd ..
-
-cd gst-omx
-git pull
-sudo rm -r build  || true
-[ ! -d build ] && mkdir build
-sudo meson build -D target=rpi -D header_path=/opt/vc/include/IL/ --prefix=/usr/local -Dbuildtype=release -Dgst_debug=false -Dgtk_doc=disabled -Dexamples=disabled -Dx11=disabled -Dglx=disabled -Dopengl=disabled
-sudo ninja -C build install -j4
-cd ..
 sudo ldconfig
 
-modprobe bcm2835-codecfg
+# modprobe bcm2835-codecfg
 
 systemctl --user restart pulseaudio.socket
 sudo rpi-update
