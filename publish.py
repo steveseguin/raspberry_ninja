@@ -890,7 +890,10 @@ if __name__=='__main__':
 
             elif args.camlink:
                 needed += ['video4linux2']
-                pipeline_video_input = f'v4l2src device={args.v4l2} io-mode=2 ! videorate max-rate=30 !  capssetter caps="video/x-raw,format=YUY2,colorimetry=(string)2:4:5:4"'
+                if args.rpi:
+                    pipeline_video_input = f'v4l2src device={args.v4l2} io-mode=2 ! videorate max-rate=30 ! capssetter caps="video/x-raw,format=YUY2,colorimetry=(string)2:4:5:4"'
+                else:
+                    pipeline_video_input = f'v4l2src device={args.v4l2} io-mode=2 ! capssetter caps="video/x-raw,format=YUY2,colorimetry=(string)2:4:5:4"'
 
             elif args.rpicam:
                 needed += ['rpicamsrc']
