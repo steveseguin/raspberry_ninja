@@ -718,6 +718,7 @@ if __name__=='__main__':
     parser.add_argument('--framerate', type=int, default=30, help='Sets the video framerate. Make sure that your input supports it.')
     parser.add_argument('--test', action='store_true', help='Use test sources.')
     parser.add_argument('--hdmi', action='store_true', help='Try to setup a HDMI dongle')
+    parser.add_argument('--camlink', action='store_true', help='Try to setup an Elgato Cam Link')
     parser.add_argument('--v4l2', type=str, default=None, help='Sets the V4L2 input device.')
     parser.add_argument('--rpicam', action='store_true', help='Sets the RaspberryPi input device.')
     parser.add_argument('--rotate', type=int, default=0, help='Rotates the camera in degrees; 0 (default), 90, 180, 270 are possible values.')
@@ -775,10 +776,22 @@ if __name__=='__main__':
                 continue
             print("Video device found: "+d.get_display_name())
         print("")
+   
+        camlink = [d for d in devices if "Cam Link" in  d.get_display_name()]
+        monitor.stop()
+        if len(camlink):
+            args.camlink = True
+
         picam = [d for d in devices if "Raspberry Pi Camera Module" in  d.get_display_name()]
         monitor.stop()
-        if len(devices):
+        if len(picam):
             args.rpicam = True
+
+        usbcam = [d for d in devices if "USB Vid" in  d.get_display_name()]
+        monitor.stop()
+        if len(usbcam) and not args.v4l2:
+            args.v4l2 = "/dev/video0"  
+
     elif not args.v4l2:
         args.v4l2 = '/dev/video0'
     
@@ -799,16 +812,16 @@ if __name__=='__main__':
         pipeline_audio_input = ''
 
         if args.bt601:
-           args.raw = True
+            args.raw = True
 
         if args.zerolatency:
-           args.novideo = True
+            args.novideo = True
 
         if args.nvidia or args.rpi or args.x264 or args.openh264:
-           args.h264 = True
+            args.h264 = True
 
         if args.vp8:
-           args.h264 = False
+            args.h264 = False
            
         if args.hdmi:
             args.v4l2 = '/dev/v4l/by-id/usb-MACROSILICON_*'
@@ -817,6 +830,9 @@ if __name__=='__main__':
                 args.width = 1280
                 args.height = 720
                 args.framerate = 10
+
+        if args.camlink:
+            args.v4l2 = '/dev/video0'
                 
         if args.save:
             args.multiviewer = True
@@ -871,6 +887,10 @@ if __name__=='__main__':
                     pipeline_video_input = f'videotestsrc ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string)NV12,framerate=(fraction){args.framerate}/1'
                 else:
                     pipeline_video_input = f'videotestsrc ! video/x-raw,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
+
+            elif args.camlink:
+                needed += ['video4linux2']
+                pipeline_video_input = f'v4l2src device={args.v4l2} io-mode=2 ! capssetter caps="video/x-raw,format=YUY2,colorimetry=(string)2:4:5:4"'
 
             elif args.rpicam:
                 needed += ['rpicamsrc']
