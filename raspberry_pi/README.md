@@ -8,7 +8,9 @@ It is recommended to use the provided Raspberry Pi image, as the install process
 #### Installing from the provided image
 
 Download and extract the image file:
-https://drive.google.com/file/d/1f1PCEpKBLT3KVZSRR6pYwywt9TKjPmwW/view?usp=sharing
+https://drive.google.com/file/d/1E5464mFjCjdpIgTckpOTpFx82hnqFvYf/view?usp=sharing
+Username: vdo  
+Password: ninja
 
 (** note, Someone reported that their macOS system could not unzip it, but worked fine on Windows)
 
@@ -32,7 +34,13 @@ Note: By default the provided image will have SSH enabled, so if security is a c
 
 #### Login info
 
-Login information for the device is:
+Login information for the supplied v4.x image is:
+```
+username: vdo
+password: ninja
+```
+
+.. On some older/vanilla versions of the Raspberry_Ninja images, the username/password could be:
 ```
 username: pi
 password: raspberry
