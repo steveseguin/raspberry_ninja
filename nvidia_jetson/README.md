@@ -39,7 +39,8 @@ https://drive.google.com/file/d/1WTsW_dWkggGhQXa8p9yOIz3E4tYcl6ee/view?usp=shari
 The username and password to sign in to the image is:
 ```
 username: ninja
-password: 
+password: vdo
+```
 
 ##### Older image compatible built on a Jetson Xavier NX with old firmware
 
