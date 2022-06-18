@@ -8,9 +8,11 @@ While you can probably install Raspberry_ninja onto any Linux flavour, Nvidia's 
 
 #### Steve provided builds
 
-All Steve-provided images require a 32-GB microSD card (or larger).
+The newest builds for Jetson devices require just 16-GB uSD card.  The older ones required 32-GB, but those are for Jetsons running older firmware only.
 
 You can use Win32DiskImager (https://sourceforge.net/projects/win32diskimager/) to write this image to a disk.  If you need to format your SD card first, you can use the SD Card Formatter (https://www.sdcard.org/downloads/formatter/).
+
+If you have problems with Win32DiskImager, [Bletcher](https://www.balena.io/etcher/) might be an option? 
 
 ###### Newest Jetson Nano image here, updated June 6th, 2022.
 The following image was built on a Jetson Nano 2GB developer kit, model A02, with up-to-date firmware.  
