@@ -3,20 +3,27 @@ sudo apt-get upgrade -y
 
 sudo apt-get --fix-broken install -y
 
-sudo apt-get install python3-pip -y
 sudo apt-get install git -y
+
+
+
+
 sudo apt-get install cmake -y
 sudo apt-get install build-essential yasm cmake libtool libc6 libc6-dev unzip wget libnuma1 libnuma-dev -y
 sudo pip3 install scikit-build
 sudo pip3 install ninja
 sudo pip3 install websockets
-pip3 install python-rtmidi
+
+sudo apt-get install python3 python3-pip -y
+
+
 
 sudo apt-get install apt-transport-https ca-certificates -y
-
+pip3 install python-rtmidi
 
 #sudo apt-get remove python-gi-dev -y
 #sudo apt-get install python3-gi -y
+sudo apt-get install -y python3-rtmidi
 
 sudo apt-get install ccache curl bison flex \
         libasound2-dev libbz2-dev libcap-dev libdrm-dev libegl1-mesa-dev \
@@ -27,6 +34,68 @@ sudo apt-get install ccache curl bison flex \
         libjpeg8-dev libgif-dev pkg-config zlib1g-dev libmp3lame-dev \
         libmpeg2-4-dev libopencore-amrnb-dev libopencore-amrwb-dev libcurl4-openssl-dev \
         libsidplay1-dev libx264-dev libusb-1.0 pulseaudio libpulse-dev -y
+		
+# Get the required libraries
+sudo apt-get install autotools-dev automake autoconf \
+	autopoint libxml2-dev zlib1g-dev libglib2.0-dev \
+	pkg-config bison flex  gtk-doc-tools libasound2-dev \
+	libgudev-1.0-dev libxt-dev libvorbis-dev libcdparanoia-dev \
+	libpango1.0-dev libtheora-dev libvisual-0.4-dev iso-codes \
+	libgtk-3-dev libraw1394-dev libiec61883-dev libavc1394-dev \
+	libv4l-dev libcairo2-dev libcaca-dev libspeex-dev libpng-dev \
+	libshout3-dev libjpeg-dev libaa1-dev libflac-dev libdv4-dev \
+	libtag1-dev libwavpack-dev libpulse-dev libsoup2.4-dev libbz2-dev \
+	libcdaudio-dev libdc1394-22-dev ladspa-sdk libass-dev \
+	libcurl4-gnutls-dev libdca-dev libdvdnav-dev \
+	libexempi-dev libexif-dev libfaad-dev libgme-dev libgsm1-dev \
+	libiptcdata0-dev libkate-dev libmms-dev \
+	libmodplug-dev libmpcdec-dev libofa0-dev libopus-dev \
+	librsvg2-dev librtmp-dev \
+	libsndfile1-dev libsoundtouch-dev libspandsp-dev libx11-dev \
+	libxvidcore-dev libzbar-dev libzvbi-dev liba52-0.7.4-dev \
+	libcdio-dev libdvdread-dev libmad0-dev libmp3lame-dev \
+	libmpeg2-4-dev libopencore-amrnb-dev libopencore-amrwb-dev \
+	libsidplay1-dev libtwolame-dev libx264-dev libusb-1.0 \
+	python-gi-dev yasm python3-dev libgirepository1.0-dev -y
+
+sudo apt-get install -y tar gtk-doc-tools libasound2-dev \
+	libmpeg2-4-dev libopencore-amrnb-dev libopencore-amrwb-dev \
+	freeglut3 weston wayland-protocols pulseaudio libpulse-dev libssl-dev -y
+
+
+sudo apt-get install build-essential cmake libtool libc6 libc6-dev unzip wget libnuma1 libnuma-dev -y
+sudo pip3 install scikit-build
+sudo pip3 install ninja 
+sudo pip3 install websockets
+pip3 install python-rtmidi
+
+sudo apt-get install vim -y
+
+sudo apt-get install apt-transport-https ca-certificates -y
+
+
+#sudo apt-get remove python-gi-dev -y
+#sudo apt-get install python3-gi -y
+
+sudo apt-get install ccache curl bison flex \
+	libasound2-dev libbz2-dev libcap-dev libdrm-dev libegl1-mesa-dev \
+	libfaad-dev libgl1-mesa-dev libgles2-mesa-dev libgmp-dev libgsl0-dev \
+	libjpeg-dev libmms-dev libmpg123-dev libogg-dev libopus-dev \
+	liborc-0.4-dev libpango1.0-dev libpng-dev librtmp-dev \
+	libtheora-dev libtwolame-dev libvorbis-dev libwebp-dev \
+	libgif-dev pkg-config zlib1g-dev libmp3lame-dev \
+	libmpeg2-4-dev libopencore-amrnb-dev libopencore-amrwb-dev libcurl4-openssl-dev \
+	libsidplay1-dev libx264-dev libusb-1.0 pulseaudio libpulse-dev \
+	libomxil-bellagio-dev libfreetype6-dev checkinstall fonts-freefont-ttf -y
+	
+sudo apt-get install libatk1.0-dev -y
+sudo apt-get install -y libgdk-pixbuf2.0-dev
+sudo apt-get install libffi6 libffi-dev -y
+sudo apt-get install -y libselinux-dev
+sudo apt-get install -y libmount-dev
+sudo apt-get install libelf-dev -y
+sudo apt-get install libdbus-1-dev -y
+sudo apt-get install woof -y
 
 sudo apt-get install woof -y
 sudo apt-get install libatk1.0-dev -y
@@ -62,19 +131,17 @@ sudo apt-get install libssl-dev -y
 cd ~
 git clone https://github.com/mesonbuild/meson.git
 cd meson
-git checkout 0.59.2  ## 1.6.2 is an older vesrion; should be compatible with 1.16.3 though, and bug fixes!!
+git checkout 0.61.5 
 git fetch --all
 sudo python3 setup.py install
 
 
-sudo apt-get install libwebrtc-audio-processing-dev -y
 cd ~
-wget http://freedesktop.org/software/pulseaudio/webrtc-audio-processing/webrtc-audio-processing-0.3.1.tar.xz
-tar xvf webrtc-audio-processing-0.3.1.tar.xz
-cd webrtc-audio-processing-0.3.1
-./configure 
-make
-sudo make install
+git clone https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git
+cd webrtc-audio-processing
+meson . build -Dprefix=$PWD/install
+ninja -C build -j1
+ninja -C build install
 sudo ldconfig
 
 cd ~
@@ -90,10 +157,10 @@ sudo libtoolize
 
 
 cd ~
-wget https://download.gnome.org/sources/glib/2.70/glib-2.70.0.tar.xz
-sudo rm glib-2.70.0 -r || true
-tar -xvf glib-2.70.0.tar.xz
-cd glib-2.70.0
+wget https://download.gnome.org/sources/glib/2.72/glib-2.72.2.tar.xz
+sudo rm glib-2.72.2 -r || true
+tar -xvf glib-2.72.2.tar.xz
+cd glib-2.72.2
 mkdir build
 cd build
 meson --prefix=/usr/local -Dman=false ..
@@ -101,7 +168,6 @@ sudo ninja
 sudo ninja install
 sudo ldconfig
 sudo libtoolize
-
 
 cd ~
 git clone https://github.com/sctplab/usrsctp.git
@@ -114,10 +180,10 @@ sudo libtoolize
 
 
 cd ~
-wget https://download.gnome.org/sources/gobject-introspection/1.70/gobject-introspection-1.70.0.tar.xz
-sudo rm  gobject-introspection-1.70.0 -r || true
-tar -xvf gobject-introspection-1.70.0.tar.xz
-cd gobject-introspection-1.70.0
+wget https://download.gnome.org/sources/gobject-introspection/1.72/gobject-introspection-1.72.0.tar.xz
+sudo rm  gobject-introspection-1.72.0 -r || true
+tar -xvf gobject-introspection-1.72.0.tar.xz
+cd gobject-introspection-1.72.0
 mkdir build
 cd build
 sudo meson --prefix=/usr/local --buildtype=release  ..
@@ -166,10 +232,10 @@ sudo libtoolize
 #sudo libtoolize
 
 cd ~
-git clone https://github.com/GStreamer/gstreamer
+[ ! -d gstreamer ] && git clone git://anongit.freedesktop.org/git/gstreamer/gstreamer
 cd gstreamer
-git checkout main  ## New Method, but may need you to update dependencies.  Tested with 1.19.2 at least. not newer
-git fetch --all
+git pull
+sudo rm -r build || true
 sudo meson builddir -Dpython=enabled  -Dgtk_doc=disabled  -Dexamples=disabled -Dbuildtype=release
 sudo ninja -C builddir
 sudo ninja -C builddir install -j4
