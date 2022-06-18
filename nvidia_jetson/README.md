@@ -14,7 +14,7 @@ You can use Win32DiskImager (https://sourceforge.net/projects/win32diskimager/) 
 
 If you have problems with Win32DiskImager, [Bletcher](https://www.balena.io/etcher/) might be an option? 
 
-###### Newest Jetson Nano image here, updated June 6th, 2022.
+##### Newest Jetson Nano image here, updated June 6th, 2022.
 The following image was built on a Jetson Nano 2GB developer kit, model A02, with up-to-date firmware.  
 
 - It might work with other Jetson systems.
@@ -26,7 +26,7 @@ The following image was built on a Jetson Nano 2GB developer kit, model A02, wit
 https://drive.google.com/file/d/19furxqmPBb2FLWqAxd4ZfIVPNimNDztt/view?usp=sharing
 ```
 
-###### Older image compatible with Jetson A02 with old firmware
+##### Older image compatible with Jetson A02 with old firmware
 The follow **Jetson Nano-2GB image**, build with Gstreamer 1.19.2, is out of date, but might work on older Jetson boards if problems occur with the newer ones. Requires a large 32-GB SD card or a 64-GB card.
 
 ```
@@ -37,7 +37,7 @@ The username and password to sign in to the image is:
 username: ninja
 password: 
 
-###### Older image compatible built on a Jetson Xavier NX with old firmware
+##### Older image compatible built on a Jetson Xavier NX with old firmware
 
 This is another old image, built on the Xavier NX. Try a newer image before giving this a go.
 ```
