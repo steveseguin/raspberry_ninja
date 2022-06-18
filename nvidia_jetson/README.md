@@ -14,17 +14,21 @@ You can use Win32DiskImager (https://sourceforge.net/projects/win32diskimager/) 
 
 If you have problems with Win32DiskImager, [Bletcher](https://www.balena.io/etcher/) might be an option? 
 
-##### Newest Jetson Nano image here, updated June 6th, 2022.
-The following image was built on a Jetson Nano 2GB developer kit, model A02, with up-to-date firmware.  
+##### Newest Jetson Nano image below, updated June 6th, 2022.
+```
+https://drive.google.com/file/d/19furxqmPBb2FLWqAxd4ZfIVPNimNDztt/view?usp=sharing
+```
+The above image was built on a Jetson Nano 2GB developer kit, model A02, with up-to-date firmware.  It may work with other Jetson models.
 
 - It might work with other Jetson systems.
 - GStreamer 1.20.2 installed.
 - It's is sized down to a 12-GB system drive, ~2-GB zipped, so a 16-GB SD/Drive is needed.
 - username is `vdo` and the password is `ninja`
 - comes with Chromium still installed
-```
-https://drive.google.com/file/d/19furxqmPBb2FLWqAxd4ZfIVPNimNDztt/view?usp=sharing
-```
+
+If the Jetson fails to boot after installing it, try an older image, provided below, or considering updating the firmware on your Jetson to something newer.  If nothing else works, you can build Raspberry_ninja from scratch using the installer.sh file, located in the `nvidia_jetson` folder.
+
+Steve is also available on Discord at discord.vdo.ninja to help support.
 
 ##### Older image compatible with Jetson A02 with old firmware
 The follow **Jetson Nano-2GB image**, build with Gstreamer 1.19.2, is out of date, but might work on older Jetson boards if problems occur with the newer ones. Requires a large 32-GB SD card or a 64-GB card.
