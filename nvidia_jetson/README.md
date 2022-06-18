@@ -12,16 +12,32 @@ All Steve-provided images require a 32-GB microSD card (or larger).
 
 You can use Win32DiskImager (https://sourceforge.net/projects/win32diskimager/) to write this image to a disk.  If you need to format your SD card first, you can use the SD Card Formatter (https://www.sdcard.org/downloads/formatter/).
 
-The **Jetson Nano-2GB image**, with Gstreamer 1.19.2:
+###### Newest Jetson Nano image here, updated June 6th, 2022.
+The following image was built on a Jetson Nano 2GB developer kit, model A02, with up-to-date firmware.  
+
+- It might work with other Jetson systems.
+- GStreamer 1.20.2 installed.
+- It's is sized down to a 12-GB system drive, ~2-GB zipped, so a 16-GB SD/Drive is needed.
+- username is `vdo` and the password is `ninja`
+- comes with Chromium still installed
+```
+https://drive.google.com/file/d/19furxqmPBb2FLWqAxd4ZfIVPNimNDztt/view?usp=sharing
+```
+
+###### Older image compatible with Jetson A02 with old firmware
+The follow **Jetson Nano-2GB image**, build with Gstreamer 1.19.2, is out of date, but might work on older Jetson boards if problems occur with the newer ones. Requires a large 32-GB SD card or a 64-GB card.
+
 ```
 https://drive.google.com/file/d/1WTsW_dWkggGhQXa8p9yOIz3E4tYcl6ee/view?usp=sharing
 ```
+The username and password to sign in to the image is:
+```
+username: ninja
+password: 
 
-The **Jetson Nano-4GB image**, with Gstreamer 1.19.2:
+###### Older image compatible built on a Jetson Xavier NX with old firmware
 
-You may want to use the installer instead of trying the Nano 4GB image at the moment. It's not proving easy to create universal images for the 4GB model, particularly given that there are different revisions of the 4GB board.
-
-The **Jetson Xavier NX image**, with Gstreamer 1.19.2:
+This is another old image, built on the Xavier NX. Try a newer image before giving this a go.
 ```
 https://drive.google.com/file/d/1gMB4CDnnbFmIhsbYMqrAjluhn7oS7a03/view?usp=sharing
 ```
@@ -31,7 +47,11 @@ The username and password to sign in to the image is:
 username: ninja
 password: vdo
 ```
-These Steve-provided builds may not come with Chromium installed
+
+* These older Steve-provided builds may not come with Chromium installed
+
+
+### Once you have logged in
 
 Once you have logged in, at the terminal you can download the repo by running:
 
