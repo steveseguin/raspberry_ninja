@@ -766,6 +766,7 @@ if __name__=='__main__':
         h264 = False
         
     if args.rpi and not args.v4l2 and not args.hdmi and not args.rpicam:
+        args.v4l2 = '/dev/video0'
         monitor = Gst.DeviceMonitor.new()
         monitor.add_filter("Video", None)
         monitor.start()
