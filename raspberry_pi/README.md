@@ -12,7 +12,7 @@ https://drive.google.com/file/d/1JcQFWNRGzQNMbL9JP8VIRHj0EhTMNqpr/view?usp=shari
 Username: vdo  
 Password: ninja
 
-(** note, Someone reported that their macOS system could not unzip it, but worked fine on Windows)
+(** note, Someone reported that their macOS system could not unzip it, but worked fine on Windows. If you have issues, let me know and I'll send you an alternative option on request)
 
 Write the image to a SD / microSD card; at least 8GB in size is needed, using the appropriate tool. 
 
