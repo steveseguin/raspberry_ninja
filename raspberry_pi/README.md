@@ -8,7 +8,7 @@ It is recommended to use the provided Raspberry Pi image, as the install process
 #### Installing from the provided image
 
 Download and extract the image file:
-https://drive.google.com/file/d/1E5464mFjCjdpIgTckpOTpFx82hnqFvYf/view?usp=sharing
+https://drive.google.com/file/d/1JcQFWNRGzQNMbL9JP8VIRHj0EhTMNqpr/view?usp=sharing
 Username: vdo  
 Password: ninja
 
