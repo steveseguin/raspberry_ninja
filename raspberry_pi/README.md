@@ -9,8 +9,10 @@ It is recommended to use the provided Raspberry Pi image, as the install process
 
 Download and extract the image file:
 https://drive.google.com/file/d/1JcQFWNRGzQNMbL9JP8VIRHj0EhTMNqpr/view?usp=sharing
+```
 Username: vdo  
 Password: ninja
+```
 
 (** note, Someone reported that their macOS system could not unzip it, but worked fine on Windows. If you have issues, let me know and I'll send you an alternative option on request)
 
