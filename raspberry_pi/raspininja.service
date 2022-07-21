@@ -4,8 +4,8 @@ After=network-online.target
 Requires=network-online.target
 
 [Service]
-User=pi
-Group=pi
+User=vdo
+Group=vdo
 Type=idle
 Restart=always
 RestartSec=5s
