@@ -194,6 +194,22 @@ sudo apt update
 sudo apt full-upgrade
 sudo reboot
 ```
+### LED indicator light
+
+You can add an LED to your Raspberry Pi board, using pin 12 (6 down from the top right corner) and the ground pin near the bottom.
+
+It's possible to change this pin in the code to something else; feedback welcomed.
+
+`--led` is the argument to use.
+
+Light is lit dimly when the script is running, but there are no outbound connections.
+
+The liht glows brighter though when there is at least one outbound connection active (or not yet timed out).
+
+It's important to use a resister, 470-ohms is typically recommended, in series with the LED to avoid burning out the GPIO pin on your Raspberry Pi.  It's not recommended in general to connect an LED to the Raspberry Pi directly in this way, so proceed at your own risk.
+
+![image](https://user-images.githubusercontent.com/2575698/183547942-1d47e174-ccde-4594-9338-a7ce35108441.png)
+
 ### Problem with Raspberry Pi Camera and Pi Zero 2
 
 I ran into an issue where the RPI Camera (v1.3 and v2.x) were not working on my Raspberry Pi Zero 2.
