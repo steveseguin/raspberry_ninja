@@ -15,7 +15,29 @@ gi.require_version('GstWebRTC', '1.0')
 from gi.repository import GstWebRTC
 gi.require_version('GstSdp', '1.0')
 from gi.repository import GstSdp
-                               
+
+def enableLEDs(level=False):
+    try:
+        GPIO
+    except Exception as e:
+        return
+    global LED_Level, P_R
+    if level!=False:
+        LED_Level = level
+    p_R.start(0)      # Initial duty Cycle = 0(leds off)
+    p_R.ChangeDutyCycle(LED_Level)     # Change duty cycle
+
+def disableLEDs():
+    try:
+        GPIO
+    except Exception as e:
+        return
+
+    global pin, P_R
+    p_R.stop()
+    GPIO.output(pin, GPIO.HIGH)    # Turn off all leds
+    GPIO.cleanup()
+
 class WebRTCClient:
     def __init__(self, stream_id, server, multiviewer, record, midi, room_name, rotation, save_file):
         self.conn = None
@@ -580,6 +602,7 @@ class WebRTCClient:
         
     async def start_pipeline(self, UUID):
         print("START PIPE")
+        enableLEDs(100)
         if self.multiviewer:
             await self.createPeer(UUID)
         else:
@@ -618,7 +641,10 @@ class WebRTCClient:
                 self.pipe.remove(self.clients[UUID]['qv'])
                 self.clients[UUID]['qv'].set_state(Gst.State.NULL)
             del self.clients[UUID]
-            
+
+        if len(self.clients)==0:
+            enableLEDs(0.1) 
+
         if self.pipe:
             if self.save_file:
                 pass
@@ -698,6 +724,7 @@ def check_plugins(needed):
         return False
     return True
 
+
 WSS="wss://wss.vdo.ninja:443"
 
 if __name__=='__main__':
@@ -739,6 +766,7 @@ if __name__=='__main__':
     parser.add_argument('--multiviewer', action='store_true', help='Allows for multiple viewers to watch a single encoded stream; will use more CPU and bandwidth.')
     parser.add_argument('--novideo', action='store_true', help='Disables video input.')
     parser.add_argument('--noaudio', action='store_true', help='Disables audio input.')
+    parser.add_argument('--led', action='store_true', help='Enable GPIO pin 12 as an LED indicator light; for Raspberry Pi.')
     parser.add_argument('--pipeline', type=str, help='A full custom pipeline')
     parser.add_argument('--record',  type=str, help='Specify a stream ID to record to disk. System will not publish a stream when enabled.') ### Doens't work correctly yet. might be a gstreamer limitation.
     parser.add_argument('--save', action='store_true', help='Save a copy of the outbound stream to disk. Publish Live + Store the video.')
@@ -764,6 +792,21 @@ if __name__=='__main__':
         h264 = "x264"
     else:
         h264 = False
+
+    if args.led:
+        try:
+            import RPi.GPIO as GPIO
+            global LED_Level, P_R, pin
+            GPIO.setwarnings(False)
+            pin = 12  # pins is a dict
+            GPIO.setmode(GPIO.BOARD)       # Numbers GPIOs by physical location
+            LED_Level = 0.1 # 0.1 to 100
+            GPIO.setup(pin, GPIO.OUT)   # Set pins' mode is output
+            GPIO.output(pin, GPIO.HIGH) # Set pins to high(+3.3V) to off led
+            p_R = GPIO.PWM(pin, 120)  # set Frequece to 2KHzi
+            enableLEDs(0.1)
+        except Exception as E:
+            pass
         
     if args.rpi and not args.v4l2 and not args.hdmi and not args.rpicam:
         args.v4l2 = '/dev/video0'
@@ -1057,4 +1100,5 @@ if __name__=='__main__':
     c = WebRTCClient(args.streamid, args.server, args.multiviewer, args.record, args.midi, args.room, args.rotate, args.save)
     asyncio.get_event_loop().run_until_complete(c.connect())
     res = asyncio.get_event_loop().run_until_complete(c.loop())
+    disableLEDs()
     sys.exit(res)
