@@ -9,7 +9,7 @@ The core concepts and code used in this project can be reused for other projects
 
 Youtube video demoing: [https://youtu.be/J0qqXxHNU_c](https://youtu.be/J0qqXxHNU_c)
 
-![image](https://user-images.githubusercontent.com/2575698/127951812-b799a6e6-f77e-4749-8ef1-15221b842805.png) 
+[![image](https://user-images.githubusercontent.com/2575698/127951812-b799a6e6-f77e-4749-8ef1-15221b842805.png)](https://youtu.be/J0qqXxHNU_c)
 
 Please note, as an alternative to this low-level approach to publishing with a Rpi, please consider using something like a Chromebook, especially if not connecting over a wired LAN network. Packet loss isn't tolerated well with this script yet, so you need a prestine connection for things to work well. 
 
