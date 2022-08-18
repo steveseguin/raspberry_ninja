@@ -7,6 +7,7 @@ Requires=network-online.target
 User=vdo
 Group=vdo
 Type=idle
+ExecStartPre=/bin/sleep 5
 Restart=always
 RestartSec=5s
 Environment=XDG_RUNTIME_DIR=/run/user/1000
