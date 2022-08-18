@@ -84,6 +84,22 @@ sudo ./installer.sh
 You may need to babysit the installation, and it could take a couple hours if things go smoothly. 
 
 
+##### Auto-start service on boot
+
+You can refer to Raspberry Pi service script below for a sample start-up script for the Jetson
+https://github.com/steveseguin/raspberry_ninja/blob/main/raspberry_pi/raspininja.service
+
+The setup and installation instructions for the start-up script are similar, which can be found here:
+https://github.com/steveseguin/raspberry_ninja/tree/main/raspberry_pi#setting-up-auto-boot
+
+The follow bits of the service script may need to be modified or removed if you face issues:
+```
+User=vdo
+Group=vdo
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStartPre=vcgencmd get_camera
+```
+
 ##### Details on Nvidia's Gstreamer implementation
 
 Details on the Nvidia encoder and pipeline options:
