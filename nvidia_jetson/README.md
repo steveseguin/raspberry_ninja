@@ -6,6 +6,17 @@ This is very much like the RPI version, but uses the Nvidia Jetson (Nano/NX/AGX)
 
 While you can probably install Raspberry_ninja onto any Linux flavour, Nvidia's Jetpack Ubuntu version contains the drivers needed to make use of the hardware encoder. I provide some pre-built images, that are setup with all the depedencies needed to run Raspberry_Ninja, but you can use the official image and DIY also.
 
+#### Instalilng on Jetson without original Nvidia image?
+
+If you aren't using the Nvidia Jetson image, or you've messed things up, you can download the gst-files provided by Nvidia on that image here, [libgstnvidia.zip](https://github.com/steveseguin/raspberry_ninja/blob/main/nvidia_jetson/libgstnvidia.zip?raw=true), as a zip:
+
+
+Assuming you bypass any related errors in the install script, you'll need to extract and copy those files to this folder, once the install script finishes:
+`/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0$`
+
+You can also try copying those files to the following folder, before running the script, and hope the script detects them correctly without errors:
+`/usr/lib/aarch64-linux-gnu/gstreamer-1.0/`
+
 #### Steve provided builds
 
 The newest builds for Jetson devices require just 16-GB uSD card.  The older ones required 32-GB, but those are for Jetsons running older firmware only.
