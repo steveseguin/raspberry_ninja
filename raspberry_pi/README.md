@@ -122,6 +122,8 @@ sudo systemctl status raspininja
 
 Things should now auto-boot on system boot, and restart if things crash.  
 
+note: If using an Nvidia Jetson, please see its folder on github here for its service file.
+
 
 ## Details about cameras and performance
 
