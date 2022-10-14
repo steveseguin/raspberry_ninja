@@ -15,6 +15,8 @@ Please note, as an alternative to this low-level approach to publishing with a R
 
 If you wish to play a video back, using a Raspberry pi, try this "kiosk" mode image that can be found here: https://awesomeopensource.com/project/futurice/chilipie-kiosk. Raspberry Pis seem to handle video playback in Chromium-based browsers pretty well; it's just the encoding they don't do well in browser yet.
 
+I have a [YouTube video here](https://youtu.be/eqC2SRXoPK4), which focuses on setting up the Raspberry_ninja for IRL-streaming.
+
 ### Setup for a Raspberry Pi
 
 See the `raspberry_pi` sub-folder for instructions on installing and setting up a Raspberry Pi. [Jump there now](raspberry_pi/README.md)
@@ -22,8 +24,6 @@ See the `raspberry_pi` sub-folder for instructions on installing and setting up 
 A Raspberry Pi works fairly well with a CSI-connected camera, but USB-based cameras currently struggle a bit with older Raspberry Pi models. As a result, consider buying an Nvidia Jetson Nano 2GB instead of a Raspberry Pi if looking to jump into this all. Also, the RPI Zero W 1 and RPi 3 both don't have the greatest WiFi built-in, while the Raspberry Pi Zero 2 seems to work rather well. Without good connectivity, you may find yourself facing frame-drops and stutter.  HDMI to CSI adapters do work, but they may be limited to 25-fps and can be finicky still with some camera sources; audio over HDMI is also a bit tricky to setup currently.
 
 ![image](https://user-images.githubusercontent.com/2575698/146033910-3c54ba8c-1d3e-4073-bc59-e190decaca63.png)
-
-I have a [YouTube video here](https://youtu.be/eqC2SRXoPK4), which focuses on setting up the Raspberry_ninja for IRL-streaming.
 
 
 ### Setup for an Nvidia Jetson
