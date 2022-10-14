@@ -26,9 +26,7 @@ You can use Win32DiskImager (https://sourceforge.net/projects/win32diskimager/) 
 If you have problems with Win32DiskImager, [Bletcher](https://www.balena.io/etcher/) might be an option? 
 
 ##### Newest Jetson Nano image below, updated June 6th, 2022.
-```
-https://drive.google.com/file/d/19furxqmPBb2FLWqAxd4ZfIVPNimNDztt/view?usp=sharing
-```
+[https://drive.google.com/file/d/19furxqmPBb2FLWqAxd4ZfIVPNimNDztt/view?usp=sharing](https://drive.google.com/file/d/19furxqmPBb2FLWqAxd4ZfIVPNimNDztt/view?usp=sharing)
 The above image was built on a Jetson Nano 2GB developer kit, model A02, with up-to-date firmware.  It may work with other Jetson models.
 
 - It might work with other Jetson systems.
