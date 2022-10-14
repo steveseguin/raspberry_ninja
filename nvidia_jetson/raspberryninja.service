@@ -1,0 +1,17 @@
+[Unit]
+Description=Raspberry Ninja as a system service
+After=network-online.target
+Requires=network-online.target
+
+[Service]
+User=vdo
+Group=vdo
+Type=idle
+ExecStartPre=/bin/sleep 5
+Restart=always
+RestartSec=5s
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/usr/bin/python3 /home/vdo/raspberry_ninja/publish.py --test
+
+[Install]
+WantedBy=multi-user.target
