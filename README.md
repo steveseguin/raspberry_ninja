@@ -216,6 +216,7 @@ midi demo video: https://youtu.be/Gry9UFtOTmQ
 
 - Speedify.com works on Linux and embedded devices, providing network bonding and fail-over connections. The install instructions are pretty easy and can be found here: https://support.speedify.com/article/562-install-speedify-linux (not sponsored)
 
+- If you want to do computer-vision / machine-learning with cv2 or tensorflow on the resulting webRTC video stream, I have an open-source project here that you can take snippets from that you can add to raspberry_ninja to do what you want:  [github.com/ooblex](https://github.com/ooblex/ooblex/blob/master/code/decoder.py#L84)
 
 ### TODO:
 
