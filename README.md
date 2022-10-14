@@ -23,6 +23,8 @@ A Raspberry Pi works fairly well with a CSI-connected camera, but USB-based came
 
 ![image](https://user-images.githubusercontent.com/2575698/146033910-3c54ba8c-1d3e-4073-bc59-e190decaca63.png)
 
+I have a [https://youtu.be/eqC2SRXoPK4](Youtube video here), which focuses on setting up the Raspberry_ninja for IRL-streaming.
+
 
 ### Setup for an Nvidia Jetson
 
