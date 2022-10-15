@@ -151,6 +151,16 @@ If you run with sudo, you might get a permissions error when using audio.
 
 A guide on how to setup a RPI to auto-stream on boot can be found in the Rasbperry Pi folder, along with details on how to configure the WiFi SSID and password without needing to SSH in first.
 
+### RTMP output
+
+RTMP support overrides WebRTC support at the moment, and the features that are support are pretty limited.
+
+```python3 publish.py --rtmp rtmp://a.rtmp.youtube.com/live2/z4a2-q14h-01gp-xhaw-3zvw  --bitrate 6000```
+
+Things like bitrate, width, height, raw, framerate are also supported, but not a whole lot else.
+
+RTMP support is currently experimental; example use with a Jetson here: https://www.youtube.com/watch?v=8JOn2sK4GfQ
+
 ### Hardware options
 
 Of the Raspberry Pi devices, the Raspberry Pi 4 or the Raspberry Pi Zero 2 are so far the best options on this front, depending on your needs. Any of the Nvidia Jetson devices should work fine, but only the Jetson Nano 2GB, 4GB, and NX have been tested and validated. If you wish to use other Jetson devices, you'll need to setup and install Gstreamer 1.19 yourself on those systems, as no pre-built image will be provided at this time. (Unless someone wishes to donate the hardware that is)  Any other Linux system or SBC embedded system is on the user to setup and install at this point, but they should closely follow the same steps that the Nvidia Jetson uses.
