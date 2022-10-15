@@ -79,6 +79,7 @@ optional arguments:
                         Sets the video framerate. Make sure that your input
                         supports it.
   --test                Use test sources.
+  --rtmp                Use RTMP instead of webRTC; pass "rtmp://xxxx.com/live/xxx-xxxx-xxx"
   --hdmi                Try to setup a HDMI dongle
   --v4l2 V4L2           Sets the V4L2 input device.
   --rpicam              Sets the RaspberryPi input device.
