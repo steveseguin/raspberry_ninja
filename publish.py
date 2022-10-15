@@ -1075,7 +1075,7 @@ if __name__=='__main__':
                
 
             if args.rtmp:
-               pipeline_audio_input += f' ! queue ! audioconvert ! audioresample ! audio/x-raw,rate=48000 ! fdkaacenc bitrate=64000 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
+               pipeline_audio_input += f' ! queue ! audioconvert dithering=0 ! audio/x-raw,rate=48000,channel=1 ! fdkaacenc bitrate=65536 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
             elif args.zerolatency:
                pipeline_audio_input += f' ! queue max-size-buffers=2 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=0 bitrate=16000 inband-fec=false audio-type=2051 frame-size=20 {saveAudio} ! rtpopuspay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
             elif args.vorbis:
