@@ -10,7 +10,7 @@ import time
 import gi
 import threading
 gi.require_version('Gst', '1.0')
-from gi.repository import Gst
+from gi.repository import Gst, GObject
 gi.require_version('GstWebRTC', '1.0')
 from gi.repository import GstWebRTC
 gi.require_version('GstSdp', '1.0')
@@ -724,6 +724,26 @@ def check_plugins(needed):
         return False
     return True
 
+def on_message(bus: Gst.Bus, message: Gst.Message, loop: GObject.MainLoop):
+    mtype = message.type
+    """
+        Gstreamer Message Types and how to parse
+        https://lazka.github.io/pgi-docs/Gst-1.0/flags.html#Gst.MessageType
+    """
+    if mtype == Gst.MessageType.EOS:
+        print("End of stream")
+        loop.quit()
+
+    elif mtype == Gst.MessageType.ERROR:
+        err, debug = message.parse_error()
+        print(err, debug)
+        loop.quit()
+
+    elif mtype == Gst.MessageType.WARNING:
+        err, debug = message.parse_warning()
+        print(err, debug)
+
+    return True
 
 WSS="wss://wss.vdo.ninja:443"
 
@@ -737,6 +757,7 @@ if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--streamid', type=str, default=str(random.randint(1000000,9999999)), help='Stream ID of the peer to connect to')
     parser.add_argument('--room', type=str, default=None, help='optional - Room name of the peer to join')
+    parser.add_argument('--rtmp', type=str, default=None, help='Use RTMP instead; pass the rtmp:// publishing address here to use')
     parser.add_argument('--server', type=str, default=None, help='Handshake server to use, eg: "wss://wss.vdo.ninja:443"')
     parser.add_argument('--bitrate', type=int, default=4000, help='Sets the video bitrate; kbps. This is not adaptive, so packet loss and insufficient bandwidth will cause frame loss')
     parser.add_argument('--audiobitrate', type=int, default=64, help='Sets the audio bitrate; kbps.')
@@ -1014,8 +1035,10 @@ if __name__=='__main__':
                 else:
                     pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc  target-bitrate={args.bitrate}000 qos=true control-rate=1 ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                     
-                    
-                pipeline_video_input += f' ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! h264parse {saveVideo} ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
+                if args.rtmp:
+                    pipeline_video_input += f' ! queue ! h264parse {saveVideo}'
+                else:
+                    pipeline_video_input += f' ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! h264parse {saveVideo} ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
 
             else:
                 # VP8
@@ -1049,8 +1072,11 @@ if __name__=='__main__':
             else:
                 needed += ['alsa']
                 pipeline_audio_input += f'alsasrc device={args.alsa} use-driver-timestamps=TRUE'
-                
-            if args.zerolatency:
+               
+
+            if args.rtmp:
+               pipeline_audio_input += f' ! queue ! audioconvert ! audioresample ! audio/x-raw,rate=48000 ! fdkaacenc bitrate=64000 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
+            elif args.zerolatency:
                pipeline_audio_input += f' ! queue max-size-buffers=2 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=0 bitrate=16000 inband-fec=false audio-type=2051 frame-size=20 {saveAudio} ! rtpopuspay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
             elif args.vorbis:
                pipeline_audio_input += f' ! queue max-size-buffers=3 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! vorbisenc bitrate={args.audiobitrate}000 {saveAudio} ! rtpvorbispay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=VORBIS,payload=100' 
@@ -1066,7 +1092,31 @@ if __name__=='__main__':
         if args.save:
            pipeline_save = " matroskamux name=mux ! queue ! filesink sync=true location="+str(int(time.time()))+".mkv "   
 
-        if args.record:
+        pipeline_rtmp = ""
+        if args.rtmp:
+            pipeline_rtmp = "flvmux name=sendrecv ! rtmpsink location='"+args.rtmp+" live=1'"
+            PIPELINE_DESC = f'{pipeline_video_input} {pipeline_audio_input} {pipeline_rtmp}'
+            print('gst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
+            pipe = Gst.parse_launch(PIPELINE_DESC)
+
+            bus = pipe.get_bus()
+
+            bus.add_signal_watch()
+
+            pipe.set_state(Gst.State.PLAYING)
+
+            loop = GObject.MainLoop() 
+
+            bus.connect("message", on_message, loop)
+            try: 
+                loop.run()
+            except: 
+                loop.quit()
+            
+            pipe.set_state(Gst.State.NULL)
+            sys.exit(1)
+
+        elif args.record:
             args.h264 = True
             pass
         elif not args.multiviewer:
