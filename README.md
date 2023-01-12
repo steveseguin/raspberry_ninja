@@ -43,6 +43,32 @@ You'll want to install Gstreamer 1.16 or newer; emphasis on the newer.  You'll n
 
 Python3 is also required, along with `websockets`.  If you have PIP installed, `pip3 install websockets` can get you going there.
 
+### Updating
+
+Major updates sometimes will require that the latest Rasbperry Pi or Jetson image be installed on your device, but most updates are minor and only require the `publish.py` file to be updated.
+
+You can normally update publish.py by logging into your device, either via SSH or by loading up terminal app.
+
+```
+cd ~
+cd raspberry_ninja
+git pull
+```
+That's it.
+
+If you run into issues due making changes to the code, you can either `git stash` your changes first, or  you can just delete the raspberry_ninja folder and clone it again.
+
+ie:
+```
+cd ~
+rm raspberry_ninja -r
+git clone https://github.com/steveseguin/raspberry_ninja
+cd raspberry_ninja
+```
+
+Updates are usually optional, as they typically just focus on added features or improving video quality/stability.
+
+
 ### Usage
 
 You should be able to run the publshing script simply with `python3 publish.py`, however lots of options are available for customizing as desired.
@@ -101,6 +127,9 @@ optional arguments:
   --save                Will save a local copy of the outbound stream to disk (MKV format)
   --rotate DEGREES      Will rotate the video by 90, 180 , or 270 degrees
   --multiviewer         Allows for multiple viewers at a time; this can increase bandwidth usage of course
+  --nored               Disable error correction. If you don't disable it, the bandwidth may be up to 2x higher than the target video bitrate.  I do not recommend removing, unless you're on a pristine connection.
+  --noqos               This will lower the bitrate of the video encoder if packet loss is detected. It won't lower it more than 5x (20% of target), but I find this works well to combat times where the network bandwidth is insufficient.  Error correction just doesn't work if it can't actually send enough data.
+
 ```
 
 ##### Changing video input sources
