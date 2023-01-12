@@ -45,9 +45,9 @@ Python3 is also required, along with `websockets`.  If you have PIP installed, `
 
 ### Updating
 
-Major updates sometimes will require that the latest Rasbperry Pi or Jetson image be installed on your device, but most updates are minor and only require the `publish.py` file to be updated.
+Major updates sometimes will require that the latest Rasbperry Pi or Jetson image be installed on your device, but most updates are minor and only require the `publish.py` file to be updated.  If you've just installed the latest device image, you will still want to update before going further, as the image is not updated with every new code release.
 
-You can normally update publish.py by logging into your device, either via SSH or by loading up terminal app.
+You can normally update by logging into your device, either via SSH, or via mouse/keyboard with the terminal app open.
 
 ```
 cd ~
@@ -66,7 +66,7 @@ git clone https://github.com/steveseguin/raspberry_ninja
 cd raspberry_ninja
 ```
 
-Updates are usually optional, as they typically just focus on added features or improving video quality/stability.
+Updates are usually optional, as they typically just focus on added features or improving video quality/stability. I do recommend checking for new updates every now and then.
 
 
 ### Usage
