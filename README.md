@@ -126,7 +126,7 @@ optional arguments:
   --rotate DEGREES      Will rotate the video by 90, 180 , or 270 degrees
   --multiviewer         Allows for multiple viewers at a time; this can increase bandwidth usage of course
   --nored               Disable error correction. If you don't disable it, the bandwidth may be up to 2x higher than the target video bitrate.  I do not recommend removing, unless you're on a pristine connection.
-  --noqos               This will lower the bitrate of the video encoder if packet loss is detected. It won't lower it more than 5x (20% of target), but I find this works well to combat times where the network bandwidth is insufficient.  Error correction just doesn't work if it can't actually send enough data.
+  --noqos               This will disable the qos feature. The QOS feature will lower the bitrate of the video encoder if heavy packet loss is detected. It won't lower it more than 5x (20% of target), but I find this works well to combat times where the network bandwidth is insufficient. 
 
 ```
 
