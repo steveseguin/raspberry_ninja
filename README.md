@@ -172,9 +172,9 @@ Run using:
 In Chrome, open this link to view:
 `https://vdo.ninja/?password=false&view=SomeStreamID`
 
-One viewer at a time can work at the moment, although I am hoping to address this limitation shortly.
+You can have multiple viewers at a time, but you must enable that with a command-line argument.
 
-If you run with sudo, you might get a permissions error when using audio.
+Also note, if you run with `sudo`, you might get a permissions error when using audio.
 
 ### Auto-starting the script on boot
 
@@ -189,6 +189,16 @@ RTMP support overrides WebRTC support at the moment, and the features that are s
 Things like bitrate, width, height, raw, framerate are also supported, but not a whole lot else.
 
 RTMP support is currently experimental; example use with a Jetson here: https://www.youtube.com/watch?v=8JOn2sK4GfQ
+
+You can't publish to vdo.ninja with RTMP, but rather a service like  YouTube.
+
+### SRT support
+
+I'll likely have SRT supported in the future, as a backup option, but it's low on the priority list since it would then not support VDO.Ninja. I do believe Raspberry_Ninja can be more reliable and lower latency than SRT, and without needing a server, VPN, or tunnel. 
+
+### WHIP / Meshcast support
+
+Coming soon I hope.
 
 ### Hardware options
 
