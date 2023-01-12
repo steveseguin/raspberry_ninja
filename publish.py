@@ -39,15 +39,19 @@ def disableLEDs():
     GPIO.cleanup()
 
 class WebRTCClient:
-    def __init__(self, stream_id, server, multiviewer, record, midi, room_name, rotation, save_file):
+    def __init__(self, stream_id, server, multiviewer, record, midi, room_name, rotation, save_file, bitrate, noqos, nored):
         self.conn = None
         self.pipe = None
+        self.bitrate = bitrate
+        self.max_bitrate = bitrate
         self.server = server
         self.stream_id = stream_id
         self.room_name = room_name
         self.multiviewer = multiviewer
         self.record = record
         self.midi = midi
+        self.nored = nored
+        self.noqos = noqos
         self.midi_thread = None
         self.midiout = None
         self.midiout_ports = None
@@ -119,6 +123,11 @@ class WebRTCClient:
             msg = {'description': {'type': 'offer', 'sdp': text}, 'UUID': client['UUID'], 'session': client['session'], 'streamID':self.stream_id}
             self.sendMessage(msg)
 
+        def on_new_tranceiver(element, trans):
+            print("ON NEW TRANS")
+            #trans.set_property("fec-type", GstWebRTC.WebRTCFECType.ULP_RED)
+            #trans.set_property("do-nack", True)
+
         def on_negotiation_needed(element):
             print("ON NEGO NEEDED")
             promise = Gst.Promise.new_with_change_func(on_offer_created, element, None)
@@ -155,7 +164,7 @@ class WebRTCClient:
                 if not self.record and not client['send_channel']:
                     channel = client['webrtc'].emit('create-data-channel', 'sendChannel', None)
                     on_data_channel(client['webrtc'], channel)
-                
+
                 if client['timer'] == None:
                     client['ping'] = 0
                     client['timer'] = threading.Timer(3, pingTimer).start()
@@ -166,6 +175,8 @@ class WebRTCClient:
                 self.stop_pipeline(client['UUID'])     
             else:
                 print("PEER CONNECTION STATE {}".format(client['webrtc'].get_property(p2.name)))
+        def print_trans(p1,p2):
+            print("trans:  {}".format(client['webrtc'].get_property(p2.name)))
 
         def pingTimer():
             if not client['send_channel']:
@@ -183,6 +194,11 @@ class WebRTCClient:
                     print(E)
                     print("PING FAILED")
                 threading.Timer(3, pingTimer).start()
+
+                promise = Gst.Promise.new_with_change_func(on_stats, client['webrtc'], None) # check stats
+                client['webrtc'].emit('get-stats', None, promise)
+
+
             else:
                 print("NO HEARTBEAT")
                 self.stop_pipeline(client['UUID'])
@@ -245,6 +261,11 @@ class WebRTCClient:
             elif 'midi' in msg:
                 print(msg)
                 vdo2midi(msg['midi'])
+            elif 'bitrate' in msg:
+                print(msg)
+                if client['encoder'] and msg['bitrate']:
+                    print("Trying to change bitrate...")
+                    client['encoder'].set_property('bitrate', int(msg['bitrate'])*1000)
             else:
                 print("MISC DC DATA")
                 return
@@ -337,13 +358,45 @@ class WebRTCClient:
         def on_stats(promise, abin, data):
             promise.wait()
             stats = promise.get_reply()
-            stats.foreach(foreach_stats)
-            
-        def foreach_stats(field_id, stats):
-            if stats.get_name() == "remote-inbound-rtp":
-                print(stats.to_string())
-            else:
-                print(stats.to_string())
+            stats = stats.to_string()
+            stats = stats.replace("\\", "")
+            stats = stats.split("fraction-lost=(double)")
+            if (len(stats)>1):
+                stats = stats[1].split(",")[0]
+                print("Packet loss:"+stats)
+                stats = float(stats)
+                if (stats>0.01) and client['encoder'] and not self.noqos:
+                    print("Trying to reduce change bitrate...")
+                    bitrate = self.bitrate*0.9
+                    if bitrate < self.max_bitrate*0.2:
+                        bitrate = self.max_bitrate*0.2
+                    elif bitrate > self.max_bitrate*0.8:
+                        bitrate = self.bitrate*0.9
+                    self.bitrate = bitrate
+                    print(str(bitrate))
+                    try:
+                        if client['encoder']:
+                            client['encoder'].set_property('bitrate', int(bitrate*1000))
+                        elif client['encoder1']:
+                            client['encoder1'].set_property('bitrate', int(bitrate))
+                    except E as Exception:
+                        print(E)
+                elif (stats<0.003) and client['encoder'] and not self.noqos:
+                    print("Trying to increase change bitrate...")
+                    bitrate = self.bitrate*1.05
+                    if bitrate>self.max_bitrate:
+                        bitrate = self.max_bitrate
+                    elif bitrate*2<self.max_bitrate:
+                        bitrate = self.bitrate*1.05
+                    self.bitrate = bitrate
+                    print(str(bitrate))
+                    try:
+                        if client['encoder']:
+                            client['encoder'].set_property('bitrate', int(bitrate*1000))
+                        elif client['encoder1']:
+                            client['encoder1'].set_property('bitrate', int(bitrate))
+                    except E as Exception:
+                        print(E)
 
        
         def on_incoming_stream( _, pad):
@@ -456,8 +509,19 @@ class WebRTCClient:
 
         client['webrtc'] = self.pipe.get_by_name('sendrecv')
         client['qv'] = None
-        client['qa'] = None        
-    
+        client['qa'] = None
+        try:
+            client['encoder'] = self.pipe.get_by_name('encoder')
+        except:
+            client['encoder'] = False
+            try:
+                client['encoder1'] = self.pipe.get_by_name('encoder1')
+            except:
+                client['encoder1'] = False
+
+
+
+
         if self.record:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             client['webrtc'].set_property('bundle-policy', 'max-bundle') 
@@ -482,7 +546,7 @@ class WebRTCClient:
             
             atee = self.pipe.get_by_name('audiotee')
             vtee = self.pipe.get_by_name('videotee')
-            
+
             if vtee is not None:
                 qv = Gst.ElementFactory.make('queue', f"qv-{client['UUID']}")
                 self.pipe.add(qv)
@@ -526,8 +590,23 @@ class WebRTCClient:
         else:
             client['webrtc'].connect('on-ice-candidate', send_ice_local_candidate_message)
             client['webrtc'].connect('on-negotiation-needed', on_negotiation_needed)
+            client['webrtc'].connect('on-new-transceiver', on_new_tranceiver)
             #client['webrtc'].connect('on-data-channel', on_data_channel)
  
+        try:
+            if not self.record:
+                trans = client['webrtc'].emit("get-transceiver",0)
+                if trans is not None:
+                    if not self.nored:
+                        trans.set_property("fec-type", GstWebRTC.WebRTCFECType.ULP_RED)
+                        print("FEC ENABLED")
+                    trans.set_property("do-nack", True)
+                    print("SEND NACKS ENABLED")
+
+        except Exception as E:
+            print(E)
+
+
         if not started and self.pipe.get_state(0)[1] is not Gst.State.PLAYING:
             self.pipe.set_state(Gst.State.PLAYING)
                            
@@ -759,7 +838,7 @@ if __name__=='__main__':
     parser.add_argument('--room', type=str, default=None, help='optional - Room name of the peer to join')
     parser.add_argument('--rtmp', type=str, default=None, help='Use RTMP instead; pass the rtmp:// publishing address here to use')
     parser.add_argument('--server', type=str, default=None, help='Handshake server to use, eg: "wss://wss.vdo.ninja:443"')
-    parser.add_argument('--bitrate', type=int, default=4000, help='Sets the video bitrate; kbps. This is not adaptive, so packet loss and insufficient bandwidth will cause frame loss')
+    parser.add_argument('--bitrate', type=int, default=2500, help='Sets the video bitrate; kbps. If error correction (red) is on, the total bandwidth used may be up to 2X higher than the bitrate')
     parser.add_argument('--audiobitrate', type=int, default=64, help='Sets the audio bitrate; kbps.')
     parser.add_argument('--width', type=int, default=1920, help='Sets the video width. Make sure that your input supports it.')
     parser.add_argument('--height', type=int, default=1080, help='Sets the video height. Make sure that your input supports it.')
@@ -785,6 +864,8 @@ if __name__=='__main__':
     parser.add_argument('--nvidia', action='store_true', help='Creates a pipeline optimised for nvidia hardware.')
     parser.add_argument('--rpi', action='store_true', help='Creates a pipeline optimised for raspberry pi hadware.')
     parser.add_argument('--multiviewer', action='store_true', help='Allows for multiple viewers to watch a single encoded stream; will use more CPU and bandwidth.')
+    parser.add_argument('--noqos', action='store_true', help='Do not try to automatically reduce video bitrate if packet loss gets too high. The default will reduce the bitrate if needed.')
+    parser.add_argument('--nored', action='store_true', help='Disable error correction redundency for transmitted video. This may reduce the bandwidth used by half, but it will be more sensitive to packet loss')
     parser.add_argument('--novideo', action='store_true', help='Disables video input.')
     parser.add_argument('--noaudio', action='store_true', help='Disables audio input.')
     parser.add_argument('--led', action='store_true', help='Enable GPIO pin 12 as an LED indicator light; for Raspberry Pi.')
@@ -1008,7 +1089,7 @@ if __name__=='__main__':
             if args.h264:
                 # H264
                 if args.nvidia:
-                    pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate={args.bitrate}000 ! video/x-h264,stream-format=(string)byte-stream'
+                    pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! video/x-h264,stream-format=(string)byte-stream'
                 elif args.rpicam:
                     pass
                 elif args.rpi:
@@ -1019,21 +1100,21 @@ if __name__=='__main__':
                         width = args.width
                         height = args.height
                     if args.omx:
-                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc  target-bitrate={args.bitrate}000 qos=true control-rate=1 ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
+                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc name="encoder" target-bitrate={args.bitrate}000 qos=true control-rate="constant" ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                     elif args.x264:
-                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! queue max-size-buffers=1 ! x264enc bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
+                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! queue max-size-buffers=1 ! x264enc  name="encoder2" bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
                     elif args.openh264:
-                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! queue max-size-buffers=1 ! openh264enc bitrate={args.bitrate}000 complexity=0 ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
+                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! queue max-size-buffers=1 ! openh264enc  name="encoder" bitrate={args.bitrate}000 complexity=0 ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
                     else:
-                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true ! video/x-h264,level=(string)4'
+                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder" ! video/x-h264,level=(string)4'
 
                     ## pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                 elif h264=="x264":
-                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=1 ! x264enc bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline'
+                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=1 ! x264enc bitrate={args.bitrate} name="encoder1" speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline'
                 elif h264=="openh264":
-                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=1 ! openh264enc bitrate={args.bitrate}000 complexity=0 ! video/x-h264,profile=constrained-baseline'
+                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=1 ! openh264enc bitrate={args.bitrate}000 name="encoder" complexity=0 ! video/x-h264,profile=constrained-baseline'
                 else:
-                    pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc  target-bitrate={args.bitrate}000 qos=true control-rate=1 ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
+                    pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc name="encoder" target-bitrate={args.bitrate}000 qos=true control-rate=1 ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                     
                 if args.rtmp:
                     pipeline_video_input += f' ! queue ! h264parse {saveVideo}'
@@ -1050,10 +1131,10 @@ if __name__=='__main__':
                         width = args.width
                         height = args.height
 
-                    pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! queue max-size-buffers=1 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97'
+                    pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! queue max-size-buffers=1 ! vp8enc deadline=1 name="encoder" target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97'
                 # need to add an nvidia vp8 hardware encoder option.
                 else:
-                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=1 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97'
+                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=1 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 name="encoder" {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97'
                     
             if args.multiviewer:
                 pipeline_video_input += ' ! tee name=videotee '
@@ -1147,7 +1228,7 @@ if __name__=='__main__':
         print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default bitrate is 4000 (kbps) ")
         print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}{server}");
 
-    c = WebRTCClient(args.streamid, args.server, args.multiviewer, args.record, args.midi, args.room, args.rotate, args.save)
+    c = WebRTCClient(args.streamid, args.server, args.multiviewer, args.record, args.midi, args.room, args.rotate, args.save, args.bitrate, args.noqos, args.nored)
     asyncio.get_event_loop().run_until_complete(c.connect())
     res = asyncio.get_event_loop().run_until_complete(c.loop())
     disableLEDs()
