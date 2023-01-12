@@ -13,9 +13,7 @@ I also have another longer [YouTube video here](https://youtu.be/eqC2SRXoPK4), w
 
 [![image](https://user-images.githubusercontent.com/2575698/127951812-b799a6e6-f77e-4749-8ef1-15221b842805.png)](https://youtu.be/J0qqXxHNU_c)
 
-Please note, as an alternative to this low-level approach to publishing with a Rpi, please consider using something like a Chromebook, especially if not connecting over a wired LAN network. Packet loss isn't tolerated well with this script yet, so you need a prestine connection for things to work well. 
-
-If you wish to play a video back, using a Raspberry pi, try this "kiosk" mode image that can be found here: https://awesomeopensource.com/project/futurice/chilipie-kiosk. Raspberry Pis seem to handle video playback in Chromium-based browsers pretty well; it's just the encoding they don't do well in browser yet.
+Recent updates to Raspberry Ninja have added improved error correction and video redundency, along with automated dynamic bitrate controls for congestion management. This has greatly improved stream reliabilty, reducing frame loss, and limiting buffer sizes. That said, having more than 5-megabites of upload bandwidth and having a solid connection is recommend if intending to use the default settings.
 
 
 ### Setup for a Raspberry Pi
@@ -270,6 +268,9 @@ midi demo video: https://youtu.be/Gry9UFtOTmQ
 - Speedify.com works on Linux and embedded devices, providing network bonding and fail-over connections. The install instructions are pretty easy and can be found here: https://support.speedify.com/article/562-install-speedify-linux (not sponsored)
 
 - If you want to do computer-vision / machine-learning with cv2 or tensorflow on the resulting webRTC video stream, I have an open-source project here that you can take snippets from that you can add to raspberry_ninja to do what you want:  [github.com/ooblex](https://github.com/ooblex/ooblex/blob/master/code/decoder.py#L84)
+
+- If you wish to play a video back, using a Raspberry Pi, try this "kiosk" mode image that can be found here: https://awesomeopensource.com/project/futurice/chilipie-kiosk. Raspberry Pis seem to handle video playback in Chromium-based browsers OK.  I'l try to have browser-free playback at some point in the future.
+
 
 ### TODO:
 
