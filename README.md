@@ -43,7 +43,10 @@ Python3 is also required, along with `websockets`.  If you have PIP installed, `
 
 ### Updating
 
-***** warning: If using the current Raspberry Pi image, updating to the newest code might break things.  I'm working on a fix.
+***** warning: If using the current Raspberry Pi image, updating to the newest code might break things.  I'm working on a fix. You can revert with ```git checkout b541a78
+git pull``` however.
+
+*********** end of warning
 
 Major updates sometimes will require that the latest Rasbperry Pi or Jetson image be installed on your device, but most updates are minor and only require the `publish.py` file to be updated.  If you've just installed the latest device image, you will still want to update before going further, as the image is not updated with every new code release.
 
@@ -67,7 +70,6 @@ cd raspberry_ninja
 ```
 
 Updates are usually optional, as they typically just focus on added features or improving video quality/stability. I do recommend checking for new updates every now and then.
-
 
 ### Usage
 
