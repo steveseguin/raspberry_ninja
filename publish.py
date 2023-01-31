@@ -120,6 +120,11 @@ class WebRTCClient:
             promise.interrupt()
             print("SEND SDP OFFER")
             text = offer.sdp.as_text()
+            if ("96 96 96 96 96" in text):
+                text = text.replace(" 96 96 96 96 96", " 96 96 97 98 96")
+                text = text.replace("a=rtpmap:96 red/90000\r\n","a=rtpmap:97 red/90000\r\n")
+                text = text.replace("a=rtpmap:96 ulpfec/90000\r\n","a=rtpmap:98 ulpfec/90000\r\n")
+                text = text.replace("a=rtpmap:96 rtx/90000\r\na=fmtp:96 apt=96\r\n","")
             msg = {'description': {'type': 'offer', 'sdp': text}, 'UUID': client['UUID'], 'session': client['session'], 'streamID':self.stream_id}
             self.sendMessage(msg)
 
@@ -365,7 +370,7 @@ class WebRTCClient:
                 stats = stats[1].split(",")[0]
                 print("Packet loss:"+stats)
                 stats = float(stats)
-                if (stats>0.01) and client['encoder'] and not self.noqos:
+                if (stats>0.01) and not self.noqos:
                     print("Trying to reduce change bitrate...")
                     bitrate = self.bitrate*0.9
                     if bitrate < self.max_bitrate*0.2:
@@ -379,9 +384,13 @@ class WebRTCClient:
                             client['encoder'].set_property('bitrate', int(bitrate*1000))
                         elif client['encoder1']:
                             client['encoder1'].set_property('bitrate', int(bitrate))
-                    except E as Exception:
+                        elif client['encoder2']:
+                            pass
+                            # client['encoder2'].set_property('extra-controls',"controls,video_bitrate="+str(bitrate)+"000;") ## sadly, this is set on startup
+
+                    except Exception as E:
                         print(E)
-                elif (stats<0.003) and client['encoder'] and not self.noqos:
+                elif (stats<0.003) and not self.noqos:
                     print("Trying to increase change bitrate...")
                     bitrate = self.bitrate*1.05
                     if bitrate>self.max_bitrate:
@@ -395,7 +404,10 @@ class WebRTCClient:
                             client['encoder'].set_property('bitrate', int(bitrate*1000))
                         elif client['encoder1']:
                             client['encoder1'].set_property('bitrate', int(bitrate))
-                    except E as Exception:
+                        elif client['encoder2']:
+                            pass
+                            # client['encoder2'].set_property('extra-controls',"controls,video_bitrate="+str(bitrate)+"000;")  ## set on startup; can't change
+                    except Exception as E:
                         print(E)
 
        
@@ -510,16 +522,19 @@ class WebRTCClient:
         client['webrtc'] = self.pipe.get_by_name('sendrecv')
         client['qv'] = None
         client['qa'] = None
+        client['encoder'] = False
+        client['encoder1'] = False
+        client['encoder2'] = False
         try:
             client['encoder'] = self.pipe.get_by_name('encoder')
         except:
-            client['encoder'] = False
             try:
                 client['encoder1'] = self.pipe.get_by_name('encoder1')
             except:
-                client['encoder1'] = False
-
-
+                try:
+                    client['encoder2'] = self.pipe.get_by_name('encoder2')
+                except:
+                    pass
 
 
         if self.record:
@@ -1102,11 +1117,11 @@ if __name__=='__main__':
                     if args.omx:
                         pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc name="encoder" target-bitrate={args.bitrate}000 qos=true control-rate="constant" ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                     elif args.x264:
-                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! queue max-size-buffers=1 ! x264enc  name="encoder2" bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
+                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! queue max-size-buffers=1 ! x264enc  name="encoder1" bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
                     elif args.openh264:
                         pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! queue max-size-buffers=1 ! openh264enc  name="encoder" bitrate={args.bitrate}000 complexity=0 ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
                     else:
-                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder" ! video/x-h264,level=(string)4'
+                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4'
 
                     ## pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                 elif h264=="x264":
