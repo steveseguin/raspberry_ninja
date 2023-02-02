@@ -125,6 +125,7 @@ class WebRTCClient:
                 text = text.replace("a=rtpmap:96 red/90000\r\n","a=rtpmap:97 red/90000\r\n")
                 text = text.replace("a=rtpmap:96 ulpfec/90000\r\n","a=rtpmap:98 ulpfec/90000\r\n")
                 text = text.replace("a=rtpmap:96 rtx/90000\r\na=fmtp:96 apt=96\r\n","")
+
             msg = {'description': {'type': 'offer', 'sdp': text}, 'UUID': client['UUID'], 'session': client['session'], 'streamID':self.stream_id}
             self.sendMessage(msg)
 
@@ -202,7 +203,6 @@ class WebRTCClient:
 
                 promise = Gst.Promise.new_with_change_func(on_stats, client['webrtc'], None) # check stats
                 client['webrtc'].emit('get-stats', None, promise)
-
 
             else:
                 print("NO HEARTBEAT")
@@ -874,6 +874,7 @@ if __name__=='__main__':
     parser.add_argument('--x264', action='store_true', help='Prioritizes x264 encoder over hardware encoder')
     parser.add_argument('--openh264', action='store_true', help='Prioritizes OpenH264 encoder over hardware encoder')
     parser.add_argument('--vp8', action='store_true', help='Prioritizes vp8 codec over h264; software encoder')
+    parser.add_argument('--vp9', action='store_true', help='Prioritizes vp9 codec over h264; software encoder')
     parser.add_argument('--omx', action='store_true', help='Try to use the OMX driver for encoding video; not recommended')
     parser.add_argument('--vorbis', action='store_true', help='Try to use the OMX driver for encoding video; not recommended')
     parser.add_argument('--nvidia', action='store_true', help='Creates a pipeline optimised for nvidia hardware.')
@@ -888,7 +889,10 @@ if __name__=='__main__':
     parser.add_argument('--record',  type=str, help='Specify a stream ID to record to disk. System will not publish a stream when enabled.') ### Doens't work correctly yet. might be a gstreamer limitation.
     parser.add_argument('--save', action='store_true', help='Save a copy of the outbound stream to disk. Publish Live + Store the video.')
     parser.add_argument('--midi', action='store_true', help='Transparent MIDI bridge mode; no video or audio.')
-    
+    parser.add_argument('--filesrc', type=str, default=None,  help='Provide a media file (local file location) as a source instead of physical device; it can be a transparent webm or whatever. It will be transcoded, which offers the best results.')
+    parser.add_argument('--filesrc2', type=str, default=None,  help='Provide a media file (local file location) as a source instead of physical device; it can be a transparent webm or whatever. It will not be transcoded, so be sure its encoded correctly. Specify if --vp8 or --vp9, else --h264 is assumed.')
+    parser.add_argument('--pipein', action='store_true', help='NOT YET WORKING --- Pipe a media stream in as the input source. We will decode and re-encode the video for best results'); 
+    parser.add_argument('--pipein2', action='store_true', help='NOT YET WORKING --- Pipe a media stream in as the input source. We will not transcode, so be sure the source file is encoded correctly. You can specify codec with --vp8, --vp9, or --h264');
 
     args = parser.parse_args()
      
@@ -1048,7 +1052,32 @@ if __name__=='__main__':
                     pipeline_video_input = f'videotestsrc ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string)NV12,framerate=(fraction){args.framerate}/1'
                 else:
                     pipeline_video_input = f'videotestsrc ! video/x-raw,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
+            elif args.filesrc:
+                pipeline_video_input = f'filesrc location="{args.filesrc}" ! decodebin'
+            elif args.filesrc2:
+                if args.vp9:
+                    pipeline_video_input = f'filesrc location="{args.filesrc2}" ! matroskademux ! rtpvp9pay'
+                elif args.vp8:
+                    pipeline_video_input = f'filesrc location="{args.filesrc2}" ! matroskademux ! rtpvp8pay'
+                else:
+                    pipeline_video_input = f'filesrc location="{args.filesrc2}" ! qtdemux ! h264parse ! rtph264pay'
+            elif args.pipein:
+                pipeline_video_input = f'appsrc is-live=true block=true format=time ! decodebin'
+            elif args.pipein2:
+                if args.raw:
+                     pipeline_video_input = f'appsrc is-live=true block=true format=time ! video/x-raw'
+                elif args.vp9:
+                    pipeline_video_input = f'appsrc is-live=true block=true format=time ! matroskademux ! rtpvp9pay'
+                elif args.vp8:
+                    pipeline_video_input = f'appsrc is-live=true block=true format=time ! matroskademux ! rtpvp8pay'
+                elif args.h264:
+                    pipeline_video_input = f'appsrc is-live=true block=true format=time ! qtdemux ! h264parse ! rtph264pay'
+                else:
+                    pipeline_video_input = f'appsrc is-live=true block=true format=time ! decodebin'
 
+                 
+            
+            
             elif args.camlink:
                 needed += ['video4linux2']
                 if args.rpi:
@@ -1100,8 +1129,9 @@ if __name__=='__main__':
                     else:
                         pipeline_video_input += ' ! jpegdec'
 
-
-            if args.h264:
+            if args.filesrc2:
+                pass
+            elif args.h264:
                 # H264
                 if args.nvidia:
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! video/x-h264,stream-format=(string)byte-stream'
@@ -1138,7 +1168,9 @@ if __name__=='__main__':
 
             else:
                 # VP8
-                if args.rpi:
+                if args.nvidia:
+                    pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxvp8enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
+                elif args.rpi:
                     if args.width>1280: ## x264enc works at 1080p30, but only for static scenes with a bitrate of around 2500 or less.
                         width = 1280  ## 720p60 is more accessible with the PI4, versus 1080p30.
                         height = 720
@@ -1146,10 +1178,10 @@ if __name__=='__main__':
                         width = args.width
                         height = args.height
 
-                    pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! queue max-size-buffers=1 ! vp8enc deadline=1 name="encoder" target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97'
+                    pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! queue max-size-buffers=1 ! vp8enc deadline=1 name="encoder" target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                 # need to add an nvidia vp8 hardware encoder option.
                 else:
-                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=1 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 name="encoder" {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=97'
+                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=1 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 name="encoder" {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                     
             if args.multiviewer:
                 pipeline_video_input += ' ! tee name=videotee '
