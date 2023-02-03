@@ -440,14 +440,14 @@ class WebRTCClient:
                     depay.set_property("request-keyframe", True)  
                     p = Gst.ElementFactory.make('h264parse', "parse")
                     caps = Gst.ElementFactory.make("capsfilter", "caps")
-                    caps.set_property('caps', Gst.Caps('video/x-h264,stream-format=byte-stream'))
+                    caps.set_property("caps", Gst.Caps.from_string("video/x-h264,stream-format=byte-stream"))
                 elif "VP8" in name: ## doesn't work for some reason yet?  stalls on trying to save
                     sink.set_property("location", str(time.time())+'.vp8')
                     depay = Gst.ElementFactory.make('rtpvp8depay', "depay")
                     depay.set_property("request-keyframe", True)
                     p = None
                     caps = Gst.ElementFactory.make("capsfilter", "caps")
-                    caps.set_property('caps', Gst.Caps("video/x-vp8"))
+                    caps.set_property('caps', Gst.Caps.from_string("video/x-vp8"))
                 else:
                     print("UNKNOWN FORMAT - saving as raw RTP stream")
                     sink.set_property("location", str(time.time())+'.unknown')
@@ -480,7 +480,7 @@ class WebRTCClient:
                 q.set_property("flush-on-eos",True)
 
                 caps = Gst.ElementFactory.make("capsfilter", "audiocaps")
-                caps.set_property('caps', Gst.Caps('audio/x-opus'))
+                caps.set_property('caps', Gst.Caps.from_string('audio/x-opus'))
 
                 decode = Gst.ElementFactory.make("opusdec", "opusdec")
 
@@ -901,8 +901,8 @@ if __name__=='__main__':
     elif Gst.Registry.get().find_plugin("nvvidconv"):
         args.nvidia=True
         if Gst.Registry.get().find_plugin("nvarguscamerasrc"):
-            if not args.nvidiacsi:
-                print("\nIf using the Nvidia CSI camera, you'll want to use --nvidiacsi to enable it.\n")
+            if not args.nvidiacsi and not args.record:
+                print("\nTip: If using the Nvidia CSI camera, you'll want to use --nvidiacsi to enable it.\n")
     
     needed = ["nice", "webrtc", "dtls", "srtp", "rtp", "sctp", "rtpmanager"]
     
@@ -1045,7 +1045,9 @@ if __name__=='__main__':
                     print("Is there an H264 encoder installed?")
 
             # THE VIDEO INPUT
-            if args.test:
+            if args.record:
+                pass
+            elif args.test:
                 needed += ['videotestsrc']
                 pipeline_video_input = 'videotestsrc'
                 if args.nvidia:
@@ -1074,10 +1076,6 @@ if __name__=='__main__':
                     pipeline_video_input = f'appsrc is-live=true block=true format=time ! qtdemux ! h264parse ! rtph264pay'
                 else:
                     pipeline_video_input = f'appsrc is-live=true block=true format=time ! decodebin'
-
-                 
-            
-            
             elif args.camlink:
                 needed += ['video4linux2']
                 if args.rpi:
