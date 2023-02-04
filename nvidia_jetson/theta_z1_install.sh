@@ -1,4 +1,7 @@
 # This will install the driver for the Theta Z1 USB camera with 4K 360 h264 output
+## to use run:
+## sudo chmod +x theta_z1_install.sh
+## ./theta_z1_install.sh
 
 # Install the Z1 drivers; not really UVC compatible tho
 cd ~
