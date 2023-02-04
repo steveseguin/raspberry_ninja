@@ -22,7 +22,7 @@ cd thetauvc
 make
 
 # Copy the plugin to the gstreamer plugin folder so we can use it
-cp gstt*so /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/
+sudo cp gstt*so /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/
 # confirm its installed
 gst-inspect-1.0 | grep "theta"
 
