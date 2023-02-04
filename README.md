@@ -223,6 +223,14 @@ https://www.e-consystems.com/usb-cameras/sony-starvis-imx462-ultra-low-light-cam
 You can buy IR Filters, or you can buy lenses that come with IR filters, if needed, for pretty cheap. Many are designed for security applications, so be aware.
 https://fulekan.aliexpress.com/store/1862644
 
+
+### 360-degree cameras
+
+Support for the Theta 4k 360 USB camera has been added. Has been tested with the Jetson. It is likely too slow to use with a Raspberry Pi though.
+
+Install script and brief usage example found here:
+https://github.com/steveseguin/raspberry_ninja/blob/main/nvidia_jetson/theta_z1_install.sh
+
 #### HDMI Input options
 
 As per HDMI adapters, a 1080p30 USB 2.0 HDMI to MJPEG adapter can usually be had for $10 to $20, although there are many fake offerings out there. I've tested a $12 MACROSILICON HDMI to USB adapter, and it works pretty well with the Jetson (and OK with the RPI), although finding a legitimate one might be tricky. On a Raspberry Pi 4, 1080p30 is posssible with the HDMI to USB adapter, but audio currently then goes out of sync; at 720p though, audio stays in sync with the video more frequently. Audio sync issues might be resolved in the future with more system tuning.
