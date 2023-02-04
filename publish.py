@@ -39,9 +39,11 @@ def disableLEDs():
     GPIO.cleanup()
 
 class WebRTCClient:
-    def __init__(self, stream_id, server, multiviewer, record, midi, room_name, rotation, save_file, bitrate, noqos, nored):
+    def __init__(self, stream_id, server, multiviewer, record, midi, room_name, rotation, save_file, bitrate, noqos, nored, pipein):
         self.conn = None
         self.pipe = None
+        self.appsrc = None
+        self.pipein = pipein
         self.bitrate = bitrate
         self.max_bitrate = bitrate
         self.server = server
@@ -102,6 +104,30 @@ class WebRTCClient:
             loop.run_until_complete(self.conn.send(msg))
             #print("sent message wss")
         
+    def needData(self):
+        print("NEED DATA")
+        buf = Gst.Buffer.new_allocate(self.size)
+        buf.fill(0, self.data)
+        src.emit('push-buffer', buf)
+
+    def getBuffer(self):
+
+        self.appsrc = self.pipe.get_by_name('appsrc')
+        self.appsrc.connect('need-data', self.needData)
+        while True:
+#            nal_unit = read_next_nal_unit_from_source()
+ #           if not nal_unit:
+  #              break
+            # Create a new buffer with the NAL unit data
+#$            nal_unit = 100
+            buffer = Gst.Buffer.new_allocate(None, 100, None)
+  #          buffer.map(Gst.MapFlags.WRITE)
+  #          buffer.fill(0, nal_unit)
+    #        buffer.unmap()
+
+            appsrc.emit("push-buffer", buffer)
+            time.sleep(1001.0/30000)
+
     async def createPeer(self, UUID):
         
         if UUID in self.clients:
@@ -632,7 +658,19 @@ class WebRTCClient:
             channel = client['webrtc'].emit('create-data-channel', 'sendChannel', None)
             on_data_channel(client['webrtc'], channel)
 
+        try: ## not working yet
+            if self.pipein and not self.appsrc:
+                self.appsrc = self.pipe.get_by_name('appsrc')
+                self.appsrc.connect('need-data', self.needData)
+
+                self.emitter = threading.Thread(target=self.getBuffer)
+                self.emitter.start()
+                print("EMITTER THREAD STARTED")
+        except Exception as E:
+            print(E)
+
         self.clients[client["UUID"]] = client
+
         
     def handle_sdp_ice(self, msg, UUID):
         client = self.clients[UUID]
@@ -861,6 +899,8 @@ if __name__=='__main__':
     parser.add_argument('--test', action='store_true', help='Use test sources.')
     parser.add_argument('--hdmi', action='store_true', help='Try to setup a HDMI dongle')
     parser.add_argument('--camlink', action='store_true', help='Try to setup an Elgato Cam Link')
+    parser.add_argument('--z1', action='store_true', help='Try to setup a Theta Z1 360 camera')
+    parser.add_argument('--z1passthru', action='store_true', help='Try to setup a Theta Z1 360 camera, but do not transcode')
     parser.add_argument('--v4l2', type=str, default=None, help='Sets the V4L2 input device.')
     parser.add_argument('--rpicam', action='store_true', help='Sets the RaspberryPi input device.')
     parser.add_argument('--rotate', type=int, default=0, help='Rotates the camera in degrees; 0 (default), 90, 180, 270 are possible values.')
@@ -891,8 +931,7 @@ if __name__=='__main__':
     parser.add_argument('--midi', action='store_true', help='Transparent MIDI bridge mode; no video or audio.')
     parser.add_argument('--filesrc', type=str, default=None,  help='Provide a media file (local file location) as a source instead of physical device; it can be a transparent webm or whatever. It will be transcoded, which offers the best results.')
     parser.add_argument('--filesrc2', type=str, default=None,  help='Provide a media file (local file location) as a source instead of physical device; it can be a transparent webm or whatever. It will not be transcoded, so be sure its encoded correctly. Specify if --vp8 or --vp9, else --h264 is assumed.')
-    parser.add_argument('--pipein', action='store_true', help='NOT YET WORKING --- Pipe a media stream in as the input source. We will decode and re-encode the video for best results'); 
-    parser.add_argument('--pipein2', action='store_true', help='NOT YET WORKING --- Pipe a media stream in as the input source. We will not transcode, so be sure the source file is encoded correctly. You can specify codec with --vp8, --vp9, or --h264');
+    parser.add_argument('--pipein', type=str, default=None, help='NOT YET WORKING --- Pipe a media stream in as the input source. Pass auto for auto-decode, else pass codec type (h264,vp8,vp9,raw)'); 
 
     args = parser.parse_args()
      
@@ -929,7 +968,7 @@ if __name__=='__main__':
         except Exception as E:
             pass
         
-    if args.rpi and not args.v4l2 and not args.hdmi and not args.rpicam:
+    if args.rpi and not args.v4l2 and not args.hdmi and not args.rpicam and not args.z1:
         args.v4l2 = '/dev/video0'
         monitor = Gst.DeviceMonitor.new()
         monitor.add_filter("Video", None)
@@ -1063,19 +1102,33 @@ if __name__=='__main__':
                     pipeline_video_input = f'filesrc location="{args.filesrc2}" ! matroskademux ! rtpvp8pay'
                 else:
                     pipeline_video_input = f'filesrc location="{args.filesrc2}" ! qtdemux ! h264parse ! rtph264pay'
-            elif args.pipein:
-                pipeline_video_input = f'appsrc is-live=true block=true format=time ! decodebin'
-            elif args.pipein2:
-                if args.raw:
-                     pipeline_video_input = f'appsrc is-live=true block=true format=time ! video/x-raw'
-                elif args.vp9:
-                    pipeline_video_input = f'appsrc is-live=true block=true format=time ! matroskademux ! rtpvp9pay'
-                elif args.vp8:
-                    pipeline_video_input = f'appsrc is-live=true block=true format=time ! matroskademux ! rtpvp8pay'
-                elif args.h264:
-                    pipeline_video_input = f'appsrc is-live=true block=true format=time ! qtdemux ! h264parse ! rtph264pay'
+            elif args.z1:
+                needed += ['thetauvc']
+                if args.width>1920 or args.height>960:
+                    pipeline_video_input = f'thetauvcsrc mode=4K ! queue ! h264parse ! decodebin'
                 else:
-                    pipeline_video_input = f'appsrc is-live=true block=true format=time ! decodebin'
+                    pipeline_video_input = f'thetauvcsrc mode=2K ! queue ! h264parse ! decodebin'
+            elif args.z1passthru:
+                needed += ['thetauvc']
+                if args.width>1920 or args.height>960:
+                    pipeline_video_input = f'thetauvcsrc mode=4K ! queue ! h264parse ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
+                else:
+                    pipeline_video_input = f'thetauvcsrc mode=2K ! queue ! h264parse ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
+            elif args.pipein:
+                if args.pipein=="auto":
+                    pipeline_video_input = f'appsrc name="appsrc" is-live=true block=true format=time ! decodebin'
+#                elif args.z1: ## theta z1
+ #                   pipeline_video_input = f'appsrc emit-signals=True name="appsrc" block=true format=time caps="video/x-h264,stream-format=(string)byte-stream,framerate=(fraction)30000/1001,profile=constrained-baseline" ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! h264parse! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
+                elif args.pipein=="raw":
+                    pipeline_video_input = f'appsrc name="appsrc" is-live=true block=true format=time ! video/x-raw'
+                elif args.pipein=="vp9":
+                    pipeline_video_input = f'appsrc name="appsrc" is-live=true block=true format=time ! matroskademux ! rtpvp9pay'
+                elif args.pipein=="vp8":
+                    pipeline_video_input = f'appsrc name="appsrc" is-live=true block=true format=time ! matroskademux ! rtpvp8pay'
+                elif args.pipein=="h264":
+                    pipeline_video_input = f'appsrc name="appsrc" is-live=true block=true format=time ! qtdemux ! h264parse ! rtph264pay'
+                else:
+                    pipeline_video_input = f'appsrc name="appsrc" is-live=true block=true format=time ! decodebin'
             elif args.camlink:
                 needed += ['video4linux2']
                 if args.rpi:
@@ -1128,6 +1181,10 @@ if __name__=='__main__':
                         pipeline_video_input += ' ! jpegdec'
 
             if args.filesrc2:
+                pass
+            elif args.z1passthru: 
+                pass
+            elif args.pipein and args.pipein != "auto" and args.pipein != "raw": # We are doing a pass-thru with this pip # We are doing a pass-thru with this pipee
                 pass
             elif args.h264:
                 # H264
@@ -1273,7 +1330,7 @@ if __name__=='__main__':
         print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default bitrate is 4000 (kbps) ")
         print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}{server}");
 
-    c = WebRTCClient(args.streamid, args.server, args.multiviewer, args.record, args.midi, args.room, args.rotate, args.save, args.bitrate, args.noqos, args.nored)
+    c = WebRTCClient(args.streamid, args.server, args.multiviewer, args.record, args.midi, args.room, args.rotate, args.save, args.bitrate, args.noqos, args.nored, args.pipein)
     asyncio.get_event_loop().run_until_complete(c.connect())
     res = asyncio.get_event_loop().run_until_complete(c.loop())
     disableLEDs()
