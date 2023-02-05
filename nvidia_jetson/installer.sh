@@ -1,12 +1,18 @@
 sudo apt-get update
 sudo apt-get upgrade -y
-
 sudo apt-get --fix-broken install -y
-
 sudo apt-get install git -y
 
+## reboot as needed
 
+# upgrades python 3.6 -> +3.8, which is needed for Gstreamer newer than ~ v1.62
+sudo apt-get remove chrom* -y
+sudo swapoff -a
+sudo rm swapfile  ## Stopping and removing the swap file; we need the space probably to do an upgrade
+sudo apt-get autoremove -y
+sudo do-release-upgrade
 
+##  reboot as needed
 
 sudo apt-get install cmake -y
 sudo apt-get install build-essential yasm cmake libtool libc6 libc6-dev unzip wget libnuma1 libnuma-dev -y
@@ -15,10 +21,9 @@ sudo pip3 install ninja
 sudo pip3 install websockets
 
 sudo apt-get install python3 python3-pip -y
-
-
-
+sudo apt-get autoremove -y
 sudo apt-get install apt-transport-https ca-certificates -y
+
 pip3 install python-rtmidi
 
 #sudo apt-get remove python-gi-dev -y
@@ -131,8 +136,8 @@ sudo apt-get install libssl-dev -y
 cd ~
 git clone https://github.com/mesonbuild/meson.git
 cd meson
-git checkout 0.61.5 
-git fetch --all
+#git checkout 0.61.5 
+#git fetch --all
 sudo python3 setup.py install
 
 
@@ -155,12 +160,26 @@ sudo make install
 sudo ldconfig
 sudo libtoolize
 
+cd ~
+git clone https://github.com/mirror/x264
+cd x264
+./configure --prefix=/usr --enable-shared --disable-cli
+make
+make install
+sudo make install
 
 cd ~
-wget https://download.gnome.org/sources/glib/2.72/glib-2.72.2.tar.xz
-sudo rm glib-2.72.2 -r || true
-tar -xvf glib-2.72.2.tar.xz
-cd glib-2.72.2
+git clone https://github.com/Haivision/srt
+sudo apt-get install tclsh pkg-config cmake libssl-dev build-essential -y
+./configure
+make
+sudo make install 
+
+cd ~
+wget https://download.gnome.org/sources/glib/2.75/glib-2.75.2.tar.xz
+sudo rm glib-2.75.2 -r || true
+tar -xvf glib-2.75.2.tar.xz
+cd glib-2.75.2
 mkdir build
 cd build
 meson --prefix=/usr/local -Dman=false ..
@@ -180,10 +199,10 @@ sudo libtoolize
 
 
 cd ~
-wget https://download.gnome.org/sources/gobject-introspection/1.72/gobject-introspection-1.72.0.tar.xz
-sudo rm  gobject-introspection-1.72.0 -r || true
-tar -xvf gobject-introspection-1.72.0.tar.xz
-cd gobject-introspection-1.72.0
+wget https://download.gnome.org/sources/gobject-introspection/1.75/gobject-introspection-1.75.4.tar.xz
+sudo rm  gobject-introspection-1.75.4 -r || true
+tar -xvf gobject-introspection-1.75.4.tar.xz
+cd gobject-introspection-1.75.4
 mkdir build
 cd build
 sudo meson --prefix=/usr/local --buildtype=release  ..
