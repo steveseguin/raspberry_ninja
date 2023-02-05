@@ -16,6 +16,12 @@ from gi.repository import GstWebRTC
 gi.require_version('GstSdp', '1.0')
 from gi.repository import GstSdp
 
+try:
+    from gi.repository import GLib
+except:
+    pass
+
+
 def enableLEDs(level=False):
     try:
         GPIO
@@ -42,7 +48,6 @@ class WebRTCClient:
     def __init__(self, stream_id, server, multiviewer, record, midi, room_name, rotation, save_file, bitrate, noqos, nored, pipein):
         self.conn = None
         self.pipe = None
-        self.appsrc = None
         self.pipein = pipein
         self.bitrate = bitrate
         self.max_bitrate = bitrate
@@ -104,29 +109,31 @@ class WebRTCClient:
             loop.run_until_complete(self.conn.send(msg))
             #print("sent message wss")
         
-    def needData(self):
-        print("NEED DATA")
-        buf = Gst.Buffer.new_allocate(self.size)
-        buf.fill(0, self.data)
-        src.emit('push-buffer', buf)
+#    def needData(self,xx,yy):
+ #       print("NEED DATA")
+        #buf = Gst.Buffer.new_allocate(self.size)
+        #buf.fill(0, self.data)
+  #      buffer = Gst.Buffer.new_allocate(None, 100, None)
+   #     self.appsrc.emit('push-buffer', buffer)
 
-    def getBuffer(self):
+   # def getBuffer(self):
 
-        self.appsrc = self.pipe.get_by_name('appsrc')
-        self.appsrc.connect('need-data', self.needData)
-        while True:
+        #self.appsrc = self.pipe.get_by_name('appsrc')
+        #self.appsrc.connect('need-data', self.needData)
+    #    while True:
+#            print(".")
 #            nal_unit = read_next_nal_unit_from_source()
  #           if not nal_unit:
   #              break
             # Create a new buffer with the NAL unit data
 #$            nal_unit = 100
-            buffer = Gst.Buffer.new_allocate(None, 100, None)
+     #       buffer = Gst.Buffer.new_allocate(None, 100, None)
   #          buffer.map(Gst.MapFlags.WRITE)
   #          buffer.fill(0, nal_unit)
     #        buffer.unmap()
 
-            appsrc.emit("push-buffer", buffer)
-            time.sleep(1001.0/30000)
+      #      self.appsrc.emit("push-buffer", buffer)
+       #     time.sleep(1001.0/30000)
 
     async def createPeer(self, UUID):
         
@@ -658,16 +665,16 @@ class WebRTCClient:
             channel = client['webrtc'].emit('create-data-channel', 'sendChannel', None)
             on_data_channel(client['webrtc'], channel)
 
-        try: ## not working yet
-            if self.pipein and not self.appsrc:
-                self.appsrc = self.pipe.get_by_name('appsrc')
-                self.appsrc.connect('need-data', self.needData)
+#        try: ## not working yet
+ #           if self.pipein and not self.appsrc:
+  #              self.appsrc = self.pipe.get_by_name('appsrc')
+            #    self.appsrc.connect('need-data', self.needData)
 
-                self.emitter = threading.Thread(target=self.getBuffer)
-                self.emitter.start()
-                print("EMITTER THREAD STARTED")
-        except Exception as E:
-            print(E)
+   #             self.emitter = threading.Thread(target=self.getBuffer)
+    #            self.emitter.start()
+     #           print("EMITTER THREAD STARTED")
+      #  except Exception as E:
+       #     print(E)
 
         self.clients[client["UUID"]] = client
 
@@ -856,12 +863,18 @@ def check_plugins(needed):
         return False
     return True
 
-def on_message(bus: Gst.Bus, message: Gst.Message, loop: GObject.MainLoop):
+def on_message(bus: Gst.Bus, message: Gst.Message, loop):
     mtype = message.type
     """
         Gstreamer Message Types and how to parse
         https://lazka.github.io/pgi-docs/Gst-1.0/flags.html#Gst.MessageType
     """
+    if not loop:
+        try:
+            loop = GLib.MainLoop
+        except:
+            loop = GObject.MainLoop
+
     if mtype == Gst.MessageType.EOS:
         print("End of stream")
         loop.quit()
@@ -931,7 +944,7 @@ if __name__=='__main__':
     parser.add_argument('--midi', action='store_true', help='Transparent MIDI bridge mode; no video or audio.')
     parser.add_argument('--filesrc', type=str, default=None,  help='Provide a media file (local file location) as a source instead of physical device; it can be a transparent webm or whatever. It will be transcoded, which offers the best results.')
     parser.add_argument('--filesrc2', type=str, default=None,  help='Provide a media file (local file location) as a source instead of physical device; it can be a transparent webm or whatever. It will not be transcoded, so be sure its encoded correctly. Specify if --vp8 or --vp9, else --h264 is assumed.')
-    parser.add_argument('--pipein', type=str, default=None, help='NOT YET WORKING --- Pipe a media stream in as the input source. Pass auto for auto-decode, else pass codec type (h264,vp8,vp9,raw)'); 
+    parser.add_argument('--pipein', type=str, default=None, help='Pipe a media stream in as the input source. Pass `auto` for auto-decode,pass codec type for pass-thru (mpegts,h264,vp8,vp9), or use `raw`'); 
 
     args = parser.parse_args()
      
@@ -1116,19 +1129,22 @@ if __name__=='__main__':
                     pipeline_video_input = f'thetauvcsrc mode=2K ! queue ! h264parse ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
             elif args.pipein:
                 if args.pipein=="auto":
-                    pipeline_video_input = f'appsrc name="appsrc" is-live=true block=true format=time ! decodebin'
+                    pipeline_video_input = f'fdsrc ! decodebin name=ts ts.'
 #                elif args.z1: ## theta z1
  #                   pipeline_video_input = f'appsrc emit-signals=True name="appsrc" block=true format=time caps="video/x-h264,stream-format=(string)byte-stream,framerate=(fraction)30000/1001,profile=constrained-baseline" ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! h264parse! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
                 elif args.pipein=="raw":
-                    pipeline_video_input = f'appsrc name="appsrc" is-live=true block=true format=time ! video/x-raw'
+                    pipeline_video_input = f'fdsrc ! video/x-raw'
                 elif args.pipein=="vp9":
-                    pipeline_video_input = f'appsrc name="appsrc" is-live=true block=true format=time ! matroskademux ! rtpvp9pay'
+                    pipeline_video_input = f'fdsrc ! matroskademux ! rtpvp9pay'
                 elif args.pipein=="vp8":
-                    pipeline_video_input = f'appsrc name="appsrc" is-live=true block=true format=time ! matroskademux ! rtpvp8pay'
+                    pipeline_video_input = f'fdsrc ! matroskademux ! rtpvp8pay'
                 elif args.pipein=="h264":
-                    pipeline_video_input = f'appsrc name="appsrc" is-live=true block=true format=time ! qtdemux ! h264parse ! rtph264pay'
+                    pipeline_video_input = f'fdsrc  ! h264parse ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
+                elif args.pipein=="mpegts":
+                    pipeline_video_input = f'fdsrc ! tsdemux name=ts ts. ! h264parse ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
+
                 else:
-                    pipeline_video_input = f'appsrc name="appsrc" is-live=true block=true format=time ! decodebin'
+                    pipeline_video_input = f'fdsrc ! decodebin'
             elif args.camlink:
                 needed += ['video4linux2']
                 if args.rpi:
@@ -1244,7 +1260,9 @@ if __name__=='__main__':
                 pipeline_video_input += ' ! queue ! sendrecv. '
 
         if not args.noaudio:
-            if args.test:
+            if args.pipein:
+                pipeline_audio_input += 'ts. ! queue ! decodebin'
+            elif args.test:
                 needed += ['audiotestsrc']
                 pipeline_audio_input += 'audiotestsrc is-live=true wave=red-noise'
 
@@ -1264,7 +1282,7 @@ if __name__=='__main__':
             elif args.vorbis:
                pipeline_audio_input += f' ! queue max-size-buffers=3 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! vorbisenc bitrate={args.audiobitrate}000 {saveAudio} ! rtpvorbispay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=VORBIS,payload=100' 
             else:
-               pipeline_audio_input += f' ! queue max-size-buffers=3 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=1 bitrate={args.audiobitrate}000 inband-fec=true {saveAudio} ! rtpopuspay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
+               pipeline_audio_input += f' ! queue ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=1 bitrate={args.audiobitrate}000 inband-fec=true {saveAudio} ! rtpopuspay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
 
             if args.multiviewer: # a 'tee' element may use more CPU or cause extra stuttering, so by default not enabled, but needed to support multiple viewers
                 pipeline_audio_input += ' ! tee name=audiotee '
