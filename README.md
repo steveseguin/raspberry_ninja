@@ -129,6 +129,7 @@ optional arguments:
   --multiviewer         Allows for multiple viewers at a time; this can increase bandwidth usage of course
   --nored               Disable error correction. If you don't disable it, the bandwidth may be up to 2x higher than the target video bitrate.  I do not recommend removing, unless you're on a pristine connection.
   --noqos               This will disable the qos feature. The QOS feature will lower the bitrate of the video encoder if heavy packet loss is detected. It won't lower it more than 5x (20% of target), but I find this works well to combat times where the network bandwidth is insufficient. 
+  --pipein              Lets you pipe data in from a unix pipe, something like: `ffmpeg -i input.mp4 -o - | python3 publish.py --pipein auto`
 
 ```
 
