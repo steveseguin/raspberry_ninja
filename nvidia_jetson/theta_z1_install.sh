@@ -3,6 +3,8 @@
 ## sudo chmod +x theta_z1_install.sh
 ## ./theta_z1_install.sh
 
+## note: One user said they had to run the installer twice before it all worked?
+
 # Install the Z1 drivers; not really UVC compatible tho
 cd ~
 git clone https://github.com/ricohapi/libuvc-theta.git
@@ -26,7 +28,7 @@ sudo cp gstt*so /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/
 # confirm its installed
 gst-inspect-1.0 | grep "theta"
 
-# run raspberry_nija with the z1 enabled
+# run raspberry_ninja with the z1 enabled
 cd ~
 cd raspberry_ninja
 # Transcodes the inbound compressed stream. Recommended
