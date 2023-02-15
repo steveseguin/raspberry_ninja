@@ -153,10 +153,15 @@ class WebRTCClient:
             promise.interrupt()
             print("SEND SDP OFFER")
             text = offer.sdp.as_text()
+             ## fix for older gstreamer, since nack/fec seems to mess things up?  Not sure if this is breaking something else though.
             if ("96 96 96 96 96" in text):
                 text = text.replace(" 96 96 96 96 96", " 96 96 97 98 96")
                 text = text.replace("a=rtpmap:96 red/90000\r\n","a=rtpmap:97 red/90000\r\n")
                 text = text.replace("a=rtpmap:96 ulpfec/90000\r\n","a=rtpmap:98 ulpfec/90000\r\n")
+                text = text.replace("a=rtpmap:96 rtx/90000\r\na=fmtp:96 apt=96\r\n","")
+            elif self.nored and (" 96 96" in text): ## fix for older gstreamer is using --nored
+                text = text.replace(" 96 96", " 96 97")
+                text = text.replace("a=rtpmap:96 ulpfec/90000\r\n","a=rtpmap:97 ulpfec/90000\r\n")
                 text = text.replace("a=rtpmap:96 rtx/90000\r\na=fmtp:96 apt=96\r\n","")
 
             msg = {'description': {'type': 'offer', 'sdp': text}, 'UUID': client['UUID'], 'session': client['session'], 'streamID':self.stream_id}
