@@ -323,7 +323,7 @@ cd libnice
 mkdir build
 cd build
 meson --prefix=/usr/local --buildtype=release ..
-sudo ninja
+sudo ninja -j1
 sudo ninja install
 sudo ldconfig
 sudo libtoolize
@@ -334,7 +334,7 @@ cd libsrtp
 ./configure --enable-openssl --prefix=/usr/local
 make -j4
 sudo make shared_library
-sudo make install -j4
+sudo make install -j1
 sudo ldconfig
 sudo libtoolize
 
