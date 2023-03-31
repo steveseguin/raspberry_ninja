@@ -267,7 +267,7 @@ sudo ./configure \
    
 make -j4
 libtoolize
-sudo make install -j4
+sudo make install -j1
 sudo ldconfig
 
 cd ~
@@ -278,7 +278,7 @@ cd glib-2.76.1
 mkdir build
 cd build
 meson --prefix=/usr/local -Dman=false ..
-sudo ninja
+sudo ninja -j1
 sudo ninja install
 sudo ldconfig
 sudo libtoolize
