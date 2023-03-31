@@ -289,7 +289,7 @@ git clone https://github.com/sctplab/usrsctp.git
 cd usrsctp
 mkdir build
 sudo meson build  --prefix=/usr/local
-sudo ninja -C build install -j4
+sudo ninja -C build install -j1
 sudo ldconfig
 sudo libtoolize
 
@@ -302,7 +302,7 @@ cd gobject-introspection-1.76.1
 mkdir build
 cd build
 sudo meson --prefix=/usr/local --buildtype=release  ..
-sudo ninja
+sudo ninja -j1
 sudo ninja install
 sudo ldconfig
 sudo libtoolize
