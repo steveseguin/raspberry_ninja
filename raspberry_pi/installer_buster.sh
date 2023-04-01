@@ -339,8 +339,8 @@ sudo ldconfig
 sudo libtoolize
 
 cd ~
-[ ! -d gstreamer ] && git clone git://anongit.freedesktop.org/git/gstreamer/gstreamer
-
+[ ! -d gstreamer ]
+git clone https://gitlab.freedesktop.org/gstreamer/gstreamer.git
 cd gstreamer
 git pull
 sudo rm -r build || true
@@ -348,6 +348,7 @@ sudo rm -r build || true
 cd build
 sudo meson --prefix=/usr/local -Dbuildtype=release -Dgst-plugins-base:gl_winsys=egl  
 cd ..
+# if fails at the next step, maybe you need to increase the swap file size
 sudo ninja -C build install -j1
 cd ..
 
