@@ -13,6 +13,8 @@ sudo apt-get full-upgrade -y
 sudo apt-get dist-upgrade -y
 sudo apt-get install vim -y
 
+## sudo raspi-config # ENABLE THE CAMERA
+
 sudo apt-get install python3 git python3-pip -y
 sudo apt-get install build-essential cmake libtool libc6 libc6-dev unzip wget libnuma1 libnuma-dev -y
 sudo pip3 install scikit-build
@@ -21,7 +23,6 @@ sudo pip3 install websockets
 pip3 install python-rtmidi
 
 sudo apt-get install apt-transport-https ca-certificates -y
-
 
 #sudo apt-get remove python-gi-dev -y
 #sudo apt-get install python3-gi -y
@@ -46,6 +47,8 @@ sudo apt-get install libelf-dev -y
 sudo apt-get install libdbus-1-dev -y
 sudo apt-get install woof -y
 
+# Lib Camera depedencies
+sudo apt-get install libyaml-dev python3-yaml python3-ply python3-jinja2 libudev-dev libevent-dev libsdl2-dev qtbase5-dev libqt5core5a libqt5gui5 libqt5widgets5 qttools5-dev-tools libtiff-dev libexif-dev libjpeg-dev libevent-dev -y
 
 # Get the required libraries
 sudo apt-get install autotools-dev automake autoconf \
@@ -77,12 +80,14 @@ sudo apt-get install -y tar gtk-doc-tools libasound2-dev \
 sudo apt-get install policykit-1-gnome -y
 /usr/lib/policykit-1-gnome/polkit-gnome-authentication-agent-1
 
+### MESON 
 cd ~
 git clone https://github.com/mesonbuild/meson.git
 cd meson
 git checkout 0.61.5  ## 1.6.2 is an older vesrion; should be compatible with 1.16.3 though, and bug fixes!!
 git fetch --all
 sudo python3 setup.py install
+
 
 sudo apt-get install flex bison -y
 sudo apt-get install libwebrtc-audio-processing-dev -y
@@ -94,6 +99,14 @@ meson . build -Dprefix=$PWD/install
 ninja -C build -j1
 ninja -C build install
 sudo ldconfig
+
+# https://docs.arducam.com/Raspberry-Pi-Camera/Pivariety-Camera/Quick-Start-Guide/
+cd ~
+wget -O install_pivariety_pkgs.sh https://github.com/ArduCAM/Arducam-Pivariety-V4L2-Driver/releases/download/install_script/install_pivariety_pkgs.sh
+sudo chmod +x install_pivariety_pkgs.sh
+./install_pivariety_pkgs.sh -p libcamera_dev
+./install_pivariety_pkgs.sh -p libcamera_apps
+# Added "dtoverlay=arducam-pivariety,media-controller=0" to the last line of /boot/config.txt if using an arudcam
 
 cd ~
 git clone --depth 1 https://chromium.googlesource.com/webm/libvpx
@@ -114,6 +127,116 @@ autoreconf -fiv
 make -j4 
 sudo make install
 
+#AV1
+cd ~
+git clone --depth 1 https://code.videolan.org/videolan/dav1d.git
+cd dav1d
+mkdir build
+cd build
+meson .. 
+ninja 
+sudo ninja install
+sudo ldconfig
+sudo libtoolize
+
+#HEVC
+cd ~
+git clone --depth 1 https://github.com/ultravideo/kvazaar.git
+cd kvazaar
+./autogen.sh
+./configure
+make -j4
+sudo make install
+
+#AP1
+cd ~
+git clone --depth 1 https://aomedia.googlesource.com/aom
+cd aom
+mkdir build
+cd build
+cmake -G "Unix Makefiles" AOM_SRC -DENABLE_NASM=on -DPYTHON_EXECUTABLE="$(which python3)" -DCMAKE_C_FLAGS="-mfpu=vfp -mfloat-abi=hard" ..
+sed -i 's/ENABLE_NEON:BOOL=ON/ENABLE_NEON:BOOL=OFF/' CMakeCache.txt
+make -j1 # too many cores used and it will crash a pi zero 2; memory usage issue?
+sudo make install
+sudo ldconfig
+sudo libtoolize
+
+#zimg
+cd ~
+git clone --recursive https://github.com/sekrit-twc/zimg.git
+cd zimg
+sh autogen.sh
+./configure
+make
+sudo make install
+sudo ldconfig
+sudo libtoolize
+
+sudo apt-get install libdrm-dev libgmp-dev -y
+sudo apt-get -y install \
+    autoconf \
+    automake \
+    build-essential \
+    cmake \
+    doxygen \
+    git \
+    graphviz \
+    imagemagick \
+    libasound2-dev \
+    libass-dev \
+    libavcodec-dev \
+    libavdevice-dev \
+    libavfilter-dev \
+    libavformat-dev \
+    libavutil-dev \
+    libfreetype6-dev \
+    libgmp-dev \
+    libmp3lame-dev \
+    libopencore-amrnb-dev \
+    libopencore-amrwb-dev \
+    libopus-dev \
+    librtmp-dev \
+    libsdl2-dev \
+    libsdl2-image-dev \
+    libsdl2-mixer-dev \
+    libsdl2-net-dev \
+    libsdl2-ttf-dev \
+    libsnappy-dev \
+    libsoxr-dev \
+    libssh-dev \
+    libssl-dev \
+    libtool \
+    libv4l-dev \
+    libva-dev \
+    libvdpau-dev \
+    libvo-amrwbenc-dev \
+    libvorbis-dev \
+    libwebp-dev \
+    libx264-dev \
+    libx265-dev \
+    libxcb-shape0-dev \
+    libxcb-shm0-dev \
+    libxcb-xfixes0-dev \
+    libxcb1-dev \
+    libxml2-dev \
+    lzma-dev \
+    meson \
+    nasm \
+    pkg-config \
+    python3-dev \
+    python3-pip \
+    texinfo \
+    wget \
+    yasm \
+    libsrt-gnutls-dev \
+    zlib1g-dev
+
+sudo apt-get install libfdk-aac-dev -y
+sudo apt-get install libaom-dev -y
+
+
+
+######
 
 sudo apt-get install libdrm-dev libgmp-dev -y
 cd ~
@@ -195,6 +318,15 @@ sudo make shared_library
 sudo make install -j4
 sudo ldconfig
 sudo libtoolize
+
+
+
+## Lib Camera
+git clone https://git.libcamera.org/libcamera/libcamera.git
+cd libcamera
+meson setup build
+ninja -C build install
+
 
 cd ~
 [ ! -d gstreamer ] && git clone git://anongit.freedesktop.org/git/gstreamer/gstreamer
