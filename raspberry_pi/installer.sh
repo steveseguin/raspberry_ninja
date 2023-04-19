@@ -172,7 +172,6 @@ sudo make install
 sudo ldconfig
 sudo libtoolize
 
-sudo apt-get install libdrm-dev libgmp-dev -y
 sudo apt-get -y install \
     autoconf \
     automake \
@@ -220,23 +219,22 @@ sudo apt-get -y install \
     libxcb1-dev \
     libxml2-dev \
     lzma-dev \
-    meson \
-    nasm \
-    pkg-config \
-    python3-dev \
-    python3-pip \
     texinfo \
     wget \
     yasm \
+    libaom-dev \
     libsrt-gnutls-dev \
     zlib1g-dev
 
-sudo apt-get install libfdk-aac-dev -y
-sudo apt-get install libaom-dev -y
 
-
-
-######
+# SRT
+cd ~
+sudo apt-get install tclsh pkg-config cmake libssl-dev build-essential -y
+git clone https://github.com/Haivision/srt
+cd srt
+./configure
+make
+sudo make install
 
 sudo apt-get install libdrm-dev libgmp-dev -y
 cd ~
@@ -244,7 +242,7 @@ cd ~
 cd FFmpeg
 git pull
 make distclean 
-sudo ./configure --extra-cflags="-I/usr/local/include" --extra-ldflags="-L/usr/local/lib" --enable-libopencore-amrnb  --enable-librtmp --enable-libopus --enable-libopencore-amrwb --enable-gmp --enable-version3 --enable-libdrm --enable-shared  --enable-pic --enable-libvpx --enable-libfdk-aac --target-os=linux --enable-gpl --enable-omx --enable-omx-rpi --enable-pthreads --enable-hardcoded-tables  --enable-omx --enable-nonfree --enable-libfreetype --enable-libx264 --enable-mmal --enable-indev=alsa --enable-outdev=alsa --disable-vdpau --extra-ldflags="-latomic"
+sudo ./configure --extra-cflags="-I/usr/local/include" --arch=armhf --extra-ldflags="-L/usr/local/lib" --enable-libopencore-amrnb --enable-libzimg --enable-libaom --enable-libsrt --enable-librtmp --enable-libopus --enable-libopencore-amrwb --enable-gmp --enable-version3 --enable-libdrm --enable-shared  --enable-pic --enable-libvpx --enable-libvorbis --enable-libfdk-aac --enable-libvpx --target-os=linux --enable-gpl  --enable-pthreads --enable-libkvazaar --enable-hardcoded-tables --enable-nonfree --enable-libmp3lame --enable-libfreetype --enable-libx264 --enable-libx265 --enable-libwebp --enable-mmal --enable-indev=alsa --enable-outdev=alsa --enable-libsnappy --enable-libxml2 --enable-libssh --enable-libsoxr --disable-vdpau --enable-libdav1d  --enable-libass --extra-ldflags="-latomic"
 libtoolize
 make -j4
 libtoolize
