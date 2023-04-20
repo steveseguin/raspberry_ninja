@@ -332,7 +332,7 @@ git clone https://git.libcamera.org/libcamera/libcamera.git
 cd libcamera
 meson setup build
 sudo ninja -C build install -j4 ## too many cores and you'll crash a raspiberry pi zero 2
-ldconfig
+sudo ldconfig
 cd ~
 
 # modprobe bcm2835-codecfg
