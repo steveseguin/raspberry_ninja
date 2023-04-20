@@ -1,3 +1,6 @@
+
+## starting with a brand new official bullseye 32bit image
+
 sudo chmod 777 /etc/resolv.conf
 sudo echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 sudo chmod 644 /etc/resolv.conf
@@ -16,21 +19,15 @@ sudo apt-get dist-upgrade -y
 sudo apt-get install vim -y
 # sudo rpi-update  ## use at your own risk, if you need it
 
-REBOOT
+### REBOOT
 
 # sudo raspi-config ##  --> Interface Options --> I2C  <++++++++++++++++++++ enable i2c
 
-######### OBSOLETE
-### sudo raspi-config # ENABLE THE CAMERA ?  This might now be obsolete
-### If using arducam, add "dtoverlay=arducam-pivariety,media-controller=0" to the last line of /boot/config.txt then reboot
-### REBOOT
 ### https://docs.arducam.com/Raspberry-Pi-Camera/Native-camera/Quick-Start-Guide/  (imx417/imx519)
-### https://docs.arducam.com/Raspberry-Pi-Camera/Pivariety-Camera/Quick-Start-Guide/ (old?)
-########## END OBSOLTE
-
 ## https://github.com/raspberrypi/firmware/blob/master/boot/overlays/README
+## pivariety IMX462 ? see: https://forums.raspberrypi.com/viewtopic.php?t=331213&p=1992004#p1991478
 
-### You may need to increase the swap size if pi zero2 or slower/smaller
+### You may need to increase the swap size if pi zero2 or slower/smaller to avoid system crashes with compiling 
 sudo dphys-swapfile swapoff
 # sudo echo "CONF_SWAPSIZE=1024" >> /etc/dphys-swapfile
 sudo vi /etc/dphys-swapfile
@@ -39,7 +36,7 @@ sudo dphys-swapfile setup
 sudo dphys-swapfile swapon
 ###############################
 
-### Vanilla LibCamera
+### Vanilla LibCamera -- I'm going to use the default system one.
 #export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
 #export LD_LIBRARY_PATH=/usr/local/lib/
 #cd ~
@@ -48,13 +45,8 @@ sudo dphys-swapfile swapon
 #meson setup build
 #sudo ninja -C build install -j1 ## too many cores and you'll crash a raspiberry pi zero 2
 
+sudo apt-get install libcamera-dev # all we need I think
 
-#cd ~
-#wget -O install_pivariety_pkgs.sh https://github.com/ArduCAM/Arducam-Pivariety-V4L2-Driver/releases/download/install_script/install_pivariety_pkgs.sh
-#sudo chmod +x install_pivariety_pkgs.sh
-#./install_pivariety_pkgs.sh -l
-#./install_pivariety_pkgs.sh -p libcamera_dev
-#./install_pivariety_pkgs.sh -p libcamera_apps
 # v4l2-ctl --set-fmt-video=width=1920,height=1080,pixelformat='GREY' --stream-mmap ## test camera after reboot
 
 
@@ -81,7 +73,8 @@ sudo apt-get install ccache curl bison flex \
 	libmpeg2-4-dev libopencore-amrnb-dev libopencore-amrwb-dev libcurl4-openssl-dev \
 	libsidplay1-dev libx264-dev libusb-1.0 pulseaudio libpulse-dev \
 	libomxil-bellagio-dev libfreetype6-dev checkinstall fonts-freefont-ttf -y
-	
+
+sudo apt-get install libcamera-dev
 sudo apt-get install libatk1.0-dev -y
 sudo apt-get install -y libgdk-pixbuf2.0-dev
 sudo apt-get install libffi6 libffi-dev -y
