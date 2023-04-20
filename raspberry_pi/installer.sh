@@ -81,7 +81,7 @@ sudo apt-get install policykit-1-gnome -y
 /usr/lib/policykit-1-gnome/polkit-gnome-authentication-agent-1
 
 sudo dphys-swapfile swapoff
-# sudo echo "CONF_SWAPSIZE=1024" > /etc/dphys-swapfile
+# sudo echo "CONF_SWAPSIZE=1024" >> /etc/dphys-swapfile
 sudo vi /etc/dphys-swapfile
 CONF_SWAPSIZE=1024 ## to to file
 sudo dphys-swapfile setup
