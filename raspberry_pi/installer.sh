@@ -77,10 +77,9 @@ sudo apt-get install -y libmount-dev
 sudo apt-get install libelf-dev -y
 sudo apt-get install libdbus-1-dev -y
 
-# Get the required libraries
 sudo apt-get install autotools-dev automake autoconf \
 	autopoint libxml2-dev zlib1g-dev libglib2.0-dev \
-	bison flex  gtk-doc-tools \
+	gtk-doc-tools \
 	libgudev-1.0-dev libxt-dev libvorbis-dev libcdparanoia-dev \
 	libtheora-dev libvisual-0.4-dev iso-codes \
 	libgtk-3-dev libraw1394-dev libiec61883-dev libavc1394-dev \
@@ -100,9 +99,9 @@ sudo apt-get install autotools-dev automake autoconf \
 	libtwolame-dev \
 	yasm python3-dev libgirepository1.0-dev -y
 
-sudo apt-get install -y tar gtk-doc-tools libasound2-dev \
-	libopencore-amrnb-dev \
-	freeglut3 weston libssl-dev policykit-1-gnome -y
+sudo apt-get install -y tar freeglut3 weston libssl-dev policykit-1-gnome -y
+sudo apt-get install libwebrtc-audio-processing-dev libvpx-dev -y
+
 ### MESON - specific version
 cd ~
 git clone https://github.com/mesonbuild/meson.git
@@ -111,10 +110,7 @@ git checkout 0.64.1 ## everything after this is version 1.x?
 git fetch --all
 sudo python3 setup.py install
 
-## webrtc audio processing
 pip3 install pycairo
-sudo apt-get install flex bison -y
-sudo apt-get install libwebrtc-audio-processing-dev libvpx-dev -y
 
 # AAC - optional (needed for rtmp only really)
 cd ~
@@ -147,16 +143,9 @@ make -j4
 sudo make install
 
 sudo apt-get -y install \
-    autoconf \
-    automake \
-    build-essential \
-    cmake \
     doxygen \
-    git \
     graphviz \
     imagemagick \
-    libasound2-dev \
-    libass-dev \
     libavcodec-dev \
     libavdevice-dev \
     libavfilter-dev \
@@ -164,8 +153,6 @@ sudo apt-get -y install \
     libavutil-dev \
     libmp3lame-dev \
     libopencore-amrwb-dev \
-    libopus-dev \
-    librtmp-dev \
     libsdl2-dev \
     libsdl2-image-dev \
     libsdl2-mixer-dev \
@@ -195,7 +182,7 @@ sudo apt-get -y install \
     libgmp-dev \
     libzimg-dev
 
-# SRT  - optional
+# SRT - optional
 cd ~
 sudo apt-get install tclsh pkg-config cmake build-essential -y
 git clone https://github.com/Haivision/srt
@@ -331,25 +318,6 @@ sudo make install -j4
 sudo ldconfig
 sudo libtoolize
 
-### Vanilla LibCamera
-##export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
-##export LD_LIBRARY_PATH=/usr/local/lib/
-##cd ~
-##git clone https://git.libcamera.org/libcamera/libcamera.git
-##cd libcamera
-##meson setup build
-##sudo ninja -C build install -j1 ## too many cores and you'll crash a raspiberry pi zero 2
-## ARDUCAM compatible Libcamera; 
-##export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
-##export LD_LIBRARY_PATH=/usr/local/lib/
-# https://docs.arducam.com/Raspberry-Pi-Camera/Pivariety-Camera/Quick-Start-Guide/
-##cd ~
-##wget -O install_pivariety_pkgs.sh https://github.com/ArduCAM/Arducam-Pivariety-V4L2-Driver/releases/download/install_script/install_pivariety_pkgs.sh
-##sudo chmod +x install_pivariety_pkgs.sh
-##./install_pivariety_pkgs.sh -p libcamera_dev
-##./install_pivariety_pkgs.sh -p libcamera_apps
-### Added "dtoverlay=arducam-pivariety,media-controller=0" to the last line of /boot/config.txt if using an arudcam
-
 cd ~
 [ ! -d gstreamer ] && git clone git://anongit.freedesktop.org/git/gstreamer/gstreamer
 export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
@@ -361,7 +329,7 @@ sudo rm -r build || true
 cd build
 sudo meson --prefix=/usr/local -Dbuildtype=release -Dgst-plugins-base:gl_winsys=egl -Ddoc=disabled -Dtests=disabled -Dexamples=disabled -Dges=disabled -Dgst-examples:*=disabled -Ddevtools=disabled ..
 cd ..
-sudo ninja -C build install -j1
+sudo ninja -C build install -j4
 sudo ldconfig
 
 # modprobe bcm2835-codecfg
