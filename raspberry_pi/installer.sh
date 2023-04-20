@@ -36,15 +36,6 @@ sudo dphys-swapfile setup
 sudo dphys-swapfile swapon
 ###############################
 
-### Vanilla LibCamera -- I'm going to use the default system one.
-#export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
-#export LD_LIBRARY_PATH=/usr/local/lib/
-#cd ~
-#git clone https://git.libcamera.org/libcamera/libcamera.git
-#cd libcamera
-#meson setup build
-#sudo ninja -C build install -j1 ## too many cores and you'll crash a raspiberry pi zero 2
-
 sudo apt-get install python3 git python3-pip -y
 sudo apt-get install build-essential cmake libtool libc6 libc6-dev unzip wget libnuma1 libnuma-dev -y
 sudo pip3 install scikit-build
@@ -332,9 +323,21 @@ cd ..
 sudo ninja -C build install -j4
 sudo ldconfig
 
+### Vanilla LibCamera -- We run it after gstreamer so it detects it and installs the right plugins.
+export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
+export LD_LIBRARY_PATH=/usr/local/lib/
+sudo apt-get install libyaml-dev python3-yaml python3-ply python3-jinja2 -y
+cd ~
+git clone https://git.libcamera.org/libcamera/libcamera.git
+cd libcamera
+meson setup build
+sudo ninja -C build install -j4 ## too many cores and you'll crash a raspiberry pi zero 2
+ldconfig
+cd ~
+
 # modprobe bcm2835-codecfg
 
-cd ~
+## see https://raspberry.ninja for further system optimizations and settings
 
 systemctl --user restart pulseaudio.socket
 
