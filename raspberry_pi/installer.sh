@@ -76,7 +76,6 @@ sudo apt-get install -y libselinux-dev
 sudo apt-get install -y libmount-dev
 sudo apt-get install libelf-dev -y
 sudo apt-get install libdbus-1-dev -y
-sudo apt-get install woof -y ## I'll miss you.
 
 # Get the required libraries
 sudo apt-get install autotools-dev automake autoconf \
@@ -99,14 +98,11 @@ sudo apt-get install autotools-dev automake autoconf \
 	libcdio-dev libdvdread-dev libmad0-dev \
 	libmpeg2-4-dev \
 	libtwolame-dev \
-	python-gi-dev yasm python3-dev libgirepository1.0-dev -y
+	yasm python3-dev libgirepository1.0-dev -y
 
 sudo apt-get install -y tar gtk-doc-tools libasound2-dev \
-	libmpeg2-4-dev libopencore-amrnb-dev libopencore-amrwb-dev \
-	freeglut3 weston wayland-protocols libssl-dev -y
-
-sudo apt-get install policykit-1-gnome -y
-
+	libopencore-amrnb-dev \
+	freeglut3 weston libssl-dev policykit-1-gnome -y
 ### MESON - specific version
 cd ~
 git clone https://github.com/mesonbuild/meson.git
@@ -167,7 +163,6 @@ sudo apt-get -y install \
     libavformat-dev \
     libavutil-dev \
     libmp3lame-dev \
-    libopencore-amrnb-dev \
     libopencore-amrwb-dev \
     libopus-dev \
     librtmp-dev \
@@ -179,7 +174,6 @@ sudo apt-get -y install \
     libsnappy-dev \
     libsoxr-dev \
     libssh-dev \
-    libssl-dev \
     libtool \
     libv4l-dev \
     libva-dev \
@@ -195,17 +189,15 @@ sudo apt-get -y install \
     libxml2-dev \
     lzma-dev \
     texinfo \
-    wget \
-    yasm \
     libaom-dev \
     libsrt-gnutls-dev \
     zlib1g-dev \
-    libzimg-dev \
-    libgmp-dev
+    libgmp-dev \
+    libzimg-dev
 
 # SRT  - optional
 cd ~
-sudo apt-get install tclsh pkg-config cmake libssl-dev build-essential -y
+sudo apt-get install tclsh pkg-config cmake build-essential -y
 git clone https://github.com/Haivision/srt
 cd srt
 ./configure
@@ -219,7 +211,52 @@ cd ~
 cd FFmpeg
 git pull
 make distclean 
-sudo ./configure --extra-cflags="-I/usr/local/include" --arch=armhf --extra-ldflags="-L/usr/local/lib" --enable-libopencore-amrnb --enable-libzimg --enable-libaom --enable-libsrt --enable-librtmp --enable-libopus --enable-libopencore-amrwb --enable-gmp --enable-version3 --enable-libdrm --enable-shared  --enable-pic --enable-libvpx --enable-libvorbis --enable-libfdk-aac --enable-libvpx --target-os=linux --enable-gpl  --enable-pthreads --enable-libkvazaar --enable-hardcoded-tables --enable-nonfree --enable-libmp3lame --enable-libfreetype --enable-libx264 --enable-libx265 --enable-libwebp --enable-mmal --enable-indev=alsa --enable-outdev=alsa --enable-libsnappy --enable-libxml2 --enable-libssh --enable-libsoxr --disable-vdpau --enable-libdav1d  --enable-libass --extra-ldflags="-latomic"
+sudo ./configure \
+	--extra-cflags="-I/usr/local/include" \
+	--arch=armhf \
+	--extra-ldflags="-L/usr/local/lib" \
+        --extra-libs="-lpthread -lm -latomic" \
+	--enable-libaom \
+	--enable-libsrt \
+	--enable-librtmp \
+	--enable-libopus \
+	--enable-gmp \
+	--enable-version3 \
+	--enable-libdrm \
+	--enable-shared  \
+	--enable-pic \
+	--enable-libvpx \
+	--enable-libvorbis \
+	--enable-libfdk-aac \
+	--enable-libvpx \
+	--target-os=linux \
+	--enable-gpl  \
+	--enable-pthreads \
+	--enable-libkvazaar \
+	--enable-hardcoded-tables \
+        --enable-libopencore-amrwb \
+        --enable-libopencore-amrnb \
+	--enable-nonfree \
+	--enable-libmp3lame \
+	--enable-libfreetype \
+	--enable-libx264 \
+	--enable-libx265 \
+	--enable-libwebp \
+	--enable-mmal \
+	--enable-indev=alsa \
+	--enable-outdev=alsa \
+	--enable-libsnappy \
+	--enable-libxml2 \
+	--enable-libssh \
+	--enable-libsoxr \
+	--disable-vdpau \
+	--enable-libdav1d  \
+	--enable-libass \
+        --disable-mmal \
+        --enable-omx \
+        --enable-omx-rpi \
+        --arch=armel \
+	--enable-openssl 
 libtoolize
 make -j4
 libtoolize
