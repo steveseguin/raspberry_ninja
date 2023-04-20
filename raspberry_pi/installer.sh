@@ -342,7 +342,7 @@ sudo rm -r build || true
 cd build
 sudo meson --prefix=/usr/local -Dbuildtype=release -Dgst-plugins-base:gl_winsys=egl -Ddoc=disabled -Dtests=disabled -Dexamples=disabled ..  # building the docs crashed things, so disabling those
 cd ..
-sudo ninja -C build install -j4
+sudo ninja -C build install -j1
 cd ..
 sudo ldconfig
 
