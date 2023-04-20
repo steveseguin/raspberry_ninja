@@ -334,6 +334,8 @@ sudo ldconfig
 
 # modprobe bcm2835-codecfg
 
+cd ~
+
 systemctl --user restart pulseaudio.socket
 
 ## If things still don't work, run it all again, a section at a time, making sure it all passes
