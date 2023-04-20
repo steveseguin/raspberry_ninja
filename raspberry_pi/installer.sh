@@ -6,14 +6,57 @@ sudo chattr -V +i /etc/resolv.conf ### lock access
 sudo systemctl restart systemd-resolved.service
 
 export GIT_SSL_NO_VERIFY=1
+export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
+export LD_LIBRARY_PATH=/usr/local/lib/
 
 sudo apt-get update
 sudo apt-get upgrade -y
 sudo apt-get full-upgrade -y 
 sudo apt-get dist-upgrade -y
 sudo apt-get install vim -y
+# sudo rpi-update  ## use at your own risk, if you need it
 
-## sudo raspi-config # ENABLE THE CAMERA
+REBOOT
+
+# sudo raspi-config ##  --> Interface Options --> I2C  <++++++++++++++++++++ enable i2c
+
+######### OBSOLETE
+### sudo raspi-config # ENABLE THE CAMERA ?  This might now be obsolete
+### If using arducam, add "dtoverlay=arducam-pivariety,media-controller=0" to the last line of /boot/config.txt then reboot
+### REBOOT
+### https://docs.arducam.com/Raspberry-Pi-Camera/Native-camera/Quick-Start-Guide/  (imx417/imx519)
+### https://docs.arducam.com/Raspberry-Pi-Camera/Pivariety-Camera/Quick-Start-Guide/ (old?)
+########## END OBSOLTE
+
+## https://github.com/raspberrypi/firmware/blob/master/boot/overlays/README
+
+### You may need to increase the swap size if pi zero2 or slower/smaller
+sudo dphys-swapfile swapoff
+# sudo echo "CONF_SWAPSIZE=1024" >> /etc/dphys-swapfile
+sudo vi /etc/dphys-swapfile
+CONF_SWAPSIZE=1024 ## to to file
+sudo dphys-swapfile setup
+sudo dphys-swapfile swapon
+###############################
+
+### Vanilla LibCamera
+#export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
+#export LD_LIBRARY_PATH=/usr/local/lib/
+#cd ~
+#git clone https://git.libcamera.org/libcamera/libcamera.git
+#cd libcamera
+#meson setup build
+#sudo ninja -C build install -j1 ## too many cores and you'll crash a raspiberry pi zero 2
+
+
+#cd ~
+#wget -O install_pivariety_pkgs.sh https://github.com/ArduCAM/Arducam-Pivariety-V4L2-Driver/releases/download/install_script/install_pivariety_pkgs.sh
+#sudo chmod +x install_pivariety_pkgs.sh
+#./install_pivariety_pkgs.sh -l
+#./install_pivariety_pkgs.sh -p libcamera_dev
+#./install_pivariety_pkgs.sh -p libcamera_apps
+# v4l2-ctl --set-fmt-video=width=1920,height=1080,pixelformat='GREY' --stream-mmap ## test camera after reboot
+
 
 sudo apt-get install python3 git python3-pip -y
 sudo apt-get install build-essential cmake libtool libc6 libc6-dev unzip wget libnuma1 libnuma-dev -y
@@ -81,12 +124,7 @@ sudo apt-get install -y tar gtk-doc-tools libasound2-dev \
 sudo apt-get install policykit-1-gnome -y
 /usr/lib/policykit-1-gnome/polkit-gnome-authentication-agent-1
 
-sudo dphys-swapfile swapoff
-# sudo echo "CONF_SWAPSIZE=1024" >> /etc/dphys-swapfile
-sudo vi /etc/dphys-swapfile
-CONF_SWAPSIZE=1024 ## to to file
-sudo dphys-swapfile setup
-sudo dphys-swapfile swapon
+
 
 ### MESON 
 cd ~
@@ -107,26 +145,6 @@ meson . build -Dprefix=$PWD/install
 ninja -C build -j1
 ninja -C build install
 sudo ldconfig
-
-
-### Vanilla LibCamera
-#export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
-#export LD_LIBRARY_PATH=/usr/local/lib/
-#cd ~
-#git clone https://git.libcamera.org/libcamera/libcamera.git
-#cd libcamera
-#meson setup build
-#sudo ninja -C build install -j1 ## too many cores and you'll crash a raspiberry pi zero 2
-# https://docs.arducam.com/Raspberry-Pi-Camera/Pivariety-Camera/Quick-Start-Guide/
-cd ~
-wget -O install_pivariety_pkgs.sh https://github.com/ArduCAM/Arducam-Pivariety-V4L2-Driver/releases/download/install_script/install_pivariety_pkgs.sh
-sudo chmod +x install_pivariety_pkgs.sh
-export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
-export LD_LIBRARY_PATH=/usr/local/lib/
-./install_pivariety_pkgs.sh -l
-./install_pivariety_pkgs.sh -p libcamera_dev
-./install_pivariety_pkgs.sh -p libcamera_apps
-# Added "dtoverlay=arducam-pivariety,media-controller=0" to the last line of /boot/config.txt if using an arudcam
 
 cd ~
 git clone --depth 1 https://chromium.googlesource.com/webm/libvpx
@@ -374,8 +392,5 @@ sudo ldconfig
 # modprobe bcm2835-codecfg
 
 systemctl --user restart pulseaudio.socket
-sudo rpi-update
 
-# If using arducam, add "dtoverlay=arducam-pivariety,media-controller=0" to the last line of /boot/config.txt then reboot
-# v4l2-ctl --set-fmt-video=width=1920,height=1080,pixelformat='GREY' --stream-mmap ## test camera after reboot
 ## If things still don't work, run it all again, a section at a time, making sure it all passes
