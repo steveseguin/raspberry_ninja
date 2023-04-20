@@ -45,11 +45,6 @@ sudo dphys-swapfile swapon
 #meson setup build
 #sudo ninja -C build install -j1 ## too many cores and you'll crash a raspiberry pi zero 2
 
-sudo apt-get install libcamera-dev # all we need I think
-
-# v4l2-ctl --set-fmt-video=width=1920,height=1080,pixelformat='GREY' --stream-mmap ## test camera after reboot
-
-
 sudo apt-get install python3 git python3-pip -y
 sudo apt-get install build-essential cmake libtool libc6 libc6-dev unzip wget libnuma1 libnuma-dev -y
 sudo pip3 install scikit-build
@@ -66,11 +61,10 @@ sudo apt-get install python3-pyqt5 -y
 sudo apt-get install ccache curl bison flex \
 	libasound2-dev libbz2-dev libcap-dev libdrm-dev libegl1-mesa-dev \
 	libfaad-dev libgl1-mesa-dev libgles2-mesa-dev libgmp-dev libgsl0-dev \
-	libjpeg-dev libmms-dev libmpg123-dev libogg-dev libopus-dev \
+	libjpeg-dev libmms-dev libmpg123-dev libogg-dev \
 	liborc-0.4-dev libpango1.0-dev libpng-dev librtmp-dev \
-	libtheora-dev libtwolame-dev libvorbis-dev libwebp-dev \
-	libgif-dev pkg-config zlib1g-dev libmp3lame-dev \
-	libmpeg2-4-dev libopencore-amrnb-dev libopencore-amrwb-dev libcurl4-openssl-dev \
+	libgif-dev pkg-config libmp3lame-dev \
+	libopencore-amrnb-dev libopencore-amrwb-dev libcurl4-openssl-dev \
 	libsidplay1-dev libx264-dev libusb-1.0 pulseaudio libpulse-dev \
 	libomxil-bellagio-dev libfreetype6-dev checkinstall fonts-freefont-ttf -y
 
@@ -82,44 +76,38 @@ sudo apt-get install -y libselinux-dev
 sudo apt-get install -y libmount-dev
 sudo apt-get install libelf-dev -y
 sudo apt-get install libdbus-1-dev -y
-sudo apt-get install woof -y
-
-# Lib Camera depedencies
-sudo apt-get install libyaml-dev python3-yaml python3-ply python3-jinja2 libudev-dev libevent-dev libsdl2-dev qtbase5-dev libqt5core5a libqt5gui5 libqt5widgets5 qttools5-dev-tools libtiff-dev libexif-dev libjpeg-dev libevent-dev texlive y
+sudo apt-get install woof -y ## I'll miss you.
 
 # Get the required libraries
 sudo apt-get install autotools-dev automake autoconf \
 	autopoint libxml2-dev zlib1g-dev libglib2.0-dev \
-	pkg-config bison flex  gtk-doc-tools libasound2-dev \
+	bison flex  gtk-doc-tools \
 	libgudev-1.0-dev libxt-dev libvorbis-dev libcdparanoia-dev \
-	libpango1.0-dev libtheora-dev libvisual-0.4-dev iso-codes \
+	libtheora-dev libvisual-0.4-dev iso-codes \
 	libgtk-3-dev libraw1394-dev libiec61883-dev libavc1394-dev \
-	libv4l-dev libcairo2-dev libcaca-dev libspeex-dev libpng-dev \
-	libshout3-dev libjpeg-dev libaa1-dev libflac-dev libdv4-dev \
-	libtag1-dev libwavpack-dev libpulse-dev libsoup2.4-dev libbz2-dev \
+	libv4l-dev libcairo2-dev libcaca-dev libspeex-dev \
+	libshout3-dev libaa1-dev libflac-dev libdv4-dev \
+	libtag1-dev libwavpack-dev libsoup2.4-dev \
 	libcdaudio-dev libdc1394-22-dev ladspa-sdk libass-dev \
 	libcurl4-gnutls-dev libdca-dev libdvdnav-dev \
-	libexempi-dev libexif-dev libfaad-dev libgme-dev libgsm1-dev \
-	libiptcdata0-dev libkate-dev libmms-dev \
+	libexempi-dev libexif-dev libgme-dev libgsm1-dev \
+	libiptcdata0-dev libkate-dev \
 	libmodplug-dev libmpcdec-dev libofa0-dev libopus-dev \
-	librsvg2-dev librtmp-dev \
+	librsvg2-dev \
 	libsndfile1-dev libsoundtouch-dev libspandsp-dev libx11-dev \
 	libxvidcore-dev libzbar-dev libzvbi-dev liba52-0.7.4-dev \
-	libcdio-dev libdvdread-dev libmad0-dev libmp3lame-dev \
-	libmpeg2-4-dev libopencore-amrnb-dev libopencore-amrwb-dev \
-	libsidplay1-dev libtwolame-dev libx264-dev libusb-1.0 \
+	libcdio-dev libdvdread-dev libmad0-dev \
+	libmpeg2-4-dev \
+	libtwolame-dev \
 	python-gi-dev yasm python3-dev libgirepository1.0-dev -y
 
 sudo apt-get install -y tar gtk-doc-tools libasound2-dev \
 	libmpeg2-4-dev libopencore-amrnb-dev libopencore-amrwb-dev \
-	freeglut3 weston wayland-protocols pulseaudio libpulse-dev libssl-dev -y
+	freeglut3 weston wayland-protocols libssl-dev -y
 
 sudo apt-get install policykit-1-gnome -y
-/usr/lib/policykit-1-gnome/polkit-gnome-authentication-agent-1
 
-
-
-### MESON 
+### MESON - specific version
 cd ~
 git clone https://github.com/mesonbuild/meson.git
 cd meson
@@ -127,29 +115,12 @@ git checkout 0.64.1 ## everything after this is version 1.x?
 git fetch --all
 sudo python3 setup.py install
 
+## webrtc audio processing
 pip3 install pycairo
 sudo apt-get install flex bison -y
-sudo apt-get install libwebrtc-audio-processing-dev -y
+sudo apt-get install libwebrtc-audio-processing-dev libvpx-dev -y
 
-cd ~
-git clone https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git
-cd webrtc-audio-processing
-meson . build -Dprefix=$PWD/install
-ninja -C build -j1
-ninja -C build install
-sudo ldconfig
-
-cd ~
-git clone --depth 1 https://chromium.googlesource.com/webm/libvpx
-cd libvpx
-git pull
-make distclean
-./configure --disable-examples --disable-tools --disable-unit_tests --disable-docs --enable-shared
-sudo make -j4
-sudo make install
-sudo ldconfig
-sudo libtoolize
-
+# AAC - optional (needed for rtmp only really)
 cd ~
 git clone --depth 1 https://github.com/mstorsjo/fdk-aac.git
 cd fdk-aac 
@@ -158,7 +129,7 @@ autoreconf -fiv
 make -j4 
 sudo make install
 
-#AV1
+# AV1 - optional
 cd ~
 git clone --depth 1 https://code.videolan.org/videolan/dav1d.git
 cd dav1d
@@ -170,7 +141,7 @@ sudo ninja install
 sudo ldconfig
 sudo libtoolize
 
-#HEVC
+# HEVC - optional
 cd ~
 git clone --depth 1 https://github.com/ultravideo/kvazaar.git
 cd kvazaar
@@ -178,30 +149,6 @@ cd kvazaar
 ./configure
 make -j4
 sudo make install
-
-#AP1
-cd ~
-git clone --depth 1 https://aomedia.googlesource.com/aom
-cd aom
-mkdir build
-cd build
-cmake -G "Unix Makefiles" AOM_SRC -DENABLE_NASM=on -DPYTHON_EXECUTABLE="$(which python3)" -DCMAKE_C_FLAGS="-mfpu=vfp -mfloat-abi=hard" ..
-sed -i 's/ENABLE_NEON:BOOL=ON/ENABLE_NEON:BOOL=OFF/' CMakeCache.txt
-make -j1 # too many cores used and it will crash a pi zero 2; memory usage issue?
-sudo make install
-sudo ldconfig
-sudo libtoolize
-
-#zimg
-cd ~
-git clone --recursive https://github.com/sekrit-twc/zimg.git
-cd zimg
-sh autogen.sh
-./configure
-make
-sudo make install
-sudo ldconfig
-sudo libtoolize
 
 sudo apt-get -y install \
     autoconf \
@@ -219,8 +166,6 @@ sudo apt-get -y install \
     libavfilter-dev \
     libavformat-dev \
     libavutil-dev \
-    libfreetype6-dev \
-    libgmp-dev \
     libmp3lame-dev \
     libopencore-amrnb-dev \
     libopencore-amrwb-dev \
@@ -242,7 +187,6 @@ sudo apt-get -y install \
     libvo-amrwbenc-dev \
     libvorbis-dev \
     libwebp-dev \
-    libx264-dev \
     libx265-dev \
     libxcb-shape0-dev \
     libxcb-shm0-dev \
@@ -255,10 +199,11 @@ sudo apt-get -y install \
     yasm \
     libaom-dev \
     libsrt-gnutls-dev \
-    zlib1g-dev
+    zlib1g-dev \
+    libzimg-dev \
+    libgmp-dev
 
-
-# SRT
+# SRT  - optional
 cd ~
 sudo apt-get install tclsh pkg-config cmake libssl-dev build-essential -y
 git clone https://github.com/Haivision/srt
@@ -266,8 +211,9 @@ cd srt
 ./configure
 make
 sudo make install
+sudo ldconfig
 
-sudo apt-get install libdrm-dev libgmp-dev -y
+### FFMPEG
 cd ~
 [ ! -d FFmpeg ] && git clone https://github.com/FFmpeg/FFmpeg.git
 cd FFmpeg
@@ -293,7 +239,6 @@ sudo ninja
 sudo ninja install
 sudo ldconfig
 sudo libtoolize
-
 
 cd ~
 git clone https://github.com/sctplab/usrsctp.git
