@@ -375,3 +375,5 @@ sudo ninja -C build install -j1 ## too many cores and you'll crash a raspiberry 
 
 systemctl --user restart pulseaudio.socket
 sudo rpi-update
+
+## If things still don't work, run it all again, a section at a time, making sure it all passes
