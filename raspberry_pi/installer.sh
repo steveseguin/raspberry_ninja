@@ -340,7 +340,7 @@ git pull
 sudo rm -r build || true
 [ ! -d build ] && mkdir build
 cd build
-sudo meson --prefix=/usr/local -Dbuildtype=release -Dgst-plugins-base:gl_winsys=egl -Ddoc=disabled -Dtests=disabled -Dexamples=disabled ..  # building the docs crashed things, so disabling those
+sudo meson --prefix=/usr/local -Dbuildtype=release -Dgst-plugins-base:gl_winsys=egl -Ddoc=disabled -Dtests=disabled -Dexamples=disabled -Dges=disabled -Dgst-examples:*=disabled -Ddevtools=disabled ..
 cd ..
 sudo ninja -C build install -j1
 cd ..
