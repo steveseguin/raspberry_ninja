@@ -48,7 +48,7 @@ sudo apt-get install libdbus-1-dev -y
 sudo apt-get install woof -y
 
 # Lib Camera depedencies
-sudo apt-get install libyaml-dev python3-yaml python3-ply python3-jinja2 libudev-dev libevent-dev libsdl2-dev qtbase5-dev libqt5core5a libqt5gui5 libqt5widgets5 qttools5-dev-tools libtiff-dev libexif-dev libjpeg-dev libevent-dev -y
+sudo apt-get install libyaml-dev python3-yaml python3-ply python3-jinja2 libudev-dev libevent-dev libsdl2-dev qtbase5-dev libqt5core5a libqt5gui5 libqt5widgets5 qttools5-dev-tools libtiff-dev libexif-dev libjpeg-dev libevent-dev texlive y
 
 # Get the required libraries
 sudo apt-get install autotools-dev automake autoconf \
@@ -80,11 +80,18 @@ sudo apt-get install -y tar gtk-doc-tools libasound2-dev \
 sudo apt-get install policykit-1-gnome -y
 /usr/lib/policykit-1-gnome/polkit-gnome-authentication-agent-1
 
+sudo dphys-swapfile swapoff
+# sudo echo "CONF_SWAPSIZE=1024" > /etc/dphys-swapfile
+sudo vi /etc/dphys-swapfile
+CONF_SWAPSIZE=1024 ## to to file
+sudo dphys-swapfile setup
+sudo dphys-swapfile swapon
+
 ### MESON 
 cd ~
 git clone https://github.com/mesonbuild/meson.git
 cd meson
-git checkout 0.61.5  ## 1.6.2 is an older vesrion; should be compatible with 1.16.3 though, and bug fixes!!
+git checkout 0.64.1 ## everything after this is version 1.x?
 git fetch --all
 sudo python3 setup.py install
 
@@ -250,10 +257,9 @@ sudo make install -j4
 sudo ldconfig
 
 cd ~
-wget https://download.gnome.org/sources/glib/2.72/glib-2.72.2.tar.xz
-sudo rm glib-2.72.2 -r || true
-tar -xvf glib-2.72.2.tar.xz
-cd glib-2.72.2
+wget https://download.gnome.org/sources/glib/2.76/glib-2.76.1.tar.xz -O glib.tar.xz
+tar -xvf glib.tar.xz 
+cd glib-2.76.1
 mkdir build
 cd build
 meson --prefix=/usr/local -Dman=false ..
@@ -272,12 +278,11 @@ sudo ninja -C build install -j4
 sudo ldconfig
 sudo libtoolize
 
-
 cd ~
-wget https://download.gnome.org/sources/gobject-introspection/1.72/gobject-introspection-1.72.0.tar.xz
-sudo rm  gobject-introspection-1.72.0 -r || true
-tar -xvf gobject-introspection-1.72.0.tar.xz
-cd gobject-introspection-1.72.0
+wget https://download.gnome.org/sources/gobject-introspection/1.76/gobject-introspection-1.76.1.tar.xz -O gobject.tar.xz
+sudo rm  gobject-introspection-1.76.1 -r || true
+tar -xvf gobject.tar.xz
+cd gobject-introspection-1.76.1
 mkdir build
 cd build
 sudo meson --prefix=/usr/local --buildtype=release  ..
@@ -320,10 +325,11 @@ sudo libtoolize
 
 
 ## Lib Camera
+cd ~
 git clone https://git.libcamera.org/libcamera/libcamera.git
 cd libcamera
 meson setup build
-ninja -C build install
+sudo ninja -C build install -j1 ## too many cores and you'll crash a raspiberry pi zero 2
 
 
 cd ~
@@ -340,6 +346,25 @@ sudo ninja -C build install -j1
 cd ..
 
 sudo ldconfig
+
+
+cd ~
+git clone https://github.com/libnice/libnice.git
+cd libnice
+mkdir build
+cd build
+meson --prefix=/usr/local --buildtype=release ..
+sudo ninja
+sudo ninja install
+sudo ldconfig
+sudo libtoolize
+
+## Lib Camera
+cd ~
+git clone https://git.libcamera.org/libcamera/libcamera.git
+cd libcamera
+meson setup build
+sudo ninja -C build install -j1 ## too many cores and you'll crash a raspiberry pi zero 2
 
 # modprobe bcm2835-codecfg
 
