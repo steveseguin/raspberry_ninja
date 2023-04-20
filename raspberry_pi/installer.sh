@@ -108,10 +108,22 @@ ninja -C build -j1
 ninja -C build install
 sudo ldconfig
 
+
+### Vanilla LibCamera
+#export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
+#export LD_LIBRARY_PATH=/usr/local/lib/
+#cd ~
+#git clone https://git.libcamera.org/libcamera/libcamera.git
+#cd libcamera
+#meson setup build
+#sudo ninja -C build install -j1 ## too many cores and you'll crash a raspiberry pi zero 2
 # https://docs.arducam.com/Raspberry-Pi-Camera/Pivariety-Camera/Quick-Start-Guide/
 cd ~
 wget -O install_pivariety_pkgs.sh https://github.com/ArduCAM/Arducam-Pivariety-V4L2-Driver/releases/download/install_script/install_pivariety_pkgs.sh
 sudo chmod +x install_pivariety_pkgs.sh
+export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
+export LD_LIBRARY_PATH=/usr/local/lib/
+./install_pivariety_pkgs.sh -l
 ./install_pivariety_pkgs.sh -p libcamera_dev
 ./install_pivariety_pkgs.sh -p libcamera_apps
 # Added "dtoverlay=arducam-pivariety,media-controller=0" to the last line of /boot/config.txt if using an arudcam
@@ -334,7 +346,6 @@ sudo libtoolize
 ##cd libcamera
 ##meson setup build
 ##sudo ninja -C build install -j1 ## too many cores and you'll crash a raspiberry pi zero 2
-
 ## ARDUCAM compatible Libcamera; 
 ##export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
 ##export LD_LIBRARY_PATH=/usr/local/lib/
