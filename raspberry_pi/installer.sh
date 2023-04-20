@@ -259,7 +259,6 @@ sudo ldconfig
 
 export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
 export LD_LIBRARY_PATH=/usr/local/lib/
-
 cd ~
 wget https://download.gnome.org/sources/glib/2.76/glib-2.76.1.tar.xz -O glib.tar.xz
 tar -xvf glib.tar.xz 
@@ -281,6 +280,7 @@ sudo meson build  --prefix=/usr/local
 sudo ninja -C build install -j4
 sudo ldconfig
 sudo libtoolize
+
 export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
 export LD_LIBRARY_PATH=/usr/local/lib/
 cd ~
@@ -305,7 +305,6 @@ sudo apt-get install -y libatk-bridge2.0
 
 export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
 export LD_LIBRARY_PATH=/usr/local/lib/
-
 cd ~
 git clone https://github.com/libnice/libnice.git
 cd libnice
@@ -363,6 +362,8 @@ sudo ninja install
 sudo ldconfig
 sudo libtoolize
 
+export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
+export LD_LIBRARY_PATH=/usr/local/lib/
 ## Lib Camera
 cd ~
 git clone https://git.libcamera.org/libcamera/libcamera.git
