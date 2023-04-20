@@ -365,4 +365,5 @@ sudo ldconfig
 systemctl --user restart pulseaudio.socket
 sudo rpi-update
 
+# If using arducam, add "dtoverlay=arducam-pivariety,media-controller=0" to the last line of /boot/config.txt then reboot
 ## If things still don't work, run it all again, a section at a time, making sure it all passes
