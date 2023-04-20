@@ -24,8 +24,9 @@ pip3 install python-rtmidi
 
 sudo apt-get install apt-transport-https ca-certificates -y
 
-#sudo apt-get remove python-gi-dev -y
-#sudo apt-get install python3-gi -y
+sudo apt-get remove python-gi-dev -y
+sudo apt-get install python3-gi -y
+sudo apt-get install python3-pyqt5 -y
 
 sudo apt-get install ccache curl bison flex \
 	libasound2-dev libbz2-dev libcap-dev libdrm-dev libegl1-mesa-dev \
@@ -95,7 +96,7 @@ git checkout 0.64.1 ## everything after this is version 1.x?
 git fetch --all
 sudo python3 setup.py install
 
-
+pip3 install pycairo
 sudo apt-get install flex bison -y
 sudo apt-get install libwebrtc-audio-processing-dev -y
 
