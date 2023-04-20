@@ -377,4 +377,5 @@ systemctl --user restart pulseaudio.socket
 sudo rpi-update
 
 # If using arducam, add "dtoverlay=arducam-pivariety,media-controller=0" to the last line of /boot/config.txt then reboot
+# v4l2-ctl --set-fmt-video=width=1920,height=1080,pixelformat='GREY' --stream-mmap ## test camera after reboot
 ## If things still don't work, run it all again, a section at a time, making sure it all passes
