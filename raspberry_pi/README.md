@@ -164,7 +164,7 @@ Also, if using Ethernet, to avoid packet loss on the Pi4 when connected to gigab
 ```
 sudo ethtool -s eth0 speed 100 duplex full autoneg off
 ```
-You can make this change apply no boot by editing `/etc/rc.local` and adding `ethtool --change enp1s0 speed 100 duplex full autoneg off` before the `exit 0` line.
+You can make this change apply on boot by editing `/etc/rc.local` and adding `ethtool --change enp1s0 speed 100 duplex full autoneg off` before the `exit 0` line.
 
 This reduces the speed to 100mbps, instead of gigabit, but it also can dramatically reduce packet loss on a Raspberry Pi. 100mbps is more than enough anyways.
 You may want to have the command auto-run on boot, just to be safe, but if you're not using Ethernet, it may not be needed. 
