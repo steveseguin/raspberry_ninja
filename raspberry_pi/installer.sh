@@ -343,7 +343,6 @@ cd build
 sudo meson --prefix=/usr/local -Dbuildtype=release -Dgst-plugins-base:gl_winsys=egl -Ddoc=disabled -Dtests=disabled -Dexamples=disabled -Dges=disabled -Dgst-examples:*=disabled -Ddevtools=disabled ..
 cd ..
 sudo ninja -C build install -j1
-cd ..
 sudo ldconfig
 
 
