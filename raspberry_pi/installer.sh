@@ -257,6 +257,9 @@ libtoolize
 sudo make install -j4
 sudo ldconfig
 
+export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
+export LD_LIBRARY_PATH=/usr/local/lib/
+
 cd ~
 wget https://download.gnome.org/sources/glib/2.76/glib-2.76.1.tar.xz -O glib.tar.xz
 tar -xvf glib.tar.xz 
@@ -278,7 +281,8 @@ sudo meson build  --prefix=/usr/local
 sudo ninja -C build install -j4
 sudo ldconfig
 sudo libtoolize
-
+export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
+export LD_LIBRARY_PATH=/usr/local/lib/
 cd ~
 wget https://download.gnome.org/sources/gobject-introspection/1.76/gobject-introspection-1.76.1.tar.xz -O gobject.tar.xz
 sudo rm  gobject-introspection-1.76.1 -r || true
@@ -335,7 +339,8 @@ sudo ninja -C build install -j1 ## too many cores and you'll crash a raspiberry 
 
 cd ~
 [ ! -d gstreamer ] && git clone git://anongit.freedesktop.org/git/gstreamer/gstreamer
-
+export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
+export LD_LIBRARY_PATH=/usr/local/lib/
 cd gstreamer
 git pull
 sudo rm -r build || true
