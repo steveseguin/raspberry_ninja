@@ -26,8 +26,9 @@ sudo echo "Prompt=normal" | sudo tee -a  /etc/update-manager/release-upgrades
 sudo apt-get full-upgrade -y  ## start upgrading our operating system
 
 ##  reboot as needed
-
+lsb_release -a
 sudo do-release-upgrade -y
+lsb_release -a
 
 ##  reboot as needed
 
