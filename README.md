@@ -127,6 +127,7 @@ optional arguments:
   --nored               Disable error correction. If you don't disable it, the bandwidth may be up to 2x higher than the target video bitrate.  I do not recommend removing, unless you're on a pristine connection.
   --noqos               This will disable the qos feature. The QOS feature will lower the bitrate of the video encoder if heavy packet loss is detected. It won't lower it more than 5x (20% of target), but I find this works well to combat times where the network bandwidth is insufficient. 
   --pipein              Lets you pipe data in from a unix pipe, something like: `ffmpeg -i input.mp4 -o - | python3 publish.py --pipein auto`
+  --libcamera           Use libcamera as a source; this may be needed if using third party cameras like those from Arducam
 
 ```
 
@@ -192,9 +193,7 @@ You can't publish to vdo.ninja with RTMP, but rather a service like  YouTube.
 
 ### SRT support
 
-I'll likely have SRT supported in the future, as a backup option, but it's low on the priority list since it would then not support VDO.Ninja. I do believe Raspberry_Ninja can be more reliable and lower latency than SRT, and without needing a server, VPN, or tunnel. 
-
-update: I have added SRT support to the v5 Raspberry Pi image, via ffmpeg and potentially gstreamer, but I haven't added it to the Raspberry Ninja code yet.  It wouldn't be too much work to finalize this, but it's still low priority
+I have added SRT support to the Raspberry Pi image (v5 of image).  You need to use it via ffmpeg or gstreamer via command line currently, as I haven't added it to the Raspberry Ninja code directly yet. Still, it's easy enough to publish via command line with SRT, and you get the benefits of an up-to-date Raspberry Pi image with drivers and software all pre-installed.
 
 ### WHIP / Meshcast support
 
@@ -203,6 +202,8 @@ Coming soon I hope.
 ### Hardware options
 
 Of the Raspberry Pi devices, the Raspberry Pi 4 or the Raspberry Pi Zero 2 are so far the best options on this front, depending on your needs. Any of the Nvidia Jetson devices should work fine, but only the Jetson Nano 2GB, 4GB, and NX have been tested and validated. If you wish to use other Jetson devices, you'll need to setup and install Gstreamer 1.19 yourself on those systems, as no pre-built image will be provided at this time. (Unless someone wishes to donate the hardware that is)  Any other Linux system or SBC embedded system is on the user to setup and install at this point, but they should closely follow the same steps that the Nvidia Jetson uses.
+
+It's rather hard to install everything needed on a Raspberry Pi Zero 2 directly, due to the limited memory, so I do recommend that if installing from scratch that you use a Raspberry Pi 4 with 4GB or greater.
 
 #### Camera options
 
@@ -216,7 +217,7 @@ I have gotten the low-light Arducam IMX462 to work with the newest image for RPI
 
 Links for such low-light cameras: 
 
-https://www.uctronics.com/arducam-for-raspberry-pi-ultra-low-light-camera-1080p-hd-wide-angle-pivariety-camera-module-based-on-1-2-7inch-2mp-starvis-sensor-imx462-compatible-with-raspberry-pi-isp-and-gstreamer-plugin.html (I own this camera and it works on a Raspberry Pi 4 with my newest created RPi image. It works if you do not use the pivariety daughterboard and just connecting directly)
+https://www.uctronics.com/arducam-for-raspberry-pi-ultra-low-light-camera-1080p-hd-wide-angle-pivariety-camera-module-based-on-1-2-7inch-2mp-starvis-sensor-imx462-compatible-with-raspberry-pi-isp-and-gstreamer-plugin.html (I own this camera and it works on a Raspberry Pi 4 with my newest created RPi image. It works if you do not use the pivariety daughterboard and just connecting directly; you'll need to change the config.txt file a bit and use --libcamera to use though)
 
 https://www.amazon.ca/VEYE-MIPI-327E-forRaspberry-Jetson-XavierNX-YT0-95-4I/dp/B08QJ1BBM1 
 
