@@ -8,7 +8,8 @@ It is recommended to use the provided Raspberry Pi image, as the install process
 #### Installing from the provided image
 
 Download and extract the image file:
-https://drive.google.com/file/d/1JcQFWNRGzQNMbL9JP8VIRHj0EhTMNqpr/view?usp=sharing
+https://drive.google.com/file/d/19hKnokApp31UnqaPbc_-llpTuA5d_oGW/view?usp=share_link  (Bullseye 32-bit /w Libcamera, Arducam, and SRT support. Built: April 20th 2023)
+
 ```
 Username: vdo  
 Password: ninja
@@ -223,3 +224,9 @@ None of those worked, but adding the following to the `/boot/config.txt` and reb
 start_file=start_x.elf
 fixup_file=fixup_x.dat
 ```
+
+### Arducams and third party non-official camers
+
+You may need to update the /boot/config.txt file (`sudo vim /boot/config.txt`) for your specific camera.  ie: `dtoverlay=imx290` , then reboot
+
+If using an Arducam Pivariety IMX462, you don't need the pivariety daughterboard; just the camera directly into the Pi.  Most Arducams should work automatically or with a single line change, but a couple others might still need some further work.
