@@ -279,6 +279,7 @@ midi demo video: https://youtu.be/Gry9UFtOTmQ
 
 - If you wish to play a video back, using a Raspberry Pi, try this "kiosk" mode image that can be found here: https://awesomeopensource.com/project/futurice/chilipie-kiosk. Raspberry Pis seem to handle video playback in Chromium-based browsers OK.  I'l try to have browser-free playback at some point in the future.
 
+- If needing to make a backup of your microSD, see: http://sigkillit.com/2022/10/13/shrink-a-raspberry-pi-or-retropie-img-on-windows-with-pishrink/ 
 
 ### TODO:
 
