@@ -194,6 +194,8 @@ You can't publish to vdo.ninja with RTMP, but rather a service like  YouTube.
 
 I'll likely have SRT supported in the future, as a backup option, but it's low on the priority list since it would then not support VDO.Ninja. I do believe Raspberry_Ninja can be more reliable and lower latency than SRT, and without needing a server, VPN, or tunnel. 
 
+update: I have added SRT support to the v5 Raspberry Pi image, via ffmpeg and potentially gstreamer, but I haven't added it to the Raspberry Ninja code yet.  It wouldn't be too much work to finalize this, but it's still low priority
+
 ### WHIP / Meshcast support
 
 Coming soon I hope.
@@ -208,15 +210,17 @@ There's plenty of options for the Rasbperry Pi and Nvidia Jetson when it comes t
 
 USB cameras are options, but currently with Raspberry Pi devices these are only supported up to around 720p30. USB 3.0 devices are even less supported, as you need to ensure the Raspberry Pi you are using supports USB 3.0; for example, a Camlink will not work on a Raspberry Pi 3.
 
-If low-light is important to you, the Sony IMX327 and IMX462 series of sensors might appeal to you. They are generally designed for security camera applications, but with the use of an IR Filter, you can make them adequate for use a standard video cameras. These options may require additional gstreamer and driver work to have work however, so they are for more advanced-users at this time.  Having purchased an IMX327 for myself, the low-light is incredible, but driver support requires significant effort to get working on a Raspberry Pi. ISP processing on a Pi is limited as well, so white-balance, HDR, and exposure controls might be insufficient for your application.
+If low-light is important to you, the Sony IMX327 and IMX462 series of sensors might appeal to you. They are generally designed for security camera applications, but with the use of an IR Filter, you can make them adequate for use a standard video cameras. These options may require additional gstreamer and driver work to have work however, so they are for more advanced-users at this time. 
+
+I have gotten the low-light Arducam IMX462 to work with the newest image for RPI working (the v5 bullseye image). It might require a small change to the `dtoverlay` line in the `/boot/config.txt` file though to configure your specific camera, but I think I have most working now without any need drivers. (a few exceptions)
 
 Links for such low-light cameras: 
 
-https://www.uctronics.com/arducam-for-raspberry-pi-ultra-low-light-camera-1080p-hd-wide-angle-pivariety-camera-module-based-on-1-2-7inch-2mp-starvis-sensor-imx462-compatible-with-raspberry-pi-isp-and-gstreamer-plugin.html (requires some extra driver install work currently - will try to support in the future natively)
+https://www.uctronics.com/arducam-for-raspberry-pi-ultra-low-light-camera-1080p-hd-wide-angle-pivariety-camera-module-based-on-1-2-7inch-2mp-starvis-sensor-imx462-compatible-with-raspberry-pi-isp-and-gstreamer-plugin.html (I own this camera and it works on a Raspberry Pi 4 with my newest created RPi image. It works if you do not use the pivariety daughterboard and just connecting directly)
 
-https://www.amazon.ca/VEYE-MIPI-327E-forRaspberry-Jetson-XavierNX-YT0-95-4I/dp/B08QJ1BBM1 (requires some extra driver install work)
+https://www.amazon.ca/VEYE-MIPI-327E-forRaspberry-Jetson-XavierNX-YT0-95-4I/dp/B08QJ1BBM1 
 
-https://www.e-consystems.com/usb-cameras/sony-starvis-imx462-ultra-low-light-camera.asp  (USB-based, so might be best suitable for a Jetson at the moment, and may not require complex drivers)
+https://www.e-consystems.com/usb-cameras/sony-starvis-imx462-ultra-low-light-camera.asp  (USB-based; more compatible with other devices)
 
 You can buy IR Filters, or you can buy lenses that come with IR filters, if needed, for pretty cheap. Many are designed for security applications, so be aware.
 https://fulekan.aliexpress.com/store/1862644
@@ -283,8 +287,6 @@ midi demo video: https://youtu.be/Gry9UFtOTmQ
 
 ### TODO:
 
-- Add an option for dynamic resolution, based on packet loss indicators. (advanced)
-
 - Fix VP8/VP9 recordings and add muxing to the H264 recordings (moderate)
 
 - Have an option to "playback" an incoming stream full-screened on a pi or jetson, to use as an input to an ATEM mixer.
@@ -296,8 +298,6 @@ midi demo video: https://youtu.be/Gry9UFtOTmQ
 - Make easier to use for novice users; perhaps adding a local web-interface or config file accessible via an SD card reader via Windows. These options could then allow for setting of wifi passwords, device, settings, stream IDs, etc, without needing to SSH in or using nano/vim. (moderate)
 
 - Add a QR-code reader mode to the app, as to setup Stream ID, bitrate, and WiFi passwords using a little website tool. (moderate)
-
--- Add drivers for Arducam as default in installation build script and include in image
 
 - Have gstreamer/python automatically detect the input devices, settings, system, and configure things automatically.  Allowing for burn, plug, and boot, without needing to log in via SSH at all.
 
