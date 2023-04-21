@@ -302,7 +302,6 @@ midi demo video: https://youtu.be/Gry9UFtOTmQ
 
 - Have gstreamer/python automatically detect the input devices, settings, system, and configure things automatically.  Allowing for burn, plug, and boot, without needing to log in via SSH at all.
 
-### Further Reading:
+### Discord Support
 
-Details on WebRTC mechanics, Gstreamer, debugging issues, and discussion of Hardware encoders:
- https://cloud.google.com/solutions/gpu-accelerated-streaming-using-webrtc
+Support is available on Discord at [https://discord.vdo.ninja](https://discord.vdo.ninja) in channel *#raspberry-ninja*
