@@ -1,3 +1,5 @@
+### This has has been tested on April 21st, 2023 on a Nano 2GB /w jetpack 4 firmware updated
+
 sudo apt-get update
 sudo apt-get upgrade -y
 sudo apt-get --fix-broken install -y
@@ -5,14 +7,33 @@ sudo apt-get install git -y
 
 ## reboot as needed
 
-# upgrades python 3.6 -> +3.8, which is needed for Gstreamer newer than ~ v1.62
-sudo apt-get remove chrom* -y
-sudo swapoff -a
-sudo rm swapfile  ## Stopping and removing the swap file; we need the space probably to do an upgrade
+## If running Ubuntu 18 (default with Jetson nano), we need a newer version Python; v3.6 -> +3.8,
+# Why? Gstreamer newer than ~ v1.62 needs a newer Python, and 
+
+sudo apt-get remove chrom* -y  ## we need to remove chrome else it will prevent us from upgrading
+
+ ## Stopping and removing the swap file; we need the space probably to do an upgrade
+sudo swapoff -a  ## Stopping and removing the swap file; we need the space probably to do an upgrade
+sudo rm swapfile 
 sudo apt-get autoremove -y
-sudo do-release-upgrade
+
+ ## allow the release upgrade
+sudo truncate -s 0 /etc/update-manager/release-upgrades
+sudo echo "[DEFAULT]" | sudo tee -a  /etc/update-manager/release-upgrades
+sudo echo "Prompt=normal" | sudo tee -a  /etc/update-manager/release-upgrades
+
+
+sudo apt-get full-upgrade -y  ## start upgrading our operating system
 
 ##  reboot as needed
+
+sudo do-release-upgrade -y
+
+##  reboot as needed
+
+sudo swapon -a ## turn swap back on
+
+## Once we have our distro ugpraded to something compatible with Python 3.8, we can now move on
 
 sudo apt-get install cmake -y
 sudo apt-get install build-essential yasm cmake libtool libc6 libc6-dev unzip wget libnuma1 libnuma-dev -y
