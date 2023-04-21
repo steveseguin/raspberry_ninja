@@ -1,38 +1,36 @@
 ### This has has been tested on April 21st, 2023 on a Nano 2GB /w jetpack 4 firmware updated
+## Manual involvement is needed at steps...
+
+sudo mv /var/lib/dpkg/info/ /var/lib/dpkg/backup/
+sudo mkdir /var/lib/dpkg/info/
 
 sudo apt-get update
+sudo apt autoremove -y
+
+sudo apt-get -f install
+sudo mv /var/lib/dpkg/info/* /var/lib/dpkg/backup/
+sudo rm -rf /var/lib/dpkg/info
+sudo mv /var/lib/dpkg/backup/ /var/lib/dpkg/info/
+
 sudo apt-get upgrade -y
-sudo apt-get --fix-broken install -y
 sudo apt-get install git -y
 
-## reboot as needed
-
-## If running Ubuntu 18 (default with Jetson nano), we need a newer version Python; v3.6 -> +3.8,
-# Why? Gstreamer newer than ~ v1.62 needs a newer Python, and 
-
 sudo apt-get remove chrom* -y  ## we need to remove chrome else it will prevent us from upgrading
-
- ## Stopping and removing the swap file; we need the space probably to do an upgrade
-sudo swapoff -a  ## Stopping and removing the swap file; we need the space probably to do an upgrade
-sudo rm swapfile 
-sudo apt-get autoremove -y
 
  ## allow the release upgrade
 sudo truncate -s 0 /etc/update-manager/release-upgrades
 sudo echo "[DEFAULT]" | sudo tee -a  /etc/update-manager/release-upgrades
-sudo echo "Prompt=normal" | sudo tee -a  /etc/update-manager/release-upgrades
+sudo echo "Prompt=lts" | sudo tee -a  /etc/update-manager/release-upgrades
 
+sudo apt dist-upgrade -y
+reboot
 
-sudo apt-get full-upgrade -y  ## start upgrading our operating system
-
-##  reboot as needed
-lsb_release -a
-sudo do-release-upgrade -y
-lsb_release -a
+do-release-upgrade -f DistUpgradeViewNonInteractive
+lsb_release -a  ## should be 20.04 or newer now
 
 ##  reboot as needed
 
-sudo swapon -a ## turn swap back on
+# sudo swapon -a ## turn swap back on
 
 ## Once we have our distro ugpraded to something compatible with Python 3.8, we can now move on
 
