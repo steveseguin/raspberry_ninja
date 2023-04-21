@@ -920,6 +920,7 @@ if __name__=='__main__':
     parser.add_argument('--z1', action='store_true', help='Try to setup a Theta Z1 360 camera')
     parser.add_argument('--z1passthru', action='store_true', help='Try to setup a Theta Z1 360 camera, but do not transcode')
     parser.add_argument('--v4l2', type=str, default=None, help='Sets the V4L2 input device.')
+    parser.add_argument('--libcamera', action='store_true',  help='Use libcamera as the input source')
     parser.add_argument('--rpicam', action='store_true', help='Sets the RaspberryPi input device.')
     parser.add_argument('--rotate', type=int, default=0, help='Rotates the camera in degrees; 0 (default), 90, 180, 270 are possible values.')
     parser.add_argument('--nvidiacsi', action='store_true', help='Sets the input to the nvidia csi port.')
@@ -964,6 +965,7 @@ if __name__=='__main__':
     needed = ["nice", "webrtc", "dtls", "srtp", "rtp", "sctp", "rtpmanager"]
     
     h264 = list(filter(lambda p: Gst.Registry.get().find_plugin(p) is None, ['x264', 'openh264']))
+
     if 'openh264' not in h264:
         h264 = "openh264"
     elif 'x264' not in h264:
@@ -985,6 +987,7 @@ if __name__=='__main__':
             enableLEDs(0.1)
         except Exception as E:
             pass
+        
         
     if args.rpi and not args.v4l2 and not args.hdmi and not args.rpicam and not args.z1:
         args.v4l2 = '/dev/video0'
@@ -1172,6 +1175,11 @@ if __name__=='__main__':
                 args.nvidia = True
                 pipeline_video_input = f'nvarguscamerasrc ! video/x-raw(memory:NVMM),width=(int){args.width},height=(int){args.height},format=(string)NV12,framerate=(fraction){args.framerate}/1'
 
+            elif args.libcamera:
+                needed += ['libcamera']
+                pipeline_video_input = f'libcamerasrc'
+                pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string)YUY2,framerate=(fraction){args.framerate}/1'
+#                pipeline_video_input += f' ! video/x-raw,width=(int)1280,height=(int)720,framerate=(fraction)30/1,format=(string)YUY2'
             elif args.v4l2:
                 needed += ['video4linux2']
                 pipeline_video_input = f'v4l2src device={args.v4l2} io-mode=2 do-timestamp=true'
