@@ -39,9 +39,24 @@ The above image was built on a Jetson Nano 2GB developer kit, model A02, with up
 - It may work with the Jetson Nano 4GB model also, assuming firmware is up to date.
 - GStreamer 1.23.0 installed, with libcamera, srt, rtmp, ffmpeg, hardware-encode, and av1 support
 - It's is sized down to 15.5-GB system drive, 7-gb zipped, so it should barely fit onto a typical 16-GB uSD card.  32GB or more is recommended though.
-- username is `vdo` and the password is `ninja`
+
+The username and password to sign in to the image is:
+```
+username: ninja
+password: vdo
+```
 
 If the Jetson fails to boot after installing it, try an older image, provided below, or considering updating the firmware on your Jetson to something newer.  If nothing else works, you can build Raspberry_ninja from scratch using the installer.sh file, located in the `nvidia_jetson` folder.  
+
+If the installation doesn't auto-expand to fill your uSD card on boot, you can run the following commands to have it fill the available space:
+
+```
+sudo apt-get install cloud-utils -y
+sudo growpart /dev/mmcblk0 1
+sudo resize2fs /dev/mmcblk0p1
+```
+
+The GParted GUI can also be used.
 
 Steve is also available on Discord at discord.vdo.ninja to help support.
 
