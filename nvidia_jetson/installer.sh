@@ -24,12 +24,11 @@ sudo apt-get remove chrom* -y  ## we need to remove chrome else it will prevent 
 
 sudo apt remove thunderbird libreoffice-* -y   # free up space
 sudo rm -rf /usr/local/cuda/samples \
-/usr/src/cudnn_samples_* \
-/usr/src/tensorrt/data \
-/usr/src/tensorrt/samples \
-/usr/share/visionworks* ~/VisionWorks-SFM*Samples \
-/opt/nvidia/deepstream/deepstream*/samples
-
+	/usr/src/cudnn_samples_* \
+	/usr/src/tensorrt/data \
+	/usr/src/tensorrt/samples \
+	/usr/share/visionworks* ~/VisionWorks-SFM*Samples \
+	/opt/nvidia/deepstream/deepstream*/samples
 sudo apt-get purge gnome-shell ubuntu-wallpapers-bionic light-themes libvisionworks* -y
 sudo apt-get autoremove -y
 sudo apt clean -y
