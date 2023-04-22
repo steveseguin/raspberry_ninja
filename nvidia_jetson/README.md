@@ -6,10 +6,15 @@ This is very much like the RPI version, but uses the Nvidia Jetson (Nano/NX/AGX)
 
 While you can probably install Raspberry_ninja onto any Linux flavour, Nvidia's Jetpack Ubuntu version contains the drivers needed to make use of the hardware encoder. I provide some pre-built images, that are setup with all the depedencies needed to run Raspberry_Ninja, but you can use the official image and DIY also.
 
+See the installer.sh for the most recent installer used by me to make the current distributable image.  You'll want to run section at a time, to ensure things run smoothly, restarting or manually editing files as needed.
+
+You are more than likely going to need to make changes to the installer though, as it tries to build the newest version of Gstreamer, and that often implies other script changes are needed.
+
+Takes a few hours at least to normally get everything working when building the files from scratch.  Some steps can be skipped to speed things up, like SRT / FFMPEG support, so do what you wish.
+
 #### Instalilng on Jetson without original Nvidia image?
 
 If you aren't using the Nvidia Jetson image, or you've messed things up, you can download the gst-files provided by Nvidia on that image here, [libgstnvidia.zip](https://github.com/steveseguin/raspberry_ninja/blob/main/nvidia_jetson/libgstnvidia.zip?raw=true), as a zip:
-
 
 Assuming you bypass any related errors in the install script, you'll need to extract and copy those files to this folder, once the install script finishes:
 `/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0$`
@@ -25,24 +30,22 @@ You can use Win32DiskImager (https://sourceforge.net/projects/win32diskimager/) 
 
 If you have problems with Win32DiskImager, [Bletcher](https://www.balena.io/etcher/) might be an option? 
 
-##### Newest Jetson Nano image below, updated June 6th, 2022.
+##### Newest Jetson Nano image below, updated April 21st, 2023.
 
-[https://drive.google.com/file/d/19furxqmPBb2FLWqAxd4ZfIVPNimNDztt/view?usp=sharing](https://drive.google.com/file/d/19furxqmPBb2FLWqAxd4ZfIVPNimNDztt/view?usp=sharing)
+[https://drive.google.com/file/d/1B_ywphXQ49F9we3ytcM-Zn1h7dCYOLBh/view?usp=share_link](https://drive.google.com/file/d/1B_ywphXQ49F9we3ytcM-Zn1h7dCYOLBh/view?usp=share_link)
 
+The above image was built on a Jetson Nano 2GB developer kit, model A02, with up-to-date firmware.  It may work with the Jetson Nano 4GB model also, assuming firmware is up to date.
 
-The above image was built on a Jetson Nano 2GB developer kit, model A02, with up-to-date firmware.  It may work with other Jetson models.
-
-- It might work with other Jetson systems.
-- GStreamer 1.20.2 installed.
-- It's is sized down to a 12-GB system drive, ~2-GB zipped, so a 16-GB SD/Drive is needed.
+- It may work with the Jetson Nano 4GB model also, assuming firmware is up to date.
+- GStreamer 1.23.0 installed, with libcamera, srt, rtmp, ffmpeg, hardware-encode, and av1 support
+- It's is sized down to 15.5-GB system drive, 7-gb zipped, so it should barely fit onto a typical 16-GB uSD card.  32GB or more is recommended though.
 - username is `vdo` and the password is `ninja`
-- comes with Chromium still installed
 
-If the Jetson fails to boot after installing it, try an older image, provided below, or considering updating the firmware on your Jetson to something newer.  If nothing else works, you can build Raspberry_ninja from scratch using the installer.sh file, located in the `nvidia_jetson` folder.
+If the Jetson fails to boot after installing it, try an older image, provided below, or considering updating the firmware on your Jetson to something newer.  If nothing else works, you can build Raspberry_ninja from scratch using the installer.sh file, located in the `nvidia_jetson` folder.  
 
 Steve is also available on Discord at discord.vdo.ninja to help support.
 
-##### Older image compatible with Jetson A02 with old firmware
+##### Older image compatible with Jetson A02 with old (original) firmware
 The follow **Jetson Nano-2GB image**, build with Gstreamer 1.19.2, is out of date, but might work on older Jetson boards if problems occur with the newer ones. Requires a large 32-GB SD card or a 64-GB card.
 
 ```
@@ -53,6 +56,8 @@ The username and password to sign in to the image is:
 username: ninja
 password: vdo
 ```
+
+If these images don't work for your nano, you can update your firmware using another system running Ubuntu 18 /w Jetpack 4 installed I think.
 
 ##### Older image compatible built on a Jetson Xavier NX with old firmware
 
@@ -68,7 +73,6 @@ password: vdo
 ```
 
 * These older Steve-provided builds may not come with Chromium installed
-
 
 ### Once you have logged in
 
