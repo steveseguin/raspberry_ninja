@@ -26,7 +26,7 @@ I've seen an interesting git repo with details on building a Jetson image yourse
 
 #### Steve provided completed builds
 
-The newest builds for Jetson devices require just 16-GB uSD card.  The older ones required 32-GB, but those are for Jetsons running older firmware only.
+The newest pre-setup images for Jetson devices requires 16-GB uSD card or larger, along with a Jetson running the newest board firmware.
 
 You can use Win32DiskImager (https://sourceforge.net/projects/win32diskimager/) to write this image to a disk.  If you need to format your SD card first, you can use the SD Card Formatter (https://www.sdcard.org/downloads/formatter/).
 
