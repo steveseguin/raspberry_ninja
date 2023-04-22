@@ -22,6 +22,18 @@ sudo apt-get install git -y
 
 sudo apt-get remove chrom* -y  ## we need to remove chrome else it will prevent us from upgrading
 
+sudo apt remove thunderbird libreoffice-* -y   # free up space
+sudo rm -rf /usr/local/cuda/samples \
+/usr/src/cudnn_samples_* \
+/usr/src/tensorrt/data \
+/usr/src/tensorrt/samples \
+/usr/share/visionworks* ~/VisionWorks-SFM*Samples \
+/opt/nvidia/deepstream/deepstream*/samples
+
+sudo apt-get purge gnome-shell ubuntu-wallpapers-bionic light-themes libvisionworks* -y
+sudo apt-get autoremove -y
+sudo apt clean -y
+
  ## allow the release upgrade
 sudo truncate -s 0 /etc/update-manager/release-upgrades
 sudo echo "[DEFAULT]" | sudo tee -a  /etc/update-manager/release-upgrades
