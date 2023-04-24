@@ -3,7 +3,7 @@ Turn your Raspberry Pi or Nvidia Jetson into a ninja-cam with hardware-accelerat
 
 It also has the ability to record remote VDO.Ninja streams to disk, without needing to transcode, and can broadcast a low-latency video stream to multiple viewers at  time.
 
-### Preface
+## Preface
 
 The core concepts and code used in this project can be reused for other projects; most Linux systems, and a large variety of embedded systems; potentially even smartphones. There's a focus of supporting Raspberry Pis and Nvidia Jetson systems, which includes offering pre-built images and install scripts. Other Linux system users should still be able to use the code, but setup support will be limited.
 
@@ -15,6 +15,9 @@ I also have another longer [YouTube video here](https://youtu.be/eqC2SRXoPK4), w
 
 Recent updates to Raspberry Ninja have added improved error correction and video redundency, along with automated dynamic bitrate controls for congestion management. This has greatly improved stream reliabilty, reducing frame loss, and limiting buffer sizes. That said, having more than 5-megabites of upload bandwidth and having a solid connection is recommend if intending to use the default settings.
 
+## Install options
+
+See below for different install options
 
 ### Setup for a Raspberry Pi
 
@@ -80,7 +83,7 @@ cd raspberry_ninja
 
 Updates are usually optional, as they typically just focus on added features or improving video quality/stability. I do recommend checking for new updates every now and then.
 
-### Usage
+## Usage
 
 You should be able to run the publshing script simply with `python3 publish.py`, however lots of options are available for customizing as desired.
 
@@ -175,7 +178,7 @@ In this example, an HDMI audio source is the first in the list, so that is our d
 
 Pulse audio and ALSA audio command-line arguments can be passed to setup audio, without needing to tweak Gstreamer pipelines manually. The defaults I think will use the system ALSA default device.
 
-### How to Run:
+## How to Run:
 
 Ensure the pi/jetson is connected to the Internet, via Ethernet is recommended for best performance.  You'll also very likely need to ensure a camera and/or microphone input are connected; this can also be a USB UVC device, supported CSI-based camera, or other selectable media inputs. It technically might be possible to even select a pipe to stream from, although this is a fairly advanced option.
 
@@ -213,13 +216,13 @@ I have added SRT support to the Raspberry Pi image (v5 of image).  You need to u
 
 Coming soon I hope.
 
-### Hardware options
+## Hardware options
 
 Of the Raspberry Pi devices, the Raspberry Pi 4 or the Raspberry Pi Zero 2 are so far the best options on this front, depending on your needs. Any of the Nvidia Jetson devices should work fine, but only the Jetson Nano 2GB, 4GB, and NX have been tested and validated. If you wish to use other Jetson devices, you'll need to setup and install Gstreamer 1.19 yourself on those systems, as no pre-built image will be provided at this time. (Unless someone wishes to donate the hardware that is)  Any other Linux system or SBC embedded system is on the user to setup and install at this point, but they should closely follow the same steps that the Nvidia Jetson uses.
 
 It's rather hard to install everything needed on a Raspberry Pi Zero 2 directly, due to the limited memory, so I do recommend that if installing from scratch that you use a Raspberry Pi 4 with 4GB or greater.
 
-#### Camera options
+### Camera options
 
 There's plenty of options for the Rasbperry Pi and Nvidia Jetson when it comes to cameras and HDMI adapters. The easiest option for a Raspberry Pi is to use one of the official Raspberry Pi camera. These are normally just plug an play on both platforms and well supported. 
 
@@ -248,7 +251,7 @@ Support for the Theta 4k 360 USB camera has been added. Has been tested with the
 Install script and brief usage example found here:
 https://github.com/steveseguin/raspberry_ninja/blob/main/nvidia_jetson/theta_z1_install.sh
 
-#### HDMI Input options
+### HDMI Input options
 
 As per HDMI adapters, a 1080p30 USB 2.0 HDMI to MJPEG adapter can usually be had for $10 to $20, although there are many fake offerings out there. I've tested a $12 MACROSILICON HDMI to USB adapter, and it works pretty well with the Jetson (and OK with the RPI), although finding a legitimate one might be tricky. On a Raspberry Pi 4, 1080p30 is posssible with the HDMI to USB adapter, but audio currently then goes out of sync; at 720p though, audio stays in sync with the video more frequently. Audio sync issues might be resolved in the future with more system tuning.
 
@@ -268,7 +271,7 @@ HDMI to CSI boards are not plug-and-play currently, as they do require a couple 
 
 Please share with the community what works well for you and what did not. 
 
-#### MIDI options
+### MIDI options
 
 When using the `--midi` parameter, video and audio are disabled. Instead, the script can send and recieve MIDI commands over VDO.Ninja.  Supports plug-and-play, although you may need to install `python-rtmidi` using pip3 first.
 
