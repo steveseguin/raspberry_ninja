@@ -35,7 +35,11 @@ Nvidia Jetsons work well with USB-connected cameras and have a selection of comp
 
 ### Setup for Linux Desktops
 
-#### Requirements:
+You can deploy Raspberry.Ninja to a desktop pretty quickly in most cases, without compiling anything.  I have an installer for recent versions of Ubuntu if interested. [Jump there now](ubuntu/README.md)
+
+For other distros, see below for requirements
+
+#### Requirements for linux systems in general:
 
 You'll want to install Gstreamer 1.16 or newer; emphasis on the newer.  You'll need to ensure `libnice`, `srtp`, `sctp`, and `webrtcbin` are part of that install, along with any media codecs you intend to use.
 
