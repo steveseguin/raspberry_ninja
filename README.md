@@ -45,7 +45,17 @@ You'll want to install Gstreamer 1.16 or newer; emphasis on the newer.  You'll n
 
 Python3 is also required, along with `websockets`.  If you have PIP installed, `pip3 install websockets` can get you going there.
 
-### Updating
+### Setup for Windows (WSL)
+
+You can actually run Raspberry Ninja on a Windows PC via the WSL virtual machine interface. It's really quick and simple, except getting camera/hardware support going is tricky. 
+
+Still, it might be useful if you want to pull a stream from a remote Raspberry.Ninja system, recording the stream to disk or using it for local machine learning.
+
+See the WSL install script here: [Jump there now](wsl/README.md)
+
+It is possible to install Gstreamer for Windows natively, but due to the difficultly in that all, I'm not supporting it officially
+
+## Updating
 
 Major updates sometimes will require that the latest Rasbperry Pi or Jetson image be installed on your device, but most updates are minor and only require the `publish.py` file to be updated.  If you've just installed the latest device image, you will still want to update before going further, as the image is not updated with every new code release.
 
