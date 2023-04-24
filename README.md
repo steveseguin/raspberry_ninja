@@ -38,7 +38,7 @@ Nvidia Jetsons work well with USB-connected cameras and have a selection of comp
 
 ### Setup for Linux Desktops
 
-You can deploy Raspberry.Ninja to a desktop pretty quickly in most cases, without compiling anything.  I have an installer for recent versions of Ubuntu if interested. [Jump there now](ubuntu/README.md)
+You can deploy Raspberry.Ninja to a desktop pretty quickly in most cases, without compiling anything.  I have an installer for recent versions of Ubuntu if interested. [Jump there now](ubuntu/)
 
 For other distros, see below for requirements
 
@@ -54,7 +54,7 @@ You can actually run Raspberry Ninja on a Windows PC via the WSL virtual machine
 
 Still, it might be useful if you want to pull a stream from a remote Raspberry.Ninja system, recording the stream to disk or using it for local machine learning.
 
-See the WSL install script here: [Jump there now](wsl/README.md)
+See the WSL install script here: [Jump there now](wsl/)
 
 It is possible to install Gstreamer for Windows natively, but due to the difficultly in that all, I'm not supporting it officially
 
