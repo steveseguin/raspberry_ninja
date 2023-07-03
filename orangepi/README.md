@@ -13,8 +13,8 @@ There are no preinstalled image since I don't have time to create it. However, y
 
 Run command to update the board, be sure that python3 and pip are installed
 
-`apt update && apt upgrade -y`
-`apt install python-pip`
+``apt update && apt upgrade -y``
+``apt install python-pip``
 
 #### Installing from scratch
 
@@ -30,3 +30,6 @@ If you use MIPI RKCamera , edit to /dev/video11
 If you use USB Camera, edit to /dev/video0 
 
 Since /dev/video1 is the HDMI Input but i don't have material to test it
+
+Orange Pi 5 Plus with usb webcam
+![opi5plus-webcam](https://github.com/steveseguin/raspberry_ninja/assets/5319910/25934ec7-da3a-4cff-96ac-5a723840caf4)
