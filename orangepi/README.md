@@ -40,9 +40,10 @@ After all, run the command to test
 I have tested with RK Camera using the MIPI connector and also USB Webcam, both run well, you just need to edit the file publish.py 
 
 If you use MIPI RKCamera , edit to /dev/video11
+
 If you use USB Camera, edit to /dev/video0 
 
-Since /dev/video1 is the HDMI Input but i don't have material to test it
+I found out that /dev/video1 is the HDMI Input but you will need to enter orangepi-config to enable hdmirx first, then it can be use with any HDMI Input, even in high resolution
 
 Orange Pi 5 Plus with usb webcam
 ![opi5plus-webcam](https://github.com/steveseguin/raspberry_ninja/assets/5319910/25934ec7-da3a-4cff-96ac-5a723840caf4)
