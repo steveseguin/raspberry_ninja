@@ -1,5 +1,5 @@
 
-<img src="https://user-images.githubusercontent.com/2575698/127804804-7ee38ebd-6f98-4242-af34-ac9ef0d9a82e.png" width="400">
+![opi5-camera-rk](https://github.com/steveseguin/raspberry_ninja/assets/5319910/63a664aa-acab-4a7e-a836-524b9a4460fb)
 
 ## Installation on a Orange Pi
 
