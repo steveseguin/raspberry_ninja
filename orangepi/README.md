@@ -13,7 +13,7 @@ There are no preinstalled image since I don't have time to create it. However, y
 
 Run command to update the board, be sure that python3 and pip are installed
 
-``sudo apt update && apt upgrade -y``
+``sudo apt update && sudo apt upgrade -y``
 
 
 ``sudo apt install python3-pip``
