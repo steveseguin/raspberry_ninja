@@ -21,7 +21,7 @@ Install websocket module
 
 #### Downloading Raspberry.Ninja
 
-```sudo apt-get install git```
+```sudo apt-get install git vim -y```
 
 ```git clone https://github.com/steveseguin/raspberry_ninja```
 
