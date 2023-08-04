@@ -1,5 +1,7 @@
 ## Installation on a Raspberry Pi /w Bullseye 32bit
 
+This is a simple approach to install Raspberry.Ninja onto a vanilla Raspberry Pi image, and possibly any system really
+
 #### Setting up and connecting
 
 Run command to update the board, be sure that python3 and pip are installed
@@ -12,10 +14,9 @@ Run command to update the board, be sure that python3 and pip are installed
 
 Install some required lib
 
+``sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools gstreamer1.0-x python3-pyqt5 python3-opengl gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-gtk3 gstreamer1.0-pulseaudio gstreamer1.0-nice gstreamer1.0-plugins-base-apps``
 
-``sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools gstreamer1.0-x gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-gtk3 gstreamer1.0-pulseaudio gstreamer1.0-nice gstreamer1.0-plugins-base-apps``
-
-Install websocket module
+Install websocket and gi module
 
 ``pip3 install websockets PyGObject``
 
@@ -29,4 +30,4 @@ Install websocket module
 
 After all, run the command to test
 
-```python3 publish.py```
+```python3 publish.py --rpi --test```
