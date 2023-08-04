@@ -17,7 +17,7 @@ Install some required lib
 
 Install websocket module
 
-``pip3 install websockets``
+``pip3 install websockets PyGObject``
 
 #### Downloading Raspberry.Ninja
 
