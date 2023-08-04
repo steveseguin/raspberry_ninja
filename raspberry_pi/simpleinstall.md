@@ -21,12 +21,12 @@ Install websocket module
 
 #### Downloading Raspberry.Ninja
 
-``sudo apt-get install git```
+```sudo apt-get install git````
 
-``git clone https://github.com/steveseguin/raspberry_ninja```
+```git clone https://github.com/steveseguin/raspberry_ninja```
 
 ## Running things
 
 After all, run the command to test
 
-``python3 publish.py``
+```python3 publish.py```
