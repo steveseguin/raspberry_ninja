@@ -19,6 +19,12 @@ Install websocket module
 
 ``pip3 install websockets``
 
+##### Downloading Raspberry.Ninja
+
+``sudo apt-get install git```
+
+``git clone https://github.com/steveseguin/raspberry_ninja```
+
 ## Running things
 
 After all, run the command to test
