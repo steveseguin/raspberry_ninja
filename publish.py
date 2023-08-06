@@ -45,39 +45,42 @@ def disableLEDs():
     GPIO.cleanup()
 
 class WebRTCClient:
-    def __init__(self, stream_id, server, multiviewer, record, midi, room_name, rotation, save_file, bitrate, noqos, nored, pipein):
+    def __init__(self, params):
+
+        self.pipeline = params.pipeline
         self.conn = None
         self.pipe = None
-        self.pipein = pipein
-        self.bitrate = bitrate
-        self.max_bitrate = bitrate
-        self.server = server
-        self.stream_id = stream_id
-        self.room_name = room_name
-        self.multiviewer = multiviewer
-        self.record = record
-        self.midi = midi
-        self.nored = nored
-        self.noqos = noqos
+        self.h264 = params.h264
+        self.pipein = params.pipein
+        self.bitrate = params.bitrate
+        self.max_bitrate = params.bitrate
+        self.server = params.server
+        self.stream_id = params.streamid
+        self.room_name = params.room
+        self.multiviewer = params.multiviewer
+        self.record = params.record
+        self.midi = params.midi
+        self.nored = params.nored
+        self.noqos = params.noqos
         self.midi_thread = None
         self.midiout = None
         self.midiout_ports = None
         self.puuid = None
         self.clients = {}
-        self.rotate = int(rotation)
-        self.save_file = save_file
+        self.rotate = int(params.rotate)
+        self.save_file = params.save
         if self.save_file:
-            self.pipe = Gst.parse_launch(PIPELINE_DESC)
+            self.pipe = Gst.parse_launch(self.pipeline)
             self.pipe.set_state(Gst.State.PLAYING)
             print("RECORDING TO DISK STARTED")
         
     async def connect(self):
         sslctx = ssl.create_default_context()
         self.conn = await websockets.connect(self.server, ssl=sslctx)
-        if args.record:
-            msg = json.dumps({"request":"play","streamID":args.record})
+        if self.record:
+            msg = json.dumps({"request":"play","streamID":self.record})
             await self.conn.send(msg)
-        elif args.room:
+        elif self.room_name:
             msg = json.dumps({"request":"joinroom","roomid":self.room_name})
             await self.conn.send(msg)
         else:
@@ -407,6 +410,8 @@ class WebRTCClient:
             if (len(stats)>1):
                 stats = stats[1].split(",")[0]
                 print("Packet loss:"+stats)
+                if " vp8enc " in self.pipeline:
+                    return
                 stats = float(stats)
                 if (stats>0.01) and not self.noqos:
                     print("Trying to reduce change bitrate...")
@@ -448,8 +453,74 @@ class WebRTCClient:
                     except Exception as E:
                         print(E)
 
-       
+        def on_frame_probe(pad, info):
+            buf = info.get_buffer()
+            print(f'[{buf.pts / Gst.SECOND:6.2f}]')
+            return Gst.PadProbeReturn.OK
+
         def on_incoming_stream( _, pad):
+            print("ON INCOMING STREAM !! ************* ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ .......$$$$$$$")
+            try:
+                if Gst.PadDirection.SRC != pad.direction:
+                    print("pad direction wrong?")
+                    return
+    
+                caps = pad.get_current_caps()
+                name = caps.to_string()
+    
+                print(name)
+                filesink = False
+                if "video" in name:
+    
+                   # filesink = self.pipe.get_by_name('mux2')
+                    if filesink:
+                        if "VP8" in name:
+                            out = Gst.parse_bin_from_description("rtpvp8depay", True)
+                        elif "H264" in name:
+                            #depay.set_property("request-keyframe", True)
+                            out = Gst.parse_bin_from_description("rtph264depay ! h264parse", True)
+                    else:
+                        if "VP8" in name:
+                            out = Gst.parse_bin_from_description("rtpvp8depay ! matroskamux name=mux1 streamable=true ! filesink location=test.webm", True)
+                        elif "H264" in name:
+                            #depay.set_property("request-keyframe", True)
+                            out = Gst.parse_bin_from_description("rtph264depay ! h264parse ! matroskamux name=mux1 streamable=true ! filesink location=test.mkv", True)
+    
+                    self.pipe.add(out)
+                    out.sync_state_with_parent()
+    
+                    sink = out.get_static_pad('sink')
+    
+                    if filesink:
+                        out.link(filesink)
+                    pad.link(sink)
+    
+                    print("DONE?")
+                elif "audio" in name:
+    
+                    #filesink = self.pipe.get_by_name('mux1')
+                    if filesink:
+                        if "OPUS" in name:
+                            out = Gst.parse_bin_from_description("rtpopusdepay", True)
+    
+                    else:
+                        if "OPUS" in name:
+                            out = Gst.parse_bin_from_description("rtpopusdepay ! matroskamux name=mux2 streamable=true ! filesink location=test.webm", True)
+    
+                    self.pipe.add(out)
+                    out.sync_state_with_parent()
+                    # self.pipe.sync_children_states()
+    
+                    sink = out.get_static_pad('sink')
+    
+                    if filesink:
+                        out.link(filesink)
+                    pad.link(sink)
+            except Exception as E:
+                print(E)
+
+       
+        def on_incoming_stream_2( _, pad):
             print("ON INCOMING STREAM !! ************* ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ .......$$$$$$$")
             try:
                 if Gst.PadDirection.SRC != pad.direction:
@@ -547,12 +618,12 @@ class WebRTCClient:
             print("loading pipe")
            
             if self.record:
-                self.pipe = Gst.Pipeline.new('decode-pipeline')
-            elif len(PIPELINE_DESC)<=1:
+                self.pipe = Gst.Pipeline.new('decode-pipeline') 
+            elif len(self.pipeline)<=1:
                 self.pipe = Gst.Pipeline.new('data-only-pipeline')
             else:
-                print(PIPELINE_DESC)
-                self.pipe = Gst.parse_launch(PIPELINE_DESC)
+                print(self.pipeline)
+                self.pipe = Gst.parse_launch(self.pipeline)
             print(self.pipe)
             started = False
             
@@ -577,12 +648,12 @@ class WebRTCClient:
 
         if self.record:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
-            client['webrtc'].set_property('bundle-policy', 'max-bundle') 
+            client['webrtc'].set_property('bundle-policy', "max-bundle") # max-bundle seems to freeze up the pipeline 
             client['webrtc'].set_property('stun-server', "stun-server=stun://stun4.l.google.com:19302")
             client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
             self.pipe.add(client['webrtc'])
 
-            if args.h264:
+            if self.h264:
                 direction = GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY
                 caps = Gst.caps_from_string("application/x-rtp,media=video,encoding-name=H264,payload=102,clock-rate=90000,packetization-mode=(string)1");
                 tcvr = client['webrtc'].emit('add-transceiver', direction, caps)
@@ -663,7 +734,7 @@ class WebRTCClient:
         if not started and self.pipe.get_state(0)[1] is not Gst.State.PLAYING:
             self.pipe.set_state(Gst.State.PLAYING)
                            
-        client['webrtc'].connect('on-ice-candidate', send_ice_local_candidate_message)
+        #client['webrtc'].connect('on-ice-candidate', send_ice_local_candidate_message) ## already set this!
         client['webrtc'].sync_state_with_parent()
 
         if not self.record and not client['send_channel']:
@@ -726,6 +797,7 @@ class WebRTCClient:
             
     def handle_offer(self, msg, UUID):
         print("HANDLE SDP OFFER")
+        print("-----")
         client = self.clients[UUID]
         if not client or not client['webrtc']:
             return
@@ -897,7 +969,8 @@ def on_message(bus: Gst.Bus, message: Gst.Message, loop):
 
 WSS="wss://wss.vdo.ninja:443"
 
-if __name__=='__main__':
+async def main():
+
     Gst.init(None)
 
     Gst.debug_set_active(False)  ## disable logging to help reduce CPU load?
@@ -924,7 +997,7 @@ if __name__=='__main__':
     parser.add_argument('--rpicam', action='store_true', help='Sets the RaspberryPi input device.')
     parser.add_argument('--rotate', type=int, default=0, help='Rotates the camera in degrees; 0 (default), 90, 180, 270 are possible values.')
     parser.add_argument('--nvidiacsi', action='store_true', help='Sets the input to the nvidia csi port.')
-    parser.add_argument('--alsa', type=str, default='default', help='Use alsa audio input.')
+    parser.add_argument('--alsa', type=str, default=None, help='Use alsa audio input.')
     parser.add_argument('--pulse', type=str, help='Use pulse audio (or pipewire) input.')
     parser.add_argument('--zerolatency', action='store_true', help='A mode designed for the lowest audio latency')
     parser.add_argument('--raw', action='store_true', help='Opens the V4L2 device with raw capabilities.')
@@ -988,7 +1061,44 @@ if __name__=='__main__':
         except Exception as E:
             pass
         
-        
+       
+    monitor = Gst.DeviceMonitor.new()
+    monitor.add_filter("Audio/Source", None)
+    monitor.start()
+
+    # This is happening synchonously, use the GstBus based API and
+    # monitor.start() to avoid blocking the main thread.
+    devices = monitor.get_devices()
+
+    if not devices:
+        print("No microphone found...")
+        sys.exit(1)
+
+    if not args.alsa and not args.noaudio and not args.pulse and not args.test and not args.pipein:
+        default = [d for d in devices if d.get_properties().get_value("is-default") is True]
+        args.alsa = "default"
+        aname = "default"
+        if len(default) > 0:
+            device = default[0]
+            args.alsa = 'hw:'+str(device.get_properties().get_value("alsa.card"))+'\,0'
+            print("Default: %s, via '%s'" % (device.get_display_name(), 'alsasrc device="hw:'+str(device.get_properties().get_value("alsa.card"))+'\,0"'))
+            aname = device.get_display_name();
+        else:
+            print("\nAvalaible microphones:")
+            for i, d in enumerate(devices):
+                if i == 0:
+                    args.alsa = 'hw:'+str(devices[i].get_properties().get_value("alsa.card"))+'\,0'
+                    aname = d.get_display_name()
+                print(" #%d %s, via '%s'" % (i, d.get_display_name(), 'alsasrc device="hw:'+str(devices[i].get_properties().get_value("alsa.card"))+'\,0"'))
+                #res = int(input("Select device: "))
+                #device = devices[res]
+#               print("")
+ #              print(device.get_properties().to_string())
+#               print(device.get_properties().get_value("alsa.card"))           
+  #             print("")
+   #            print(device.get_caps().to_string())
+        print("\nSelecting alsa source: "+aname+"\n")
+
     if args.rpi and not args.v4l2 and not args.hdmi and not args.rpicam and not args.z1:
         args.v4l2 = '/dev/video0'
         monitor = Gst.DeviceMonitor.new()
@@ -1361,8 +1471,13 @@ if __name__=='__main__':
         print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default bitrate is 4000 (kbps) ")
         print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}{server}");
 
-    c = WebRTCClient(args.streamid, args.server, args.multiviewer, args.record, args.midi, args.room, args.rotate, args.save, args.bitrate, args.noqos, args.nored, args.pipein)
-    asyncio.get_event_loop().run_until_complete(c.connect())
-    res = asyncio.get_event_loop().run_until_complete(c.loop())
+    args.pipeline = PIPELINE_DESC
+    c = WebRTCClient(args)
+    await c.connect()
+    res = await c.loop()
     disableLEDs()
     sys.exit(res)
+    return
+
+if __name__ == "__main__":
+    asyncio.run(main())
