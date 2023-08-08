@@ -648,7 +648,7 @@ class WebRTCClient:
 
         if self.record:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
-            client['webrtc'].set_property('bundle-policy', "max-bundle") # max-bundle seems to freeze up the pipeline 
+            client['webrtc'].set_property('bundle-policy', "max-bundle")
             client['webrtc'].set_property('stun-server', "stun-server=stun://stun4.l.google.com:19302")
             client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
             self.pipe.add(client['webrtc'])
@@ -1082,14 +1082,17 @@ async def main():
             device = default[0]
             args.alsa = 'hw:'+str(device.get_properties().get_value("alsa.card"))+'\,0'
             print("Default: %s, via '%s'" % (device.get_display_name(), 'alsasrc device="hw:'+str(device.get_properties().get_value("alsa.card"))+'\,0"'))
-            aname = device.get_display_name();
+            aname = device.get_display_name()
+        elif len(devices)==0:
+            args.noaudio = True
+            print("\nNo microphone or audio source found; disabling audio.")
         else:
-            print("\nAvalaible microphones:")
+            print("\nAvalaible microphones / audio sources:")
             for i, d in enumerate(devices):
                 if i == 0:
                     args.alsa = 'hw:'+str(devices[i].get_properties().get_value("alsa.card"))+'\,0'
                     aname = d.get_display_name()
-                print(" #%d %s, via '%s'" % (i, d.get_display_name(), 'alsasrc device="hw:'+str(devices[i].get_properties().get_value("alsa.card"))+'\,0"'))
+                print(" -- %s, via '%s'" % (d.get_display_name(), 'alsasrc device="hw:'+str(devices[i].get_properties().get_value("alsa.card"))+'\,0"'))
                 #res = int(input("Select device: "))
                 #device = devices[res]
 #               print("")
