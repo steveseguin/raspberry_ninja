@@ -1070,9 +1070,9 @@ async def main():
     # monitor.start() to avoid blocking the main thread.
     devices = monitor.get_devices()
 
-    if not devices:
-        print("No microphone found...")
-        sys.exit(1)
+    #if not devices:
+    #    print("No microphone found...")
+    #    sys.exit(1)
 
     if not args.alsa and not args.noaudio and not args.pulse and not args.test and not args.pipein:
         default = [d for d in devices if d.get_properties().get_value("is-default") is True]
