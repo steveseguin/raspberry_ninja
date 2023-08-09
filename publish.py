@@ -59,6 +59,8 @@ class WebRTCClient:
         self.room_name = params.room
         self.multiviewer = params.multiviewer
         self.record = params.record
+        self.streamin = params.streamin
+        self.ndiout = params.ndiout
         self.midi = params.midi
         self.nored = params.nored
         self.noqos = params.noqos
@@ -69,6 +71,8 @@ class WebRTCClient:
         self.clients = {}
         self.rotate = int(params.rotate)
         self.save_file = params.save
+        self.noaudio = params.noaudio
+
         if self.save_file:
             self.pipe = Gst.parse_launch(self.pipeline)
             self.pipe.set_state(Gst.State.PLAYING)
@@ -77,8 +81,8 @@ class WebRTCClient:
     async def connect(self):
         sslctx = ssl.create_default_context()
         self.conn = await websockets.connect(self.server, ssl=sslctx)
-        if self.record:
-            msg = json.dumps({"request":"play","streamID":self.record})
+        if self.streamin:
+            msg = json.dumps({"request":"play","streamID":self.streamin})
             await self.conn.send(msg)
         elif self.room_name:
             msg = json.dumps({"request":"joinroom","roomid":self.room_name})
@@ -204,11 +208,11 @@ class WebRTCClient:
                 promise = Gst.Promise.new_with_change_func(on_stats, client['webrtc'], None) # check stats
                 client['webrtc'].emit('get-stats', None, promise)
                 
-                # if self.record:
+                # if self.streamin:
                     # direction = GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY
                     # caps = Gst.caps_from_string("application/x-rtp,media=video,encoding-name=VP8/9000,payload=96")
                     # client['webrtc'].emit('add-transceiver', direction, caps)
-                if not self.record and not client['send_channel']:
+                if not self.streamin and not client['send_channel']:
                     channel = client['webrtc'].emit('create-data-channel', 'sendChannel', None)
                     on_data_channel(client['webrtc'], channel)
 
@@ -268,8 +272,11 @@ class WebRTCClient:
             print('DATA CHANNEL: OPENED')
             client['send_channel'] = channel
             self.clients[client["UUID"]] = client
-            if self.record:
-                msg = {"audio":True, "video":True, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
+            if self.streamin:
+                if self.noaudio:
+                    msg = {"audio":False, "video":True, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
+                else:
+                    msg = {"audio":True, "video":True, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
                 self.sendMessage(msg)
             elif self.midi:
                 msg = {"audio":False, "video":False, "allowmidi":True, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
@@ -475,17 +482,27 @@ class WebRTCClient:
                    # filesink = self.pipe.get_by_name('mux2')
                     if filesink:
                         if "VP8" in name:
-                            out = Gst.parse_bin_from_description("rtpvp8depay", True)
+                            out = Gst.parse_bin_from_description("rtpvp8depay ! decodebin ! videoconvert ! video/x-raw,format=UYVY", True)
                         elif "H264" in name:
                             #depay.set_property("request-keyframe", True)
-                            out = Gst.parse_bin_from_description("rtph264depay ! h264parse", True)
+                            out = Gst.parse_bin_from_description("rtph264depay ! h264parse ! decodebin ! videoconvert ! video/x-raw,format=UYVY", True)
+                    elif self.ndiout:
+                        if "VP8" in name:
+                            out = Gst.parse_bin_from_description("rtpvp8depay ! decodebin ! videoconvert ! queue ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! ndisink ndi-name='"+self.streamin+"'", True)
+                        elif "H264" in name:
+                            #depay.set_property("request-keyframe", True)
+                            out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! queue max-size-buffers=0 max-size-time=0 ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! queue ! ndisink ndi-name='"+self.streamin+"'", True)
+                            print("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! queue max-size-buffers=0 max-size-time=0 ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! queue ! ndisink ndi-name='"+self.streamin+"'")
+
                     else:
                         if "VP8" in name:
-                            out = Gst.parse_bin_from_description("rtpvp8depay ! matroskamux name=mux1 streamable=true ! filesink location=test.webm", True)
+                            out = Gst.parse_bin_from_description("rtpvp8depay ! queue ! matroskamux name=mux1 streamable=true ! filesink location=test.webm", True)
                         elif "H264" in name:
                             #depay.set_property("request-keyframe", True)
-                            out = Gst.parse_bin_from_description("rtph264depay ! h264parse ! matroskamux name=mux1 streamable=true ! filesink location=test.mkv", True)
+                            out = Gst.parse_bin_from_description("rtph264depay ! h264parse ! queue ! matroskamux name=mux1 streamable=true ! filesink location=test.mkv", True)
     
+#                    print(Gst.debug_bin_to_dot_data(out, Gst.DebugGraphDetails.ALL))
+
                     self.pipe.add(out)
                     out.sync_state_with_parent()
     
@@ -517,9 +534,13 @@ class WebRTCClient:
                         out.link(filesink)
                     pad.link(sink)
             except Exception as E:
+                print("============= ERROR =========")
                 print(E)
+                exc_type, exc_obj, exc_tb = sys.exc_info()
+                fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                print(exc_type, fname, exc_tb.tb_lineno)
 
-       
+
         def on_incoming_stream_2( _, pad):
             print("ON INCOMING STREAM !! ************* ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ .......$$$$$$$")
             try:
@@ -617,8 +638,8 @@ class WebRTCClient:
         if not self.pipe:
             print("loading pipe")
            
-            if self.record:
-                self.pipe = Gst.Pipeline.new('decode-pipeline') 
+            if self.streamin:
+                self.pipe = Gst.Pipeline.new('decode-pipeline') ## decode or capture 
             elif len(self.pipeline)<=1:
                 self.pipe = Gst.Pipeline.new('data-only-pipeline')
             else:
@@ -646,7 +667,7 @@ class WebRTCClient:
                     pass
 
 
-        if self.record:
+        if self.streamin:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             client['webrtc'].set_property('bundle-policy', "max-bundle")
             client['webrtc'].set_property('stun-server', "stun-server=stun://stun4.l.google.com:19302")
@@ -707,7 +728,7 @@ class WebRTCClient:
             print(e)
             pass
             
-        if self.record:
+        if self.streamin:
             client['webrtc'].connect('pad-added', on_incoming_stream)
             client['webrtc'].connect('on-ice-candidate', send_ice_remote_candidate_message)
             client['webrtc'].connect('on-data-channel', on_data_channel)
@@ -718,7 +739,7 @@ class WebRTCClient:
             #client['webrtc'].connect('on-data-channel', on_data_channel)
  
         try:
-            if not self.record:
+            if not self.streamin:
                 trans = client['webrtc'].emit("get-transceiver",0)
                 if trans is not None:
                     if not self.nored:
@@ -737,7 +758,7 @@ class WebRTCClient:
         #client['webrtc'].connect('on-ice-candidate', send_ice_local_candidate_message) ## already set this!
         client['webrtc'].sync_state_with_parent()
 
-        if not self.record and not client['send_channel']:
+        if not self.streamin and not client['send_channel']:
             channel = client['webrtc'].emit('create-data-channel', 'sendChannel', None)
             on_data_channel(client['webrtc'], channel)
 
@@ -1024,6 +1045,7 @@ async def main():
     parser.add_argument('--filesrc', type=str, default=None,  help='Provide a media file (local file location) as a source instead of physical device; it can be a transparent webm or whatever. It will be transcoded, which offers the best results.')
     parser.add_argument('--filesrc2', type=str, default=None,  help='Provide a media file (local file location) as a source instead of physical device; it can be a transparent webm or whatever. It will not be transcoded, so be sure its encoded correctly. Specify if --vp8 or --vp9, else --h264 is assumed.')
     parser.add_argument('--pipein', type=str, default=None, help='Pipe a media stream in as the input source. Pass `auto` for auto-decode,pass codec type for pass-thru (mpegts,h264,vp8,vp9), or use `raw`'); 
+    parser.add_argument('--ndiout',  type=str, help='VDO.Ninja to NDI output; requires the NDI Gstreamer plugin installed')
 
     args = parser.parse_args()
      
@@ -1034,7 +1056,9 @@ async def main():
         if Gst.Registry.get().find_plugin("nvarguscamerasrc"):
             if not args.nvidiacsi and not args.record:
                 print("\nTip: If using the Nvidia CSI camera, you'll want to use --nvidiacsi to enable it.\n")
-    
+
+    PIPELINE_DESC = ""
+
     needed = ["nice", "webrtc", "dtls", "srtp", "rtp", "sctp", "rtpmanager"]
     
     h264 = list(filter(lambda p: Gst.Registry.get().find_plugin(p) is None, ['x264', 'openh264']))
@@ -1143,7 +1167,6 @@ async def main():
             print("You must install RTMIDI first; pip3 install python-rtmidi")
             sys.exit()
         args.multiviewer = True
-        PIPELINE_DESC = ""
         pass
     else:
         pipeline_video_input = ''
@@ -1181,6 +1204,17 @@ async def main():
             saveAudio = ' ! tee name=saveaudiotee ! queue ! mux.audio_0 saveaudiotee.'
             saveVideo = ' ! tee name=savevideotee ! queue ! mux.video_0 savevideotee.'
                 
+
+       
+        if args.ndiout:
+            needed += ['ndi']
+            if not args.record:
+                args.streamin = args.ndiout
+            else:
+                args.streamin = args.record
+        elif args.record:
+            args.streamin = args.record
+
         if not args.novideo:
             if args.nvidia:
                 needed += ['omx', 'nvvidconv']
@@ -1218,7 +1252,7 @@ async def main():
                     print("Is there an H264 encoder installed?")
 
             # THE VIDEO INPUT
-            if args.record:
+            if args.streamin:
                 pass
             elif args.test:
                 needed += ['videotestsrc']
@@ -1443,7 +1477,7 @@ async def main():
             pipe.set_state(Gst.State.NULL)
             sys.exit(1)
 
-        elif args.record:
+        elif args.streamin:
             args.h264 = True
             pass
         elif not args.multiviewer:
@@ -1464,9 +1498,9 @@ async def main():
         args.server = WSS
         server = ""
 
-    if args.record:
-        print(f"\nYou can publish a stream to record at: https://vdo.ninja/?password=false&push={args.record}{server}");
-        print("\nAvailable options include --record and --server. See --help for more options.")
+    if args.streamin:
+        print(f"\nYou can publish a stream to capture at: https://vdo.ninja/?password=false&push={args.streamin}{server}");
+        print("\nAvailable options include --noaudio, --ndiout, --record and --server. See --help for more options.")
     elif args.room:
         print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default bitrate is 4000 (kbps)")
         print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}&room={args.room}&scene{server}");
