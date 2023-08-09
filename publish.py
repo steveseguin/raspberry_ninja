@@ -678,7 +678,9 @@ class WebRTCClient:
                 direction = GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY
                 caps = Gst.caps_from_string("application/x-rtp,media=video,encoding-name=H264,payload=102,clock-rate=90000,packetization-mode=(string)1");
                 tcvr = client['webrtc'].emit('add-transceiver', direction, caps)
-                tcvr.set_property("codec-preferences",caps) ## supported as of around June 2021 in gstreamer for answer side?
+                if Gst.version().minor > 18:
+                    tcvr.set_property("codec-preferences",caps) ## supported as of around June 2021 in gstreamer for answer side?
+
 
         elif (not self.multiviewer) and client['webrtc']:
             pass
