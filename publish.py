@@ -1216,6 +1216,8 @@ async def main():
                 args.streamin = args.record
         elif args.record:
             args.streamin = args.record
+        else:
+            args.streamin = False
 
         if not args.novideo:
             if args.nvidia:
