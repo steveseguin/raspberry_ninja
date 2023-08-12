@@ -9,12 +9,13 @@ It is recommended to use Orange Pi 5 and Orange Pi 5 Plus, since other model i d
 
 There are no preinstalled image since I don't have time to create it. However, you can download the prebuilt OS from manufaturer website orangepi.org and start to use it
 
+*note: This guide I think was based on Debian, but it should also work with Ubuntu and maybe other Linux flavours
+
 #### Setting up and connecting
 
 Run command to update the board, be sure that python3 and pip are installed
 
 ``sudo apt update && sudo apt upgrade -y``
-
 
 ``sudo apt install python3-pip``
 
@@ -22,12 +23,15 @@ Run command to update the board, be sure that python3 and pip are installed
 
 Install some required lib
 
-
 ``sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools gstreamer1.0-x gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-gtk3 gstreamer1.0-qt5 gstreamer1.0-pulseaudio gstreamer1.0-nice gstreamer1.0-plugins-base-apps``
 
 Install websocket module
 
 ``pip3 install websockets``
+
+You may also need to install PyGObject, such as if running Ubuntu
+
+``pip3 install PyGObject``
 
 ## Running things
 
