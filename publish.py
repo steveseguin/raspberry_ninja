@@ -478,52 +478,54 @@ class WebRTCClient:
                 print(name)
                 filesink = False
                 if "video" in name:
-    
-                   # filesink = self.pipe.get_by_name('mux2')
-                    if filesink:
-                        if "VP8" in name:
-                            out = Gst.parse_bin_from_description("rtpvp8depay ! decodebin ! videoconvert ! video/x-raw,format=UYVY", True)
-                        elif "H264" in name:
-                            #depay.set_property("request-keyframe", True)
-                            out = Gst.parse_bin_from_description("rtph264depay ! h264parse ! decodebin ! videoconvert ! video/x-raw,format=UYVY", True)
-                    elif self.ndiout:
+                    if self.ndiout:
+                        print("NDI OUT")
                         if "VP8" in name:
                             out = Gst.parse_bin_from_description("rtpvp8depay ! decodebin ! videoconvert ! queue ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! ndisink ndi-name='"+self.streamin+"'", True)
                         elif "H264" in name:
                             #depay.set_property("request-keyframe", True)
                             out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! queue max-size-buffers=0 max-size-time=0 ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! queue ! ndisink ndi-name='"+self.streamin+"'", True)
-                            print("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! queue max-size-buffers=0 max-size-time=0 ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! queue ! ndisink ndi-name='"+self.streamin+"'")
 
                     else:
-                        if "VP8" in name:
-                            out = Gst.parse_bin_from_description("rtpvp8depay ! queue ! matroskamux name=mux1 streamable=true ! filesink location="+self.streamin+".mkv", True)
-                        elif "H264" in name:
-                            #depay.set_property("request-keyframe", True)
-                            out = Gst.parse_bin_from_description("rtph264depay ! h264parse ! queue ! matroskamux name=mux1 streamable=true ! filesink location="+self.streamin+".mkv", True)
+                        # filesink = self.pipe.get_by_name('mux2')
+                        if filesink:
+                            print("Video being added after audio")
+                            if "VP8" in name:
+                                out = Gst.parse_bin_from_description("rtpvp8depay", True)
+                            elif "H264" in name:
+                                #depay.set_property("request-keyframe", True)
+                                out = Gst.parse_bin_from_description("rtph264depay ! h264parse", True)
+                        
+                        else:
+                            print("video being saved...")
+                            if "VP8" in name:
+                                out = Gst.parse_bin_from_description("rtpvp8depay !  matroskamux streamable=true name=mux1 ! filesink sync=false location="+self.streamin+"_video.mkv", True)
+                            elif "H264" in name:
+                                #depay.set_property("request-keyframe", True)
+                                out = Gst.parse_bin_from_description("rtph264depay ! h264parse !  matroskamux streamable=true name=mux1 ! filesink sync=false location="+self.streamin+"_video.mkv", True)
     
 #                    print(Gst.debug_bin_to_dot_data(out, Gst.DebugGraphDetails.ALL))
-
                     self.pipe.add(out)
                     out.sync_state_with_parent()
-    
                     sink = out.get_static_pad('sink')
-    
                     if filesink:
                         out.link(filesink)
                     pad.link(sink)
-    
-                    print("DONE?")
+                    print("success video?")
                 elif "audio" in name:
-    
-                    #filesink = self.pipe.get_by_name('mux1')
-                    if filesink:
-                        if "OPUS" in name:
-                            out = Gst.parse_bin_from_description("rtpopusdepay", True)
-    
+                    if self.ndiout:
+                        pass  #WIP 
                     else:
-                        if "OPUS" in name:
-                            out = Gst.parse_bin_from_description("rtpopusdepay ! matroskamux name=mux2 streamable=true ! filesink location="+self.streamin+".mkv", True)
-    
+                        # filesink = self.pipe.get_by_name('mux1')
+                        if filesink:
+                            print("Audio being added after video")
+                            if "OPUS" in name:
+                                out = Gst.parse_bin_from_description("rtpopusdepay", True)
+                        else:
+                            print("audio being saved...") 
+                            if "OPUS" in name:
+                                out = Gst.parse_bin_from_description("rtpopusdepay ! matroskamux streamable=true name=mux2  ! filesink sync=false location="+self.streamin+"_audio.mkv", True)
+        
                     self.pipe.add(out)
                     out.sync_state_with_parent()
                     # self.pipe.sync_children_states()
@@ -533,6 +535,7 @@ class WebRTCClient:
                     if filesink:
                         out.link(filesink)
                     pad.link(sink)
+                    print("success audio?")
             except Exception as E:
                 print("============= ERROR =========")
                 print(E)
@@ -670,7 +673,7 @@ class WebRTCClient:
         if self.streamin:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             client['webrtc'].set_property('bundle-policy', "max-bundle")
-            client['webrtc'].set_property('stun-server', "stun-server=stun://stun4.l.google.com:19302")
+            client['webrtc'].set_property('stun-server', "stun://stun4.l.google.com:19302")
             client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
             self.pipe.add(client['webrtc'])
 
@@ -687,7 +690,7 @@ class WebRTCClient:
         else:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             client['webrtc'].set_property('bundle-policy', 'max-bundle') 
-            client['webrtc'].set_property('stun-server', "stun-server=stun://stun4.l.google.com:19302")
+            client['webrtc'].set_property('stun-server', "stun://stun4.l.google.com:19302")
             client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
             self.pipe.add(client['webrtc'])
             
@@ -997,7 +1000,7 @@ async def main():
     Gst.init(None)
 
     Gst.debug_set_active(False)  ## disable logging to help reduce CPU load?
-    Gst.debug_set_default_threshold(0)
+    Gst.debug_set_default_threshold(2)
 
     error = False
     parser = argparse.ArgumentParser()
