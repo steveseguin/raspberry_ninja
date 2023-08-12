@@ -56,7 +56,7 @@ Still, it might be useful if you want to pull a stream from a remote Raspberry.N
 
 See the WSL install script here: [Jump there now](wsl/)
 
-It is possible to install Gstreamer for Windows natively, but due to the difficultly in that all, I'm not supporting it officially
+It is possible to install Gstreamer for Windows natively, but due to the difficultly in that all, I'm not supporting it officially at present. The main challenge is `cairo` fails to compile, so that needs to be fixed first.
 
 ## Updating
 
