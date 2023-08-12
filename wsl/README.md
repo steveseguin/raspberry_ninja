@@ -34,4 +34,16 @@ git clone https://github.com/steveseguin/raspberry_ninja
 cd raspberry_ninja
 python3 publish.py --test
 ```
-Raspberry.Ninja should be running now, and you can open the provided link in your browser to confirm 
+Raspberry.Ninja should be running now, and you can open the provided link in your browser to confirm.
+
+Using a camera on WSL is a bit more tricky, but running `gst-inspect-1.0 | grep "src"` will give you a sense of what media sources you have available to you. It could be possible to pipe encoded video data into Raspberry.Ninja via OBS Studio for example, however specifying the video meta data (caps) and getting the piping setup right is then needed.  This process needs to be documented.
+
+If wishing to record a remote video to disk, without decoding it first, you can use:
+
+```
+python3 publish.py --record STREAMIDHERE123
+```
+You can then access the saved recording in File Explorer here at `\\wsl$`, and navigate to the raspberry_ninja folder as needed:
+
+ie, for me, username `vdo`, it would be here: `\\wsl.localhost\Ubuntu\home\vdo\raspberry_ninja\STREAMIDHERE123.mkv`
+
