@@ -496,10 +496,10 @@ class WebRTCClient:
 
                     else:
                         if "VP8" in name:
-                            out = Gst.parse_bin_from_description("rtpvp8depay ! queue ! matroskamux name=mux1 streamable=true ! filesink location=test.webm", True)
+                            out = Gst.parse_bin_from_description("rtpvp8depay ! queue ! matroskamux name=mux1 streamable=true ! filesink location="+self.streamin+".mkv", True)
                         elif "H264" in name:
                             #depay.set_property("request-keyframe", True)
-                            out = Gst.parse_bin_from_description("rtph264depay ! h264parse ! queue ! matroskamux name=mux1 streamable=true ! filesink location=test.mkv", True)
+                            out = Gst.parse_bin_from_description("rtph264depay ! h264parse ! queue ! matroskamux name=mux1 streamable=true ! filesink location="+self.streamin+".mkv", True)
     
 #                    print(Gst.debug_bin_to_dot_data(out, Gst.DebugGraphDetails.ALL))
 
@@ -522,7 +522,7 @@ class WebRTCClient:
     
                     else:
                         if "OPUS" in name:
-                            out = Gst.parse_bin_from_description("rtpopusdepay ! matroskamux name=mux2 streamable=true ! filesink location=test.webm", True)
+                            out = Gst.parse_bin_from_description("rtpopusdepay ! matroskamux name=mux2 streamable=true ! filesink location="+self.streamin+".mkv", True)
     
                     self.pipe.add(out)
                     out.sync_state_with_parent()
