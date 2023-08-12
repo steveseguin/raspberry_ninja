@@ -11,9 +11,9 @@ The basic idea of how to install WSL is to open up the Windows Powershell and en
 wsl --install
 wsl --install -d Ubuntu
 ```
-There might also be graphical installers for Ubuntu for Windows these days, perhaps already installed on your computer, ready to go.
-
 <img width="383" alt="image" src="https://github.com/steveseguin/raspberry_ninja/assets/2575698/c4075955-8f7f-4f7f-87a8-07cff9c8463f">
+
+There might also be graphical installers for Ubuntu for Windows these days, perhaps already installed on your computer, ready to go.
 
 Anyways, once Ubuntu is installed, you'd open that. You might be able to just search in Windows for and run `wsl` to open it.
 
