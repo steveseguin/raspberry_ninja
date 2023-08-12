@@ -5,6 +5,8 @@
 
 It is recommended to use the provided Raspberry Pi image, as the install process is otherwise quite challenging.  If using an image, you will want to update the code afterwards to ensure you're running the newest version.
 
+There is also a simple installer, which  will work without needing to compile anything, however this will result in older versions of Gstreamer being installed. (v1.18 at present). Such older versions of Gstreamer may be more prone to bugs and offer limited advanced features.  Still, the simple installer [can be found here.](https://github.com/steveseguin/raspberry_ninja/blob/main/raspberry_pi/simpleinstall.md)
+
 #### Installing from the provided image
 
 Download and extract the image file:
@@ -53,13 +55,15 @@ You can then run `sudo raspi-config` from the command-line to configure the Pi a
 
 You will probably want to also update the pi with `sudo apt-get update && sudo apt-get upgrade`, to snure it's up to date.  You can also run `sudo raspi-config` and update the RPi that way, along with updating the bootloader if desired (on a pi4 at least).
 
-#### Installing from scratch
+#### Building from scratch
 
-If you do not want to use the provided image, you can try to install from scratch, but be prepared to lose a weekend on it. Please see the install script provided, but others exist online that might be better. Gstreamer 1.14 can be made to work with VDO.Ninja, but GStreamer 1.16 or newer is generally recommend; emphasis on the newer.
+If you do not want to use the provided image, you can try to build and install from scratch, but be prepared to lose a weekend on it. Please see the install script provided, but others exist online that might be better. Gstreamer 1.14 can be made to work with VDO.Ninja, but GStreamer 1.16 or newer is generally recommend; emphasis on the newer.
 
 The official image setup for the Raspberry Pi is here: https://www.raspberrypi.org/documentation/installation/installing-images/windows.md
 
 The `installer.sh` file in this folder contains the general idea on how to install an updated version of Gstreamer on a Raspberry Pi. Expect to waste a week of time on it, chasing compiling issues I'm sure.
+
+The simple installer script, that uses package manager builds of required libs, can be [found here instead](https://github.com/steveseguin/raspberry_ninja/blob/main/raspberry_pi/simpleinstall.md), if you give up trying to build the newest versions.
 
 ## Running things
 
@@ -69,7 +73,7 @@ Once connected to you Pi, you can pull the most recent files from this Github re
 sudo rm raspberry_ninja -r
 git clone https://github.com/steveseguin/raspberry_ninja.git
 cd raspberry_ninja
-python3 publish.py --streamid YOURSTREAMIDHERE --bitrate 4000
+python3 publish.py --test
 ```
 
 After cloning the code repository, if you have any problems or wish to update to the newest code in the future, run `git pull` from your raspberry_ninja folder. This should download the most recent code. You will need to clear or stash any changes before pulling though; `git reset --hard` will undo past changes. `git stash` is a method to store past changes; see Google on more info there though.
