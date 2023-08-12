@@ -9,7 +9,7 @@ The basic idea is to open up the windows Powershell and enter something like: `w
 
 Ubuntu would install, and you'd open that. From that command prompt shell, you'd install and use Raspberry Ninja
 
-### This installer can be used to read remote webRTC streams using Raspberry Ninja on a PC.  Local camera support is would take more effort
+### This install may not have broad hardware support; cameras, encoders, etc, but the basics are there
 
 sudo apt-get update
 sudo apt-get install libcairo-dev -y
