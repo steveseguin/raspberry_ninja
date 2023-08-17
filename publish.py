@@ -484,25 +484,25 @@ class WebRTCClient:
                             out = Gst.parse_bin_from_description("rtpvp8depay ! decodebin ! videoconvert ! queue ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! ndisink ndi-name='"+self.streamin+"'", True)
                         elif "H264" in name:
                             #depay.set_property("request-keyframe", True)
-                            out = Gst.parse_bin_from_description("rtph264depay ! h264parse ! mp4mux  name=mux1 ! filesink sync=false location="+self.streamin+"_"+str(int(time.time()))+"_video.mp4", True)
+                            out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! queue max-size-buffers=0 max-size-time=0 ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! queue ! ndisink ndi-name='"+self.streamin+"'", True)
 
                     else:
-                        # filesink = self.pipe.get_by_name('mux2')
+                        # filesink = self.pipe.get_by_name('mux2') ## WIP
                         if filesink:
                             print("Video being added after audio")
                             if "VP8" in name:
                                 out = Gst.parse_bin_from_description("rtpvp8depay", True)
                             elif "H264" in name:
                                 #depay.set_property("request-keyframe", True)
-                                out = Gst.parse_bin_from_description("rtph264depay ! h264parse", True)
+                                out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse", True)
                         
                         else:
                             print("video being saved...")
                             if "VP8" in name:
-                                out = Gst.parse_bin_from_description("rtpvp8depay !  matroskamux streamable=true name=mux1 ! filesink sync=false location="+self.streamin+"_video.mkv", True)
+                                out = Gst.parse_bin_from_description("rtpvp8depay !  webmmux  name=mux1 ! filesink sync=false location="+self.streamin+"_"+str(int(time.time()))+"_video.webm", True)
                             elif "H264" in name:
                                 #depay.set_property("request-keyframe", True)
-                                out = Gst.parse_bin_from_description("rtph264depay ! h264parse !  matroskamux streamable=true name=mux1 ! filesink sync=false location="+self.streamin+"_video.mkv", True)
+                                out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! mp4mux  name=mux1 ! queue ! filesink sync=true location="+self.streamin+"_"+str(int(time.time()))+"_video.mp4", True)
     
 #                    print(Gst.debug_bin_to_dot_data(out, Gst.DebugGraphDetails.ALL))
                     self.pipe.add(out)
@@ -516,15 +516,15 @@ class WebRTCClient:
                     if self.ndiout:
                         pass  #WIP 
                     else:
-                        # filesink = self.pipe.get_by_name('mux1')
+                        # filesink = self.pipe.get_by_name('mux1') ## WIP
                         if filesink:
                             print("Audio being added after video")
                             if "OPUS" in name:
-                                out = Gst.parse_bin_from_description("rtpopusdepay", True)
+                                out = Gst.parse_bin_from_description("queue rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,channels=2,rate=48000", True)
                         else:
                             print("audio being saved...") 
                             if "OPUS" in name:
-                                out = Gst.parse_bin_from_description("rtpopusdepay ! matroskamux streamable=true name=mux2  ! filesink sync=false location="+self.streamin+"_audio.mkv", True)
+                                out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,channels=2,rate=48000 ! mp4mux name=mux2 ! queue ! filesink sync=true location="+self.streamin+"_"+str(int(time.time()))+"_audio.mp4", True)
         
                     self.pipe.add(out)
                     out.sync_state_with_parent()
