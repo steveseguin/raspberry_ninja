@@ -60,6 +60,10 @@ It is possible to install Gstreamer for Windows natively, but due to the difficu
 
 ### Generic quick-install method
 
+Many modern versions of Linux distributions, such as Ubuntu 22, support Raspberry.Ninja with minimal installation effort.
+
+The basic install script for Ubuntu-like systems is as below:
+```
 sudo apt-get update && sudo apt upgrade -y
 sudo apt-get install python3-pip -y
 
@@ -75,7 +79,8 @@ cd ~
 git clone https://github.com/steveseguin/raspberry_ninja
 cd raspberry_ninja
 python3 publish.py --test
-Updating
+```
+Package managers with old versions of Gstreamers, or with no hardware acceleration or limited codec support, may be limited in what Raspberry.Ninja can offer. For the most up-to-date and comprehensive feature set, compiling Gstreamer from scratch may be still needed.
 
 ## Updating
 
