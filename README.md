@@ -58,6 +58,25 @@ See the WSL install script here: [Jump there now](wsl/)
 
 It is possible to install Gstreamer for Windows natively, but due to the difficultly in that all, I'm not supporting it officially at present. The main challenge is `cairo` fails to compile, so that needs to be fixed first.
 
+### Generic quick-install method
+
+sudo apt-get update && sudo apt upgrade -y
+sudo apt-get install python3-pip -y
+
+sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools gstreamer1.0-x python3-pyqt5 python3-opengl gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-qt5 gstreamer1.0-gtk3 gstreamer1.0-pulseaudio gstreamer1.0-nice gstreamer1.0-plugins-base-apps
+
+pip3 install websockets
+
+sudo apt-get install -y libcario-dev ## possibly optional
+pip3 install PyGObject ## possibly optional
+
+sudo apt-get install git -y
+cd ~ 
+git clone https://github.com/steveseguin/raspberry_ninja
+cd raspberry_ninja
+python3 publish.py --test
+Updating
+
 ## Updating
 
 Major updates sometimes will require that the latest Rasbperry Pi or Jetson image be installed on your device, but most updates are minor and only require the `publish.py` file to be updated.  If you've just installed the latest device image, you will still want to update before going further, as the image is not updated with every new code release.
