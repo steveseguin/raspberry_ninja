@@ -81,11 +81,11 @@ class WebRTCClient:
     async def connect(self):
         sslctx = ssl.create_default_context()
         self.conn = await websockets.connect(self.server, ssl=sslctx)
-        if self.streamin:
-            msg = json.dumps({"request":"play","streamID":self.streamin})
-            await self.conn.send(msg)
-        elif self.room_name:
+        if self.room_name:
             msg = json.dumps({"request":"joinroom","roomid":self.room_name})
+            await self.conn.send(msg)
+        elif self.streamin:
+            msg = json.dumps({"request":"play","streamID":self.streamin})
             await self.conn.send(msg)
         else:
             msg = json.dumps({"request":"seed","streamID":self.stream_id})
@@ -915,8 +915,12 @@ class WebRTCClient:
                 if self.room_name:
                     if 'request' in msg:
                         if msg['request'] == 'listing':
-                            msg = json.dumps({"request":"seed","streamID":self.stream_id})
-                            await self.conn.send(msg)
+                            if self.streamin:
+                                msg = json.dumps({"request":"play","streamID":self.streamin}) ## we're just going to view a stream
+                                await self.conn.send(msg)
+                            else:
+                                msg = json.dumps({"request":"seed","streamID":self.stream_id}) ## we're just going to publish a stream
+                                await self.conn.send(msg)
                 continue
                 
             if UUID not in self.clients:
@@ -1506,14 +1510,17 @@ async def main():
         server = ""
 
     if args.streamin:
-        print(f"\nYou can publish a stream to capture at: https://vdo.ninja/?password=false&push={args.streamin}{server}");
+        if args.room:
+            print(f"\nYou can publish a stream to capture at: https://vdo.ninja/?password=false&push={args.streamin}{server}")
+        else:
+            print(f"\nYou can publish a stream to capture at: https://vdo.ninja/?password=false&push={args.streamin}{server}&room={args.room}")
         print("\nAvailable options include --noaudio, --ndiout, --record and --server. See --help for more options.")
     elif args.room:
         print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default bitrate is 4000 (kbps)")
         print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}&room={args.room}&scene{server}");
     else:
         print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default bitrate is 4000 (kbps) ")
-        print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}{server}");
+        print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}{server}")
 
     args.pipeline = PIPELINE_DESC
     c = WebRTCClient(args)
