@@ -484,7 +484,7 @@ class WebRTCClient:
                             out = Gst.parse_bin_from_description("rtpvp8depay ! decodebin ! videoconvert ! queue ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! ndisink ndi-name='"+self.streamin+"'", True)
                         elif "H264" in name:
                             #depay.set_property("request-keyframe", True)
-                            out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! queue max-size-buffers=0 max-size-time=0 ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! queue ! ndisink ndi-name='"+self.streamin+"'", True)
+                            out = Gst.parse_bin_from_description("rtph264depay ! h264parse ! mp4mux  name=mux1 ! filesink sync=false location="+self.streamin+"_"+str(int(time.time()))+"_video.mp4", True)
 
                     else:
                         # filesink = self.pipe.get_by_name('mux2')
