@@ -9,6 +9,14 @@ import argparse
 import time
 import gi
 import threading
+import socket
+try:
+    import numpy as np
+    import multiprocessing
+    from multiprocessing import shared_memory
+except E as Exception:
+    pass
+
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GObject
 gi.require_version('GstWebRTC', '1.0')
@@ -61,6 +69,8 @@ class WebRTCClient:
         self.record = params.record
         self.streamin = params.streamin
         self.ndiout = params.ndiout
+        self.fdsink = params.fdsink
+        self.framebuffer = params.framebuffer
         self.midi = params.midi
         self.nored = params.nored
         self.noqos = params.noqos
@@ -72,6 +82,10 @@ class WebRTCClient:
         self.rotate = int(params.rotate)
         self.save_file = params.save
         self.noaudio = params.noaudio
+        self.counter = 0
+        self.shared_memory = False
+        self.trigger_socket = False
+        self.processing = False
 
         if self.save_file:
             self.pipe = Gst.parse_launch(self.pipeline)
@@ -460,13 +474,47 @@ class WebRTCClient:
                     except Exception as E:
                         print(E)
 
+
+        def new_sample(sink):
+            if self.processing:
+                return False
+            self.processing = True
+            try :
+                sample = sink.emit("pull-sample")
+                if sample:
+                    buffer = sample.get_buffer()
+                    caps = sample.get_caps()
+                    height = int(caps.get_structure(0).get_int("height").value)
+                    width = int(caps.get_structure(0).get_int("width").value)
+                    frame_data = buffer.extract_dup(0, buffer.get_size())
+                    np_frame_data = np.frombuffer(frame_data, dtype=np.uint8).reshape(height, width, 3)
+                    print(np.shape(np_frame_data), np_frame_data[0,0,:])
+                    #np_frame_data = np_frame_data[:, :, ::-1]  # Convert from RGB to BGR (OpenCV format)
+            
+                    # Update shared memory
+                    frame_shape = (720 * 1280 * 3)
+                    frame_buffer = np.ndarray(frame_shape+5, dtype=np.uint8, buffer=self.shared_memory.buf)
+                    frame_buffer[5:5+width*height*3] = np_frame_data.flatten(order='K') # K means order as how ordered in memory
+                    frame_buffer[0] = width/255
+                    frame_buffer[1] = width%255
+                    frame_buffer[2] = height/255
+                    frame_buffer[3] = height%255
+                    frame_buffer[4] = self.counter%255
+                    self.counter+=1
+                    self.trigger_socket.sendto(b"update", ("127.0.0.1", 12345))
+
+            except Exception as E:
+                print(E)
+            self.processing = False
+            return False
+
         def on_frame_probe(pad, info):
             buf = info.get_buffer()
             print(f'[{buf.pts / Gst.SECOND:6.2f}]')
             return Gst.PadProbeReturn.OK
 
         def on_incoming_stream( _, pad):
-            print("ON INCOMING STREAM !! ************* ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ .......$$$$$$$")
+            print("ON INCOMING AUDIO OR VIDEO STREAM")
             try:
                 if Gst.PadDirection.SRC != pad.direction:
                     print("pad direction wrong?")
@@ -478,20 +526,35 @@ class WebRTCClient:
                 print(name)
                 filesink = False
                 if "video" in name:
+
                     if self.ndiout:
                         print("NDI OUT")
                         if "VP8" in name:
-                            out = Gst.parse_bin_from_description("rtpvp8depay ! decodebin ! videoconvert ! queue ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! ndisink ndi-name='"+self.streamin+"'", True)
+                            out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! decodebin ! videoconvert ! queue ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! ndisink ndi-name='"+self.streamin+"'", True)
                         elif "H264" in name:
                             #depay.set_property("request-keyframe", True)
                             out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! queue max-size-buffers=0 max-size-time=0 ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! queue ! ndisink ndi-name='"+self.streamin+"'", True)
-
+                    elif self.fdsink: ## send raw data to ffmpeg or something I guess, using the stdout?
+                        print("FD SINK OUT")
+                        if "VP8" in name:
+                            out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! queue max-size-buffers=0 max-size-time=0 ! video/x-raw,format=BGR ! fdsink", True)
+                        elif "H264" in name:
+                            #depay.set_property("request-keyframe", True)
+                            out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! openh264dec ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=0 max-size-time=0 ! fdsink", True)
+                    elif self.framebuffer: ## send raw data to ffmpeg or something I guess, using the stdout?
+                        print("APP SINK OUT")
+                        if "VP8" in name:
+                            out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=1 leaky=downstream ! appsink name=appsink", True)
+                        elif "H264" in name:
+                            #depay.set_property("request-keyframe", True)
+                            ## LEAKY = 2 + Max-Buffer=1 means we will only keep the last most recent frame queued up for the appsink; older frames will get dropped, since we will prioritize latency.  You can change this of course.
+                            out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! openh264dec ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=1 leaky=downstream ! appsink name=appsink", True)
                     else:
                         # filesink = self.pipe.get_by_name('mux2') ## WIP
                         if filesink:
                             print("Video being added after audio")
                             if "VP8" in name:
-                                out = Gst.parse_bin_from_description("rtpvp8depay", True)
+                                out = Gst.parse_bin_from_description("queue ! rtpvp8depay", True)
                             elif "H264" in name:
                                 #depay.set_property("request-keyframe", True)
                                 out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse", True)
@@ -499,7 +562,7 @@ class WebRTCClient:
                         else:
                             print("video being saved...")
                             if "VP8" in name:
-                                out = Gst.parse_bin_from_description("rtpvp8depay !  webmmux  name=mux1 ! filesink sync=false location="+self.streamin+"_"+str(int(time.time()))+"_video.webm", True)
+                                out = Gst.parse_bin_from_description("queue ! rtpvp8depay !  webmmux  name=mux1 ! filesink sync=false location="+self.streamin+"_"+str(int(time.time()))+"_video.webm", True)
                             elif "H264" in name:
                                 #depay.set_property("request-keyframe", True)
                                 out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! mp4mux  name=mux1 ! queue ! filesink sync=true location="+self.streamin+"_"+str(int(time.time()))+"_video.mp4", True)
@@ -510,11 +573,32 @@ class WebRTCClient:
                     sink = out.get_static_pad('sink')
                     if filesink:
                         out.link(filesink)
+
                     pad.link(sink)
                     print("success video?")
+
+
+                    if self.framebuffer:
+                        frame_shape = (720, 1280, 3)
+                        size = np.prod(frame_shape) * 3  # Total size in bytes
+                        self.shared_memory = shared_memory.SharedMemory(create=True, size=size, name='psm_raspininja_streamid')
+                        self.trigger_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # we don't bind, as the reader will be binding
+                        print("*************")
+                        print(self.shared_memory)
+                        appsink = self.pipe.get_by_name('appsink')
+                        appsink.set_property("emit-signals", True)
+                        appsink.connect("new-sample", new_sample)
+
                 elif "audio" in name:
                     if self.ndiout:
+                        out = Gst.parse_bin_from_description("queue ! fakesink", True)
                         pass  #WIP 
+                    elif self.fdsink:
+                        out = Gst.parse_bin_from_description("queue ! fakesink", True)
+                        pass # WIP
+                    elif self.framebuffer:
+                        out = Gst.parse_bin_from_description("queue ! fakesink", True)
+                        pass # WIP
                     else:
                         # filesink = self.pipe.get_by_name('mux1') ## WIP
                         if filesink:
@@ -536,6 +620,7 @@ class WebRTCClient:
                         out.link(filesink)
                     pad.link(sink)
                     print("success audio?")
+
             except Exception as E:
                 print("============= ERROR =========")
                 print(E)
@@ -1055,6 +1140,8 @@ async def main():
     parser.add_argument('--filesrc2', type=str, default=None,  help='Provide a media file (local file location) as a source instead of physical device; it can be a transparent webm or whatever. It will not be transcoded, so be sure its encoded correctly. Specify if --vp8 or --vp9, else --h264 is assumed.')
     parser.add_argument('--pipein', type=str, default=None, help='Pipe a media stream in as the input source. Pass `auto` for auto-decode,pass codec type for pass-thru (mpegts,h264,vp8,vp9), or use `raw`'); 
     parser.add_argument('--ndiout',  type=str, help='VDO.Ninja to NDI output; requires the NDI Gstreamer plugin installed')
+    parser.add_argument('--fdsink',  type=str, help='VDO.Ninja to the stdout pipe; common for piping data between command line processes')
+    parser.add_argument('--framebuffer',  type=str, help='VDO.Ninja to local frame buffer; performant and Numpy/OpenCV friendly')
 
     args = parser.parse_args()
      
@@ -1221,6 +1308,13 @@ async def main():
                 args.streamin = args.ndiout
             else:
                 args.streamin = args.record
+        elif args.fdsink:
+            args.streamin = args.fdsink
+        elif args.framebuffer:
+            if not np:
+                print("You must install Numpy for this to work.\npip3 install numpy");
+                sys.exit()
+            args.streamin = args.framebuffer
         elif args.record:
             args.streamin = args.record
         else:
@@ -1510,7 +1604,7 @@ async def main():
         server = ""
 
     if args.streamin:
-        if args.room:
+        if not args.room:
             print(f"\nYou can publish a stream to capture at: https://vdo.ninja/?password=false&push={args.streamin}{server}")
         else:
             print(f"\nYou can publish a stream to capture at: https://vdo.ninja/?password=false&push={args.streamin}{server}&room={args.room}")
@@ -1527,6 +1621,9 @@ async def main():
     await c.connect()
     res = await c.loop()
     disableLEDs()
+    if c.shared_memory:
+        c.shared_memory.close()
+        c.shared_memory.unlink()
     sys.exit(res)
     return
 
