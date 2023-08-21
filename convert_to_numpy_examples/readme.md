@@ -6,7 +6,7 @@ Data science, machine learning, and computer vision software packages are typica
 
 Raspberry.Ninja includes in it the ability to pull webRTC streams from VDO.Ninja, and convert them into raw-uncompressed video frames, which can then be used for computer vision, machine learning, or even to simply host as a simple motion jpeg stream.
 
-YouTube Video demo and walk-thru of this code: (https://www.youtube.com/watch?v=LGaruUjb8dg)[https://www.youtube.com/watch?v=LGaruUjb8dg]
+YouTube Video demo and walk-thru of this code: [https://www.youtube.com/watch?v=LGaruUjb8dg](https://www.youtube.com/watch?v=LGaruUjb8dg)
 
 ### how to setup publish.py
 
