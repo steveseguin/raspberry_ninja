@@ -1,9 +1,8 @@
 
 ## starting with a brand new official bullseye 32bit image
 
-sudo chmod 777 /etc/resolv.conf
-sudo echo "nameserver 1.1.1.1" >> /etc/resolv.conf
-sudo chmod 644 /etc/resolv.conf
+echo "nameserver 1.1.1.1" | sudo tee -a /etc/resolv.conf
+
 sudo chattr -V +i /etc/resolv.conf ### lock access
 # sudo chattr -i /etc/resolv.conf ### to re-enable write access
 sudo systemctl restart systemd-resolved.service
