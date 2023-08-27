@@ -3,14 +3,16 @@
 
 ## Installation on a Raspberry Pi
 
-It is recommended to use the provided Raspberry Pi image, as the install process is otherwise quite challenging.  If using an image, you will want to update the code afterwards to ensure you're running the newest version.
+It is recommended to use the provided Raspberry Pi image, as the install process is otherwise quite challenging.  If using an image, you will want to update the code afterwards to ensure you're running the newest version. You can also try a simple install script or a complex build script, depending on whether you want old or new functionality available.
 
-There is also a simple installer, which  will work without needing to compile anything, however this will result in older versions of Gstreamer being installed. (v1.18 at present). Such older versions of Gstreamer may be more prone to bugs and offer limited advanced features.  Still, the simple installer [can be found here.](https://github.com/steveseguin/raspberry_ninja/blob/main/raspberry_pi/simpleinstall.md)
+### Simple install script:
 
-#### Installing from the provided image
+The simple installer will work on existing RPI OS systems, without needing to compile anything, however this will result in older versions of Gstreamer being installed. (v1.18 at present). Such older versions of Gstreamer may be more prone to bugs and offer limited advanced features.  Still, the simple installer [can be found here.](https://github.com/steveseguin/raspberry_ninja/blob/main/raspberry_pi/simpleinstall.md)
+
+### Installing from the provided image
 
 Download and extract the image file:
-https://drive.google.com/file/d/19hKnokApp31UnqaPbc_-llpTuA5d_oGW/view?usp=share_link  (Bullseye 32-bit /w Libcamera, Arducam, and SRT support. Built: April 20th 2023)
+https://drive.google.com/file/d/19hKnokApp31UnqaPbc_-llpTuA5d_oGW/view?usp=share_link  (Bullseye 32-bit /w Libcamera, Arducam, and SRT support. Built: April 20th 2023. Some issues with multi-viewer support?)
 
 ```
 Username: vdo  
@@ -25,7 +27,7 @@ On Windows, you can use Win32DiskImager (https://sourceforge.net/projects/win32d
 
 (balenaEtcher also works for writing the image, but using the official Raspberry Pi image writer may have problems.)
 
-#### Setting up and connecting
+#### Setting up and connecting the image
 
 Before loading the uSD card into your RPi, you can configure some basic settings on the drive itself via Windows/Mac/Linux.
 
@@ -37,7 +39,7 @@ To connect, use a display and keyboard, or you can SSH into it as SSH on port 22
 
 Note: By default the provided image will have SSH enabled, so if security is a concern, disable SSH. It is also suggested that you change the username and password to something more secure. I woudld also suggest not installing any BTC wallets on this image or anything like that, as security can't be guaranteed.
 
-#### Login info
+#### Login info for the image
 
 Login information for the supplied v4.x image is:
 ```
@@ -55,7 +57,7 @@ You can then run `sudo raspi-config` from the command-line to configure the Pi a
 
 You will probably want to also update the pi with `sudo apt-get update && sudo apt-get upgrade`, to snure it's up to date.  You can also run `sudo raspi-config` and update the RPi that way, along with updating the bootloader if desired (on a pi4 at least).
 
-#### Building from scratch
+### Building the image from scratch instead
 
 If you do not want to use the provided image, you can try to build and install from scratch, but be prepared to lose a weekend on it. Please see the install script provided, but others exist online that might be better. Gstreamer 1.14 can be made to work with VDO.Ninja, but GStreamer 1.16 or newer is generally recommend; emphasis on the newer.
 
