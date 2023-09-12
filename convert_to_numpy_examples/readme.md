@@ -8,7 +8,30 @@ Raspberry.Ninja includes in it the ability to pull webRTC streams from VDO.Ninja
 
 YouTube Video demo and walk-thru of this code: https://www.youtube.com/watch?v=LGaruUjb8dg
 
-### how to setup publish.py
+### Initial installation
+
+Follow the installation requirements for Raspberry Ninja as normal, except you'll also need:
+
+```
+pip3 install numpy
+```
+and if using Pillow, to follow along with Youtube video, you can install that pretty easily:
+```
+python3 -m pip install --upgrade pip
+python3 -m pip install --upgrade Pillow
+```
+
+If wanting to use OpenCV, on some operating systems it's as easy as:
+```
+pip3 install opencv-python
+```
+However, sometimes OpenCV isn't available and you will be required compiling. I'm not really sure how to install OpenCV via WSL though; you might need to build OpenCV yourself in that case.  Google is your friend in these cases.
+
+If using Windows OS (not WSL), you can try the the cv2 binary as a pip wheel via: https://www.lfd.uci.edu/~gohlke/pythonlibs/#opencv instead. 
+
+OpenCV isn't required to follow along with the YouTube video though.
+
+### how to setup publish.py in frame buffer mode
 
 To configure Raspberry.Ninja to pull a stream, you can you use the following command:
 ```python3 publish.py --framebuffer STREAMIDHERE123 --h264 --noaudio```
