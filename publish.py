@@ -14,7 +14,7 @@ try:
     import numpy as np
     import multiprocessing
     from multiprocessing import shared_memory
-except E as Exception:
+except Exception as e:
     pass
 
 gi.require_version('Gst', '1.0')
