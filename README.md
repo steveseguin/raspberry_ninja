@@ -71,7 +71,7 @@ sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev lib
 
 pip3 install websockets
 
-sudo apt-get install -y libcario-dev ## possibly optional
+sudo apt-get install -y libcairo-dev ## possibly optional
 pip3 install PyGObject ## possibly optional
 
 sudo apt-get install git -y
