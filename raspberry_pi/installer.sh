@@ -169,8 +169,9 @@ sudo apt-get -y install \
     libaom-dev \
     libsrt-gnutls-dev \
     zlib1g-dev \
-    libgmp-dev \
-    libzimg-dev
+    libgmp-dev
+    
+sudo apt-get -y install libzimg-dev
 
 # SRT - optional
 cd ~
