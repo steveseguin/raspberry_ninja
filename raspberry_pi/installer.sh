@@ -318,7 +318,7 @@ sudo ldconfig
 sudo libtoolize
 
 cd ~
-[ ! -d gstreamer ] && git clone git://anongit.freedesktop.org/git/gstreamer/gstreamer
+[ ! -d gstreamer ] && git clone -b 1.22 https://gitlab.freedesktop.org/gstreamer/gstreamer/ ## 1.22
 export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
 export LD_LIBRARY_PATH=/usr/local/lib/
 cd gstreamer
