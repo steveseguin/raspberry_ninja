@@ -183,6 +183,16 @@ make
 sudo make install
 sudo ldconfig
 
+
+sudo apt-get install libdrm-dev automake libtool
+git clone https://github.com/intel/libva.git
+cd libva
+mkdir build
+cd build
+meson .. -Dprefix=/usr
+ninja
+sudo ninja install
+
 ### FFMPEG
 cd ~
 [ ! -d FFmpeg ] && git clone https://github.com/FFmpeg/FFmpeg.git
@@ -231,8 +241,6 @@ sudo ./configure \
 	--enable-libdav1d  \
 	--enable-libass \
         --disable-mmal \
-        --enable-omx \
-        --enable-omx-rpi \
         --arch=armel \
 	--enable-openssl 
 libtoolize
@@ -244,9 +252,9 @@ sudo ldconfig
 export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
 export LD_LIBRARY_PATH=/usr/local/lib/
 cd ~
-wget https://download.gnome.org/sources/glib/2.76/glib-2.76.1.tar.xz -O glib.tar.xz
+wget https://download.gnome.org/sources/glib/2.78/glib-2.78.0.tar.xz -O glib.tar.xz
 tar -xvf glib.tar.xz 
-cd glib-2.76.1
+cd glib-2.78.0
 mkdir build
 cd build
 meson --prefix=/usr/local -Dman=false ..
@@ -267,10 +275,10 @@ sudo libtoolize
 export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
 export LD_LIBRARY_PATH=/usr/local/lib/
 cd ~
-wget https://download.gnome.org/sources/gobject-introspection/1.76/gobject-introspection-1.76.1.tar.xz -O gobject.tar.xz
-sudo rm  gobject-introspection-1.76.1 -r || true
+wget https://download.gnome.org/sources/gobject-introspection/1.78/gobject-introspection-1.78.1.tar.xz -O gobject.tar.xz
+sudo rm  gobject-introspection-1.78.1 -r || true
 tar -xvf gobject.tar.xz
-cd gobject-introspection-1.76.1
+cd gobject-introspection-1.78.1
 mkdir build
 cd build
 sudo meson --prefix=/usr/local --buildtype=release  ..
