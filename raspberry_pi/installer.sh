@@ -1,5 +1,5 @@
 
-## starting with a brand new official bullseye 32bit image
+## Tested with a brand new official bullseye lite 64-bit 2023 image
 
 echo "nameserver 1.1.1.1" | sudo tee -a /etc/resolv.conf
 
@@ -12,7 +12,7 @@ export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/usr/lib/gstreamer-1.0
 export LD_LIBRARY_PATH=/usr/local/lib/
 
 sudo apt-get update
-sudo apt-get upgrade -y
+sudo apt-get upgrade -y ## Bullseye will auto-update to 64-bit from 32-bit if you upgrade; bewarned
 sudo apt-get full-upgrade -y 
 sudo apt-get dist-upgrade -y
 sudo apt-get install vim -y
@@ -29,7 +29,7 @@ sudo apt-get install vim -y
 ### You may need to increase the swap size if pi zero2 or slower/smaller to avoid system crashes with compiling 
 sudo dphys-swapfile swapoff
 # sudo echo "CONF_SWAPSIZE=1024" >> /etc/dphys-swapfile
-sudo vi /etc/dphys-swapfile
+# sudo vi /etc/dphys-swapfile
 CONF_SWAPSIZE=1024 ## to to file
 sudo dphys-swapfile setup
 sudo dphys-swapfile swapon
@@ -183,7 +183,6 @@ make
 sudo make install
 sudo ldconfig
 
-
 sudo apt-get install libdrm-dev automake libtool
 git clone https://github.com/intel/libva.git
 cd libva
@@ -326,7 +325,7 @@ git pull
 sudo rm -r build || true
 [ ! -d build ] && mkdir build
 cd build
-sudo meson --prefix=/usr/local -Dbuildtype=release -Dgst-plugins-base:gl_winsys=egl -Ddoc=disabled -Dtests=disabled -Dexamples=disabled -Dges=disabled -Dgst-examples:*=disabled -Ddevtools=disabled ..
+sudo meson --prefix=/usr/local -Dbuildtype=release -Dgst-plugins-base:gl_winsys=egl -Dgpl=enabled -Ddoc=disabled -Dtests=disabled -Dexamples=disabled -Dges=disabled -Dgst-examples=disabled -Ddevtools=disabled ..
 cd ..
 sudo ninja -C build install -j4
 sudo ldconfig
@@ -342,6 +341,16 @@ meson setup build
 sudo ninja -C build install -j4 ## too many cores and you'll crash a raspiberry pi zero 2
 sudo ldconfig
 cd ~
+
+## RUST ...  optional, adds native whip/whep support to gstreamer
+# curl https://sh.rustup.rs -sSf | sh
+# cargo install cargo-c # slow, bloated, with many weak depedencies; careful
+# cd ~
+# git clone https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs.git
+# cd gst-plugins-rs
+# cargo cinstall -p gst-plugin-webrtchttp --prefix=./tmp  # whip/whep
+# sudo cp ./tmp/lib/gstreamer-1.0/* /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0
+# sudo cp ./tmp/lib/pkgconfig/* /usr/local/lib/aarch64-linux-gnu/pkgconfig
 
 # modprobe bcm2835-codecfg
 
