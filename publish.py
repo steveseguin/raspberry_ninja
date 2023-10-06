@@ -100,6 +100,7 @@ class WebRTCClient:
             print("RECORDING TO DISK STARTED")
         
     async def connect(self):
+        print("Connecting to handshake server")
         sslctx = ssl.create_default_context()
         self.conn = await websockets.connect(self.server, ssl=sslctx)
         if self.room_name:
@@ -239,7 +240,8 @@ class WebRTCClient:
 
                 if client['timer'] == None:
                     client['ping'] = 0
-                    client['timer'] = threading.Timer(3, pingTimer).start()
+                    client['timer'] = threading.Timer(3, pingTimer)
+                    client['timer'].start()
                     self.clients[client["UUID"]] = client
                     
             elif (client['webrtc'].get_property(p2.name)>=4): # closed/failed , but this won't work unless Gstreamer / LibNice support it -- which isn't the case in most versions.
@@ -251,10 +253,15 @@ class WebRTCClient:
             print("trans:  {}".format(client['webrtc'].get_property(p2.name)))
 
         def pingTimer():
+            
             if not client['send_channel']:
-                threading.Timer(3, pingTimer).start()
+                client['timer'] = threading.Timer(3, pingTimer)
+                client['timer'].start()
                 print("data channel not setup yet")
                 return
+                
+            if "ping" not in client:
+                client['ping'] = 0
                 
             if client['ping'] < 10:
                 client['ping'] += 1
@@ -265,7 +272,8 @@ class WebRTCClient:
                 except Exception as E:
                     print(E)
                     print("PING FAILED")
-                threading.Timer(3, pingTimer).start()
+                client['timer'] = threading.Timer(3, pingTimer)
+                client['timer'].start()
 
                 promise = Gst.Promise.new_with_change_func(on_stats, client['webrtc'], None) # check stats
                 client['webrtc'].emit('get-stats', None, promise)
@@ -286,7 +294,7 @@ class WebRTCClient:
             channel.connect('on-close', on_data_channel_close)
             channel.connect('on-message-string', on_data_channel_message)
 
-        def on_data_channel_error(channel):
+        def on_data_channel_error(arg1, arg2):
             print('DATA CHANNEL: ERROR')
 
         def on_data_channel_open(channel):
@@ -950,13 +958,33 @@ class WebRTCClient:
         else:
             for uid in self.clients:
                 if uid != UUID:
+                    print("Consider --multiviewer mode if you need multiple viewers")
                     self.stop_pipeline(uid)
                     break
             if self.save_file:
                 pass
             elif self.pipe:
+                print("setting pipe to null")
                 self.pipe.set_state(Gst.State.NULL)
                 self.pipe = None
+                
+                if UUID in self.clients:
+                    print("Resetting existing pipe and p2p connection.");
+                    session = self.clients[UUID]["session"]
+                    
+                    if self.clients[UUID]['timer']:
+                        self.clients[UUID]['timer'].cancel()
+                        print("stop previous ping/pong timer")
+                    
+                    self.clients[UUID] = {}
+                    self.clients[UUID]["UUID"] = UUID
+                    self.clients[UUID]["session"] = session
+                    self.clients[UUID]["send_channel"] = None
+                    
+                    self.clients[UUID]["timer"] = None
+                    self.clients[UUID]["ping"] = 0
+                    self.clients[UUID]["webrtc"] = None
+                    
             await self.createPeer(UUID)
 
     def stop_pipeline(self, UUID):
@@ -998,68 +1026,75 @@ class WebRTCClient:
         assert self.conn
         print("WSS CONNECTED")
         async for message in self.conn:
-            msg = json.loads(message)
-            if 'from' in msg:
-                if self.puuid==None:
-                    self.puuid = str(random.randint(10000000,99999999))
-                if msg['from'] == self.puuid:
-                    continue
-                UUID = msg['from']
-                if ('UUID' in msg) and (msg['UUID'] != self.puuid):
-                    continue
-            elif 'UUID' in msg:
-                if (self.puuid != None) and (self.puuid != msg['UUID']):
-                    continue
-                UUID = msg['UUID']
-            else:
-                if self.room_name:
-                    if 'request' in msg:
-                        if msg['request'] == 'listing':
-                            if self.streamin:
-                                msg = json.dumps({"request":"play","streamID":self.streamin}) ## we're just going to view a stream
-                                await self.conn.send(msg)
-                            else:
-                                msg = json.dumps({"request":"seed","streamID":self.stream_id}) ## we're just going to publish a stream
-                                await self.conn.send(msg)
-                continue
-                
-            if UUID not in self.clients:
-                self.clients[UUID] = {}
-                self.clients[UUID]["UUID"] = UUID
-                self.clients[UUID]["session"] = None
-                self.clients[UUID]["send_channel"] = None
-                self.clients[UUID]["timer"] = None
-                self.clients[UUID]["ping"] = 0
-                self.clients[UUID]["webrtc"] = None
-                
-            if 'session' in msg:
-                if not self.clients[UUID]['session']:
-                    self.clients[UUID]['session'] = msg['session']
-                elif self.clients[UUID]['session'] != msg['session']:
-                    print("sessions don't match")
-
-            if 'description' in msg:
-                msg = msg['description']
-                if 'type' in msg:
-                    if msg['type'] == "offer":
-                        await self.start_pipeline(UUID)
-                        self.handle_offer(msg, UUID)
-                    elif msg['type'] == "answer":
-                        self.handle_sdp_ice(msg, UUID)
-            elif 'candidates' in msg:
-                for ice in msg['candidates']:
-                    self.handle_sdp_ice(ice, UUID)
-
-            elif 'request' in msg:
-                if 'offerSDP' in  msg['request']:
-                    await self.start_pipeline(UUID)
-                elif msg['request'] == 'play':
+            try:
+                msg = json.loads(message)
+                if 'from' in msg:
                     if self.puuid==None:
                         self.puuid = str(random.randint(10000000,99999999))
-                    if 'streamID' in msg:
-                        if msg['streamID'] == self.stream_id:
+                    if msg['from'] == self.puuid:
+                        continue
+                    UUID = msg['from']
+                    if ('UUID' in msg) and (msg['UUID'] != self.puuid):
+                        continue
+                elif 'UUID' in msg:
+                    if (self.puuid != None) and (self.puuid != msg['UUID']):
+                        continue
+                    UUID = msg['UUID']
+                else:
+                    if self.room_name:
+                        if 'request' in msg:
+                            if msg['request'] == 'listing':
+                                if self.streamin:
+                                    msg = json.dumps({"request":"play","streamID":self.streamin}) ## we're just going to view a stream
+                                    await self.conn.send(msg)
+                                else:
+                                    msg = json.dumps({"request":"seed","streamID":self.stream_id}) ## we're just going to publish a stream
+                                    await self.conn.send(msg)
+                    continue
+                    
+                if UUID not in self.clients:
+                    self.clients[UUID] = {}
+                    self.clients[UUID]["UUID"] = UUID
+                    self.clients[UUID]["session"] = None
+                    self.clients[UUID]["send_channel"] = None
+                    self.clients[UUID]["timer"] = None
+                    self.clients[UUID]["ping"] = 0
+                    self.clients[UUID]["webrtc"] = None
+                    
+                if 'session' in msg:
+                    if not self.clients[UUID]['session']:
+                        self.clients[UUID]['session'] = msg['session']
+                    elif self.clients[UUID]['session'] != msg['session']:
+                        print("sessions don't match")
+
+                if 'description' in msg:
+                    msg = msg['description']
+                    if 'type' in msg:
+                        if msg['type'] == "offer":
                             await self.start_pipeline(UUID)
-           
+                            self.handle_offer(msg, UUID)
+                        elif msg['type'] == "answer":
+                            self.handle_sdp_ice(msg, UUID)
+                elif 'candidates' in msg:
+                    for ice in msg['candidates']:
+                        self.handle_sdp_ice(ice, UUID)
+
+                elif 'request' in msg:
+                    print("REQUEST: ", msg['request'])
+                    if 'offerSDP' in  msg['request']:
+                        await self.start_pipeline(UUID)
+                    elif msg['request'] == "play":
+                        if self.puuid==None:
+                            self.puuid = str(random.randint(10000000,99999999))
+                        if 'streamID' in msg:
+                            if msg['streamID'] == self.stream_id:
+                                await self.start_pipeline(UUID)
+            except websockets.ConnectionClosed:
+                print("WEB SOCKETS CLOSED");
+                continue
+            except Exception as E:
+                print(E);
+               
         return 0
 
 
@@ -1094,6 +1129,13 @@ def on_message(bus: Gst.Bus, message: Gst.Message, loop):
     elif mtype == Gst.MessageType.WARNING:
         err, debug = message.parse_warning()
         print(err, debug)
+        
+    elif mtype == Gst.MessageType.LATENCY:  # needs self. scope added
+        print("LATENCY")
+        # self.pipe.recalculate_latency() 
+        
+    elif mtype == Gst.MessageType.ELEMENT:
+        print("ELEMENT")
 
     return True
 
