@@ -343,14 +343,14 @@ sudo ldconfig
 cd ~
 
 ## RUST ...  optional, adds native whip/whep support to gstreamer
-# curl https://sh.rustup.rs -sSf | sh
-# cargo install cargo-c # slow, bloated, with many weak depedencies; careful
-# cd ~
-# git clone https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs.git
-# cd gst-plugins-rs
-# cargo cinstall -p gst-plugin-webrtchttp --prefix=./tmp  # whip/whep
-# sudo cp ./tmp/lib/gstreamer-1.0/* /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0
-# sudo cp ./tmp/lib/pkgconfig/* /usr/local/lib/aarch64-linux-gnu/pkgconfig
+curl https://sh.rustup.rs -sSf | sh
+cargo install cargo-c # slow, bloated, with many weak depedencies; careful
+cd ~
+git clone https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs.git
+cd gst-plugins-rs
+cargo cinstall -p gst-plugin-webrtchttp --prefix=./tmp  # whip/whep
+sudo cp ./tmp/lib/gstreamer-1.0/* /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0
+sudo cp ./tmp/lib/pkgconfig/* /usr/local/lib/aarch64-linux-gnu/pkgconfig
 
 # modprobe bcm2835-codecfg
 
