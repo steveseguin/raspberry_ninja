@@ -29,6 +29,12 @@ try:
 except:
     pass
 
+def handle_unhandled_exception(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    print("!!!  Unhandled exception !!! ", exc_type, exc_value, exc_traceback)
+sys.excepthook = handle_unhandled_exception
 
 def enableLEDs(level=False):
     try:
@@ -86,6 +92,7 @@ class WebRTCClient:
         self.shared_memory = False
         self.trigger_socket = False
         self.processing = False
+        self.buffer = params.buffer
 
         if self.save_file:
             self.pipe = Gst.parse_launch(self.pipeline)
@@ -760,6 +767,10 @@ class WebRTCClient:
             client['webrtc'].set_property('bundle-policy', "max-bundle")
             client['webrtc'].set_property('stun-server', "stun://stun4.l.google.com:19302") ## older versions of gstreamer might break with this
             client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
+            try:
+                client['webrtc'].set_property('latency', self.buffer)
+            except:
+                pass
             self.pipe.add(client['webrtc'])
 
             if self.h264:
@@ -777,6 +788,10 @@ class WebRTCClient:
             client['webrtc'].set_property('bundle-policy', 'max-bundle') 
             client['webrtc'].set_property('stun-server', "stun://stun4.l.google.com:19302")  ## older versions of gstreamer might break with this
             client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
+            try:
+                client['webrtc'].set_property('latency', self.buffer)
+            except:
+                pass
             self.pipe.add(client['webrtc'])
             
             atee = self.pipe.get_by_name('audiotee')
@@ -1086,11 +1101,6 @@ WSS="wss://wss.vdo.ninja:443"
 
 async def main():
 
-    Gst.init(None)
-
-    Gst.debug_set_active(False)  ## disable logging to help reduce CPU load?
-    Gst.debug_set_default_threshold(2)
-
     error = False
     parser = argparse.ArgumentParser()
     parser.add_argument('--streamid', type=str, default=str(random.randint(1000000,9999999)), help='Stream ID of the peer to connect to')
@@ -1114,7 +1124,7 @@ async def main():
     parser.add_argument('--nvidiacsi', action='store_true', help='Sets the input to the nvidia csi port.')
     parser.add_argument('--alsa', type=str, default=None, help='Use alsa audio input.')
     parser.add_argument('--pulse', type=str, help='Use pulse audio (or pipewire) input.')
-    parser.add_argument('--zerolatency', action='store_true', help='A mode designed for the lowest audio latency')
+    parser.add_argument('--zerolatency', action='store_true', help='A mode designed for the lowest audio output latency')
     parser.add_argument('--raw', action='store_true', help='Opens the V4L2 device with raw capabilities.')
     parser.add_argument('--bt601', action='store_true', help='Use colormetery bt601 mode; enables raw mode also')
     parser.add_argument('--h264', action='store_true', help='Prioritize h264 over vp8')
@@ -1142,8 +1152,18 @@ async def main():
     parser.add_argument('--ndiout',  type=str, help='VDO.Ninja to NDI output; requires the NDI Gstreamer plugin installed')
     parser.add_argument('--fdsink',  type=str, help='VDO.Ninja to the stdout pipe; common for piping data between command line processes')
     parser.add_argument('--framebuffer',  type=str, help='VDO.Ninja to local frame buffer; performant and Numpy/OpenCV friendly')
+    parser.add_argument('--debug', action='store_true', help='Show added debug information from Gsteamer and other aspects of the app')
+    parser.add_argument('--buffer',  type=int, default=200, help='The jitter buffer latency in milliseconds; default is 200ms. (gst +v1.18)')
 
     args = parser.parse_args()
+    
+    Gst.init(None)
+    Gst.debug_set_active(False)
+    
+    if args.debug:
+        Gst.debug_set_default_threshold(2)
+    else:
+        Gst.debug_set_default_threshold(0)
      
     if Gst.Registry.get().find_plugin("rpicamsrc"):
         args.rpi=True
@@ -1181,20 +1201,13 @@ async def main():
         except Exception as E:
             pass
         
-       
-    monitor = Gst.DeviceMonitor.new()
-    monitor.add_filter("Audio/Source", None)
-    monitor.start()
-
-    # This is happening synchonously, use the GstBus based API and
-    # monitor.start() to avoid blocking the main thread.
-    devices = monitor.get_devices()
-
-    #if not devices:
-    #    print("No microphone found...")
-    #    sys.exit(1)
-
-    if not args.alsa and not args.noaudio and not args.pulse and not args.test and not args.pipein:
+  
+    if not args.test:     
+        monitor = Gst.DeviceMonitor.new()
+        monitor.add_filter("Audio/Source", None)
+        #monitor.start()
+        devices = monitor.get_devices()
+    elif not args.alsa and not args.noaudio and not args.pulse and not args.test and not args.pipein:
         default = [d for d in devices if d.get_properties().get_value("is-default") is True]
         args.alsa = "default"
         aname = "default"
@@ -1213,20 +1226,13 @@ async def main():
                     args.alsa = 'hw:'+str(devices[i].get_properties().get_value("alsa.card"))+'\,0'
                     aname = d.get_display_name()
                 print(" -- %s, via '%s'" % (d.get_display_name(), 'alsasrc device="hw:'+str(devices[i].get_properties().get_value("alsa.card"))+'\,0"'))
-                #res = int(input("Select device: "))
-                #device = devices[res]
-#               print("")
- #              print(device.get_properties().to_string())
-#               print(device.get_properties().get_value("alsa.card"))           
-  #             print("")
-   #            print(device.get_caps().to_string())
+                
         print("\nSelecting alsa source: "+aname+"\n")
 
     if args.rpi and not args.v4l2 and not args.hdmi and not args.rpicam and not args.z1:
         args.v4l2 = '/dev/video0'
         monitor = Gst.DeviceMonitor.new()
-        monitor.add_filter("Video", None)
-        monitor.start()
+        monitor.add_filter("Video/Source", None)
         devices = monitor.get_devices()
         for d in devices:
             cam = d.get_display_name()
@@ -1236,17 +1242,17 @@ async def main():
         print("")
    
         camlink = [d for d in devices if "Cam Link" in  d.get_display_name()]
-        monitor.stop()
+        
         if len(camlink):
             args.camlink = True
 
         picam = [d for d in devices if "Raspberry Pi Camera Module" in  d.get_display_name()]
-        monitor.stop()
+        
         if len(picam):
             args.rpicam = True
 
         usbcam = [d for d in devices if "USB Vid" in  d.get_display_name()]
-        monitor.stop()
+        
         if len(usbcam) and not args.v4l2:
             args.v4l2 = "/dev/video0"  
 
@@ -1571,7 +1577,10 @@ async def main():
 
             pipe.set_state(Gst.State.PLAYING)
 
-            loop = GObject.MainLoop() 
+            try:
+                loop = GLib.MainLoop
+            except:
+                loop = GObject.MainLoop
 
             bus.connect("message", on_message, loop)
             try: 
@@ -1586,7 +1595,10 @@ async def main():
             args.h264 = True
             pass
         elif not args.multiviewer:
-            PIPELINE_DESC = f'webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
+            if Gst.version().minor >= 18:
+                PIPELINE_DESC = f'webrtcbin name=sendrecv latency={args.buffer} stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
+            else:
+                PIPELINE_DESC = f'webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
             print('gst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
         else:
             PIPELINE_DESC = f'{pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
