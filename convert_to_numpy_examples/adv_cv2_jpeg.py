@@ -4,9 +4,9 @@ import ssl
 import sys
 import os
 try:
-    import cv2 ## PIL or CV2 can be used
+    import cv2 ## PIL or CV2 can be used: $ pip3 install opencv-python
 except:
-    print("OpenCV wasn't found. Trying to use Pillow instead")
+    print("OpenCV wasn't found (pip3 install opencv-python). Trying to use Pillow instead")
     from PIL import Image
     from io import BytesIO
 from socketserver import ThreadingMixIn
