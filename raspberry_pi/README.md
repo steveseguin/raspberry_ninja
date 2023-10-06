@@ -7,7 +7,11 @@ It is recommended to use the provided Raspberry Pi image, as the install process
 
 ### Simple install script:
 
-The simple installer will work on existing RPI OS systems, without needing to compile anything, however this will result in older versions of Gstreamer being installed. (v1.18 at present). Such older versions of Gstreamer may be more prone to bugs and offer limited advanced features.  Still, the simple installer [can be found here.](https://github.com/steveseguin/raspberry_ninja/blob/main/raspberry_pi/simpleinstall.md)
+The simple installer will work on existing RPI OS systems, without needing to compile anything, however this will result in older versions of Gstreamer being installed without all the plugins and codecs being available. 
+
+Gstreamer v1.18 seems to be installed at present when using Bullseye, which is OK, but does miss out on some advanced features and may be more prone to bugs. I'd avoid older versions of Gstreamer if at all posssible. If using the build-script maintained here, you'll get Gstreamer 1.22 or newer, along with many commonly used tools, plugins, and optimizations.
+
+That all said, the simple installer [can be found here.](https://github.com/steveseguin/raspberry_ninja/blob/main/raspberry_pi/simpleinstall.md)
 
 ### Installing from the provided image
 
