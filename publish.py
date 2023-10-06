@@ -10,8 +10,11 @@ import time
 import gi
 import threading
 import socket
-import hashlib
-from urllib.parse import urlparse
+try:
+    import hashlib
+    from urllib.parse import urlparse
+except Exception as e:
+    pass
 
 try:
     import numpy as np
