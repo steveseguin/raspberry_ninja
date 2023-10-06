@@ -10,6 +10,9 @@ import time
 import gi
 import threading
 import socket
+import hashlib
+from urllib.parse import urlparse
+
 try:
     import numpy as np
     import multiprocessing
@@ -57,7 +60,16 @@ def disableLEDs():
     p_R.stop()
     GPIO.output(pin, GPIO.HIGH)    # Turn off all leds
     GPIO.cleanup()
-
+    
+def generateHash(input_str, length=None):
+    input_bytes = input_str.encode('utf-8')
+    sha256_hash = hashlib.sha256(input_bytes).digest()
+    if length:
+        hash_hex = sha256_hash[:int(length // 2)].hex()
+    else:
+        hash_hex = sha256_hash.hex()
+    return hash_hex
+    
 class WebRTCClient:
     def __init__(self, params):
 
@@ -93,6 +105,17 @@ class WebRTCClient:
         self.trigger_socket = False
         self.processing = False
         self.buffer = params.buffer
+        self.password = params.password
+        self.hostname = params.hostname
+        self.hashcode = ""
+        try:
+            if self.password:
+                parsed_url = urlparse(self.hostname)
+                hostname_parts = parsed_url.hostname.split(".")
+                result = ".".join(hostname_parts[-2:])
+                self.hashcode = generateHash(self.password+result, 6)
+        except Exception as E:
+            print(E)
 
         if self.save_file:
             self.pipe = Gst.parse_launch(self.pipeline)
@@ -107,10 +130,10 @@ class WebRTCClient:
             msg = json.dumps({"request":"joinroom","roomid":self.room_name})
             await self.conn.send(msg)
         elif self.streamin:
-            msg = json.dumps({"request":"play","streamID":self.streamin})
+            msg = json.dumps({"request":"play","streamID":self.streamin+self.hashcode})
             await self.conn.send(msg)
         else:
-            msg = json.dumps({"request":"seed","streamID":self.stream_id})
+            msg = json.dumps({"request":"seed","streamID":self.stream_id+self.hashcode})
             await self.conn.send(msg)
         
         
@@ -193,7 +216,7 @@ class WebRTCClient:
                 text = text.replace("a=rtpmap:96 ulpfec/90000\r\n","a=rtpmap:97 ulpfec/90000\r\n")
                 text = text.replace("a=rtpmap:96 rtx/90000\r\na=fmtp:96 apt=96\r\n","")
 
-            msg = {'description': {'type': 'offer', 'sdp': text}, 'UUID': client['UUID'], 'session': client['session'], 'streamID':self.stream_id}
+            msg = {'description': {'type': 'offer', 'sdp': text}, 'UUID': client['UUID'], 'session': client['session'], 'streamID':self.stream_id+self.hashcode}
             self.sendMessage(msg)
 
         def on_new_tranceiver(element, trans):
@@ -910,6 +933,7 @@ class WebRTCClient:
             sdpmlineindex = msg['sdpMLineIndex']
             client['webrtc'].emit('add-ice-candidate', sdpmlineindex, candidate)
         else:
+            print(msg)
             print("UNEXPECTED INCOMING")
 
     def on_answer_created(self, promise, _, client):
@@ -1028,7 +1052,11 @@ class WebRTCClient:
         async for message in self.conn:
             try:
                 msg = json.loads(message)
-                if 'from' in msg:
+                
+                if 'vector' in msg:
+                    print("Try with --password false and &password=false instead, as encryption isn't supported it seems with your setup")
+                    continue
+                elif 'from' in msg:
                     if self.puuid==None:
                         self.puuid = str(random.randint(10000000,99999999))
                     if msg['from'] == self.puuid:
@@ -1045,10 +1073,11 @@ class WebRTCClient:
                         if 'request' in msg:
                             if msg['request'] == 'listing':
                                 if self.streamin:
-                                    msg = json.dumps({"request":"play","streamID":self.streamin}) ## we're just going to view a stream
+                                    msg = json.dumps({"request":"play","streamID":self.streamin+self.hashcode}) ## we're just going to view a stream
+                                    print(msg)
                                     await self.conn.send(msg)
                                 else:
-                                    msg = json.dumps({"request":"seed","streamID":self.stream_id}) ## we're just going to publish a stream
+                                    msg = json.dumps({"request":"seed","streamID":self.stream_id+self.hashcode}) ## we're just going to publish a stream
                                     await self.conn.send(msg)
                     continue
                     
@@ -1076,8 +1105,11 @@ class WebRTCClient:
                         elif msg['type'] == "answer":
                             self.handle_sdp_ice(msg, UUID)
                 elif 'candidates' in msg:
-                    for ice in msg['candidates']:
-                        self.handle_sdp_ice(ice, UUID)
+                    if type(msg['candidates']) is list:
+                        for ice in msg['candidates']:
+                            self.handle_sdp_ice(ice, UUID)
+                    else:
+                        print("Try with &password=false / --password=false instead, as encryption isn't supported currently")
 
                 elif 'request' in msg:
                     print("REQUEST: ", msg['request'])
@@ -1087,7 +1119,7 @@ class WebRTCClient:
                         if self.puuid==None:
                             self.puuid = str(random.randint(10000000,99999999))
                         if 'streamID' in msg:
-                            if msg['streamID'] == self.stream_id:
+                            if msg['streamID'] == self.stream_id+self.hashcode:
                                 await self.start_pipeline(UUID)
             except websockets.ConnectionClosed:
                 print("WEB SOCKETS CLOSED");
@@ -1193,9 +1225,11 @@ async def main():
     parser.add_argument('--pipein', type=str, default=None, help='Pipe a media stream in as the input source. Pass `auto` for auto-decode,pass codec type for pass-thru (mpegts,h264,vp8,vp9), or use `raw`'); 
     parser.add_argument('--ndiout',  type=str, help='VDO.Ninja to NDI output; requires the NDI Gstreamer plugin installed')
     parser.add_argument('--fdsink',  type=str, help='VDO.Ninja to the stdout pipe; common for piping data between command line processes')
-    parser.add_argument('--framebuffer',  type=str, help='VDO.Ninja to local frame buffer; performant and Numpy/OpenCV friendly')
+    parser.add_argument('--framebuffer', type=str, help='VDO.Ninja to local frame buffer; performant and Numpy/OpenCV friendly')
     parser.add_argument('--debug', action='store_true', help='Show added debug information from Gsteamer and other aspects of the app')
     parser.add_argument('--buffer',  type=int, default=200, help='The jitter buffer latency in milliseconds; default is 200ms. (gst +v1.18)')
+    parser.add_argument('--password', type=str, nargs='?', default=None, required=False, const='', help='Partial password support. If not used, passwords will be off. If a blank value is passed, it will use the default system password. If you pass a value, it will use that value for the pass. No added encryption support however.')
+    parser.add_argument('--hostname', type=str, default='https://vdo.ninja/alpha/', help='Your URL for vdo.ninja, if self-hosting the website code')
 
     args = parser.parse_args()
     
@@ -1220,6 +1254,14 @@ async def main():
     needed = ["nice", "webrtc", "dtls", "srtp", "rtp", "sctp", "rtpmanager"]
     
     h264 = list(filter(lambda p: Gst.Registry.get().find_plugin(p) is None, ['x264', 'openh264']))
+
+    if args.password == None:
+        pass
+    elif args.password.lower() in ["", "true", "1", "on"]:
+        args.password = "someEncryptionKey123"
+    elif args.password.lower() in ["false", "0", "off"]:
+        args.password = None
+        
 
     if 'openh264' not in h264:
         h264 = "openh264"
@@ -1347,8 +1389,6 @@ async def main():
         if args.save:
             saveAudio = ' ! tee name=saveaudiotee ! queue ! mux.audio_0 saveaudiotee.'
             saveVideo = ' ! tee name=savevideotee ! queue ! mux.video_0 savevideotee.'
-                
-
        
         if args.ndiout:
             needed += ['ndi']
@@ -1656,19 +1696,32 @@ async def main():
     else:
         args.server = WSS
         server = ""
-
+        
+   
+    if not args.hostname.endswith("/"):
+        args.hostname = args.hostname+"/"
+    
+    watchURL = args.hostname
+    if args.password:
+        if args.password == "someEncryptionKey123":
+            watchURL += "?"
+        else:
+            watchURL += "?password="+args.password+"&"
+    else:
+        watchURL += "?password=false&"
+    
     if args.streamin:
         if not args.room:
-            print(f"\nYou can publish a stream to capture at: https://vdo.ninja/?password=false&push={args.streamin}{server}")
+            print(f"\nYou can publish a stream to capture at: {watchURL}push={args.streamin}{server}")
         else:
-            print(f"\nYou can publish a stream to capture at: https://vdo.ninja/?password=false&push={args.streamin}{server}&room={args.room}")
+            print(f"\nYou can publish a stream to capture at: {watchURL}push={args.streamin}{server}&room={args.room}")
         print("\nAvailable options include --noaudio, --ndiout, --record and --server. See --help for more options.")
     elif args.room:
         print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default bitrate is 4000 (kbps)")
-        print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}&room={args.room}&scene{server}");
+        print(f"\nYou can view this stream at: {watchURL}view={args.streamid}&room={args.room}&scene{server}");
     else:
         print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default bitrate is 4000 (kbps) ")
-        print(f"\nYou can view this stream at: https://vdo.ninja/?password=false&view={args.streamid}{server}")
+        print(f"\nYou can view this stream at: {watchURL}view={args.streamid}{server}")
 
     args.pipeline = PIPELINE_DESC
     c = WebRTCClient(args)
