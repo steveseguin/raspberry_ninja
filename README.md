@@ -234,11 +234,24 @@ You can't publish to vdo.ninja with RTMP, but rather a service like  YouTube.
 
 ### SRT support
 
-I have added SRT support to the Raspberry Pi image (v5 of image).  You need to use it via ffmpeg or gstreamer via command line currently, as I haven't added it to the Raspberry Ninja code directly yet. Still, it's easy enough to publish via command line with SRT, and you get the benefits of an up-to-date Raspberry Pi image with drivers and software all pre-installed.
+I have added SRT support to the Raspberry Pi image.  You need to use it via Ffmpeg or Gstreamer via command line currently, as I haven't added it to the Raspberry Ninja code directly yet. Still, it's easy enough to publish via command line with SRT, and you get the benefits of an up-to-date Raspberry Pi image with drivers and software all pre-installed.
 
 ### WHIP / Meshcast support
 
-Coming soon I hope.
+I added WHIP/WHEP support to the Raspberry Pi x64 pre-built image, although currently its via the rust-based webrtchttp gstreamer plugins and is outside the scope of Raspberry.Ninja itself for now. 
+
+[whipsink](https://gstreamer.freedesktop.org/documentation/webrtchttp/whipsink.html?gi-language=python)
+[whepsrc](https://gstreamer.freedesktop.org/documentation/webrtchttp/whepsrc.html?gi-language=python)
+
+You can technically build these plugins yourself also, using Rust (cargoc) and Gstreamer 1.22 I think, but I intend to offer my own version of WHEP/WHIP support as an integral part of Raspberry.Ninja at some point in the future instead.
+
+### NDI support
+
+I've been experimenting with NDI support, but it's not officially working correct yet. 
+
+### OpenCV / FFMPEG / FDSink / Framebuffer support
+
+There's support for OpenCV/Framebuffer (--framebuffer STREAMIDHERE) and FDSink now. There's a Youtube video online demoing how to use Raspberry.Ninja to bring raw BGR video frames into Numpy. 
 
 ## Hardware options
 
@@ -254,7 +267,7 @@ USB cameras are options, but currently with Raspberry Pi devices these are only 
 
 If low-light is important to you, the Sony IMX327 and IMX462 series of sensors might appeal to you. They are generally designed for security camera applications, but with the use of an IR Filter, you can make them adequate for use a standard video cameras. These options may require additional gstreamer and driver work to have work however, so they are for more advanced-users at this time. 
 
-I have gotten the low-light Arducam IMX462 to work with the newest image for RPI working (the v5 bullseye image). It might require a small change to the `dtoverlay` line in the `/boot/config.txt` file though to configure your specific camera, but I think I have most working now without any need drivers. (a few exceptions) , oh, and if you are changing `dtoverlay`, you might need to also comment out the camera auto detect link that is also in the config.txt file. (else it might not work)
+I have gotten the low-light Arducam IMX462 to work with the newest image for RPI working (with the bullseye images). It might require a small change to the `dtoverlay` line in the `/boot/config.txt` file though to configure your specific camera, but I think I have most working now without any need drivers. (a few exceptions) , oh, and if you are changing `dtoverlay`, you might need to also comment out the camera auto detect link that is also in the config.txt file. (else it might not work)
 
 Links for such low-light cameras: 
 
