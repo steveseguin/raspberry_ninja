@@ -15,15 +15,17 @@ That all said, the simple installer [can be found here.](https://github.com/stev
 
 ### Installing from the provided image
 
-Download and extract the image file:
-[https://drive.google.com/file/d/19hKnokApp31UnqaPbc_-llpTuA5d_oGW/view?usp=share_link ](https://drive.google.com/file/d/1vWkznU544qkRsal1GyIj4YZ-O2pNFCfh/view?usp=sharing) (Bullseye 64-bit /w Libcamera, Arducam, GST v1.22, and SRT support. Built: October 6th 2023.)
+Download and extract the image file from the following zip file:
+[https://drive.google.com/file/d/19hKnokApp31UnqaPbc_-llpTuA5d_oGW/view?usp=share_link ](https://drive.google.com/file/d/1vWkznU544qkRsal1GyIj4YZ-O2pNFCfh/view?usp=sharing)
+
+This image is based on an official clean Bullseye Lite OS 64-bit image, but with Raspberry.Ninja, Gstreamer v1.22, Libcamera, Arducam-drivers, WHIP/WHEP GST plugins, Ffmpeg, Rust, AV1, and SRT support included. It was built on October 6th 2023 using the available installer script.
 
 ```
 Username: vdo  
 Password: ninja
 ```
 
-Write the image to a SD / microSD card; at least 16GB in size is needed, using the appropriate tool. 
+To install, write the image to a SD / microSD card (or compatible USB 3.0 drive if using a RPI 4/5). At least 16GB is needed for the image.
 
 On Windows, you can use Win32DiskImager (https://sourceforge.net/projects/win32diskimager/) to write this image to a disk.  If you need to format your SD card first, you can use the SD Card Formatter (https://www.sdcard.org/downloads/formatter/).
 
@@ -43,7 +45,7 @@ Note: By default the provided image will have SSH enabled, so if security is a c
 
 #### Login info for the image
 
-Login information for the supplied v4.x image is:
+Login information for the supplied image is:
 ```
 username: vdo
 password: ninja
