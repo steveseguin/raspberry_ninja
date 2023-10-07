@@ -1,5 +1,5 @@
 
-## Tested with a brand new official bullseye lite 64-bit 2023 image
+## Last tested on October 5th 2023, using a fresh official Bullseye lite 64-bit 2023 image on a RPI 4
 
 echo "nameserver 1.1.1.1" | sudo tee -a /etc/resolv.conf
 
