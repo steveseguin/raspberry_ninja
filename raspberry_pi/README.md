@@ -16,18 +16,16 @@ That all said, the simple installer [can be found here.](https://github.com/stev
 ### Installing from the provided image
 
 Download and extract the image file:
-https://drive.google.com/file/d/19hKnokApp31UnqaPbc_-llpTuA5d_oGW/view?usp=share_link  (Bullseye 32-bit /w Libcamera, Arducam, and SRT support. Built: April 20th 2023. Some issues with multi-viewer support?)
+[https://drive.google.com/file/d/19hKnokApp31UnqaPbc_-llpTuA5d_oGW/view?usp=share_link ](https://drive.google.com/file/d/1vWkznU544qkRsal1GyIj4YZ-O2pNFCfh/view?usp=sharing) (Bullseye 64-bit /w Libcamera, Arducam, GST v1.22, and SRT support. Built: October 6th 2023.)
 
 ```
 Username: vdo  
 Password: ninja
 ```
 
-(** note, Someone reported that their macOS system could not unzip it, but worked fine on Windows. If you have issues, let me know and I'll send you an alternative option on request)
+Write the image to a SD / microSD card; at least 16GB in size is needed, using the appropriate tool. 
 
-Write the image to a SD / microSD card; at least 8GB in size is needed, using the appropriate tool. 
-
-On Windows, you can use Win32DiskImager (https://sourceforge.net/projects/win32diskimager/) to write this image to a disk.  If you need to format your SD card first, you can use the SD Card Formatter (https://www.sdcard.org/downloads/formatter/).  
+On Windows, you can use Win32DiskImager (https://sourceforge.net/projects/win32diskimager/) to write this image to a disk.  If you need to format your SD card first, you can use the SD Card Formatter (https://www.sdcard.org/downloads/formatter/).
 
 (balenaEtcher also works for writing the image, but using the official Raspberry Pi image writer may have problems.)
 
