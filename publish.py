@@ -1057,7 +1057,7 @@ class WebRTCClient:
                 msg = json.loads(message)
                 
                 if 'vector' in msg:
-                    print("Try with --password false and &password=false instead, as encryption isn't supported it seems with your setup")
+                    print("Try with --password false (here) and &password=false (sender side) instead, as encryption isn't supported it seems with your setup")
                     continue
                 elif 'from' in msg:
                     if self.puuid==None:
@@ -1231,7 +1231,7 @@ async def main():
     parser.add_argument('--framebuffer', type=str, help='VDO.Ninja to local frame buffer; performant and Numpy/OpenCV friendly')
     parser.add_argument('--debug', action='store_true', help='Show added debug information from Gsteamer and other aspects of the app')
     parser.add_argument('--buffer',  type=int, default=200, help='The jitter buffer latency in milliseconds; default is 200ms. (gst +v1.18)')
-    parser.add_argument('--password', type=str, nargs='?', default=None, required=False, const='', help='Partial password support. If not used, passwords will be off. If a blank value is passed, it will use the default system password. If you pass a value, it will use that value for the pass. No added encryption support however.')
+    parser.add_argument('--password', type=str, nargs='?', default=None, required=False, const='', help='Partial password support. If not used, passwords will be off. If a blank value is passed, it will use the default system password. If you pass a value, it will use that value for the pass. No added encryption support however. Works for publishing to vdo.ninja/alpha/ (v24) currently')
     parser.add_argument('--hostname', type=str, default='https://vdo.ninja/alpha/', help='Your URL for vdo.ninja, if self-hosting the website code')
 
     args = parser.parse_args()
