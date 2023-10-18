@@ -37,6 +37,7 @@ sudo dphys-swapfile swapon
 
 sudo apt-get install python3 python3-pip -y
 sudo apt-get install build-essential cmake libtool libc6 libc6-dev unzip wget libnuma1 libnuma-dev -y
+sudo rm /usr/lib/python3.11/EXTERNALLY-MANAGED # Debian 12 is an opinionated bully? ha, yah, no thank you.
 sudo pip3 install scikit-build
 sudo pip3 install ninja 
 sudo pip3 install websockets
