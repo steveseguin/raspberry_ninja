@@ -41,7 +41,7 @@ sudo rm /usr/lib/python3.11/EXTERNALLY-MANAGED # Debian 12 is an opinionated bul
 sudo pip3 install scikit-build
 sudo pip3 install ninja 
 sudo pip3 install websockets
-pip3 install python-rtmidi
+sudo pip3 install python-rtmidi
 
 sudo apt-get install apt-transport-https ca-certificates -y
 
