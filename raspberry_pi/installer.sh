@@ -13,9 +13,9 @@ export LD_LIBRARY_PATH=/usr/local/lib/
 
 sudo apt-get update
 sudo apt-get upgrade -y ## Bullseye will auto-update to 64-bit from 32-bit if you upgrade; bewarned
+sudo apt-get install vim git -y
 sudo apt-get full-upgrade -y 
 sudo apt-get dist-upgrade -y
-sudo apt-get install vim -y
 # sudo rpi-update  ## use at your own risk, if you need it
 
 ### REBOOT
@@ -35,7 +35,7 @@ sudo dphys-swapfile setup
 sudo dphys-swapfile swapon
 ###############################
 
-sudo apt-get install python3 git python3-pip -y
+sudo apt-get install python3 python3-pip -y
 sudo apt-get install build-essential cmake libtool libc6 libc6-dev unzip wget libnuma1 libnuma-dev -y
 sudo pip3 install scikit-build
 sudo pip3 install ninja 
