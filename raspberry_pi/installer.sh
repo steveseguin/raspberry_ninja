@@ -92,6 +92,7 @@ sudo apt-get install autotools-dev automake autoconf \
 
 sudo apt-get install -y tar freeglut3 weston libssl-dev policykit-1-gnome -y
 sudo apt-get install libwebrtc-audio-processing-dev libvpx-dev -y
+sudo apt-get install libass-dev # added oct 18th; not sure whats using it
 
 ### MESON - specific version
 cd ~
@@ -345,13 +346,16 @@ cd ~
 
 ## RUST ...  optional, adds native whip/whep support to gstreamer
 curl https://sh.rustup.rs -sSf | sh
+source "$HOME/.cargo/env"
 cargo install cargo-c # slow, bloated, with many weak depedencies; careful
 cd ~
 git clone https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs.git
 cd gst-plugins-rs
-cargo cinstall -p gst-plugin-webrtchttp --prefix=./tmp  # whip/whep
+cargo cinstall -p gst-plugin-webrtchttp --prefix=./tmp  # whip/whep plugins for gstreamer
 sudo cp ./tmp/lib/gstreamer-1.0/* /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0
 sudo cp ./tmp/lib/pkgconfig/* /usr/local/lib/aarch64-linux-gnu/pkgconfig
+sudo cp ./tmp/lib/gstreamer-1.0/* /usr/local/lib/gstreamer-1.0
+sudo cp ./tmp/lib/pkgconfig/* /usr/local/lib/pkgconfig
 
 # modprobe bcm2835-codecfg
 
