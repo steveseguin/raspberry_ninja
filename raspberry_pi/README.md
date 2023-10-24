@@ -237,6 +237,6 @@ fixup_file=fixup_x.dat
 
 ### Arducams and third party non-official camers
 
-You may need to update the /boot/config.txt file (`sudo vim /boot/config.txt`) for your specific camera.  ie: `dtoverlay=imx290` , then reboot
+You may need to update the /boot/config.txt file (`sudo vim /boot/config.txt`) for your specific camera.  ie: `dtoverlay=imx290` or `dtoverlay=arducam-pivariety`, then reboot
 
 If using an Arducam Pivariety IMX462, you don't need the pivariety daughterboard; just the camera directly into the Pi.  Most Arducams should work automatically or with a single line change, but a couple others might still need some further work.
