@@ -1174,6 +1174,7 @@ def on_message(bus: Gst.Bus, message: Gst.Message, loop):
 
     return True
 
+
 WSS="wss://wss.vdo.ninja:443"
 
 async def main():
@@ -1288,36 +1289,56 @@ async def main():
         except Exception as E:
             pass
         
-  
-    if not args.test:     
+    audiodevices = [] 
+    if not (args.test or args.noaudio):     
         monitor = Gst.DeviceMonitor.new()
         monitor.add_filter("Audio/Source", None)
         #monitor.start()
-        devices = monitor.get_devices()
-    elif not args.alsa and not args.noaudio and not args.pulse and not args.test and not args.pipein:
-        default = [d for d in devices if d.get_properties().get_value("is-default") is True]
+        audiodevices = monitor.get_devices()
+
+    if not args.alsa and not args.noaudio and not args.pulse and not args.test and not args.pipein:
+        default = [d for d in audiodevices if d.get_properties().get_value("is-default") is True]
         args.alsa = "default"
         aname = "default"
+
         if len(default) > 0:
             device = default[0]
-            args.alsa = 'hw:'+str(device.get_properties().get_value("alsa.card"))+'\,0'
-            print("Default: %s, via '%s'" % (device.get_display_name(), 'alsasrc device="hw:'+str(device.get_properties().get_value("alsa.card"))+'\,0"'))
-            aname = device.get_display_name()
-        elif len(devices)==0:
+            args.alsa = 'hw:'+str(device.get_properties().get_value("alsa.card"))+',0'
+            print(" >> Default audio device selected: %s, via '%s'" % (device.get_display_name(), 'alsasrc device="hw:'+str(device.get_properties().get_value("alsa.card"))+',0"'))
+        elif len(audiodevices)==0:
             args.noaudio = True
             print("\nNo microphone or audio source found; disabling audio.")
         else:
-            print("\nAvalaible microphones / audio sources:")
-            for i, d in enumerate(devices):
-                if i == 0:
-                    args.alsa = 'hw:'+str(devices[i].get_properties().get_value("alsa.card"))+'\,0'
-                    aname = d.get_display_name()
-                print(" -- %s, via '%s'" % (d.get_display_name(), 'alsasrc device="hw:'+str(devices[i].get_properties().get_value("alsa.card"))+'\,0"'))
-                
-        print("\nSelecting alsa source: "+aname+"\n")
+            #args.noaudio = True
+            print("\nDetected audio sources:")
+            for i, d in enumerate(audiodevices):
+                print("  - ",audiodevices[i].get_display_name(), audiodevices[i].get_property("internal-name"), audiodevices[i].get_properties().get_value("alsa.card"), audiodevices[i].get_properties().get_value("is-default"))
+                args.alsa = 'hw:'+str(audiodevices[i].get_properties().get_value("alsa.card"))+',0'
+            print()
+            default = None
+            for d in audiodevices:
+                props = d.get_properties()
+                for e in range(int(props.n_fields())):
+#                    print(props.nth_field_name(e),"=",props.get_value(props.nth_field_name(e)))
+                    if (props.nth_field_name(e) == "device.api" and props.get_value(props.nth_field_name(e)) == "alsa"):
+                        default = d
+                        break
+                if default:
+                    print(" >> Selected the audio device: %s, via '%s'" % (default.get_display_name(), 'alsasrc device="hw:'+str(default.get_properties().get_value("alsa.card"))+',0"'))
+                    args.alsa = 'hw:'+str(default.get_properties().get_value("alsa.card"))+',0'
+                    break
+            if not default:
+                args.noaudio = True
+                print("\nNo audio source selected; disabling audio.")
+                #print("======================")
+#        sys.exit()
+        print()
 
+                
     if args.rpi and not args.v4l2 and not args.hdmi and not args.rpicam and not args.z1:
-        args.v4l2 = '/dev/video0'
+        if check_plugins(['libcamera']):
+            args.libcamera = True
+
         monitor = Gst.DeviceMonitor.new()
         monitor.add_filter("Video/Source", None)
         devices = monitor.get_devices()
