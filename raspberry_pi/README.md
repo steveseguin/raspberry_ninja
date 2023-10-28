@@ -18,7 +18,7 @@ That all said, the simple installer [can be found here.](https://github.com/stev
 Download and extract the image file from the following zip file:
 [https://drive.google.com/file/d/19hKnokApp31UnqaPbc_-llpTuA5d_oGW/view?usp=share_link ](https://drive.google.com/file/d/1vWkznU544qkRsal1GyIj4YZ-O2pNFCfh/view?usp=sharing)
 
-This image is based on an official clean Bullseye Lite OS 64-bit image, but with Raspberry.Ninja, Gstreamer v1.22, Libcamera, Arducam-drivers, WHIP/WHEP GST plugins, Ffmpeg, Rust, AV1, and SRT support included. It was built on October 6th 2023 using the available installer script. Since it is a 64-bit version, it may not boot onto a Raspberry Pi 1 and probably many, if not all, Raspberry Pi 2 models.
+This image is based on an official clean Bullseye Lite OS 64-bit image, but with Raspberry.Ninja, Gstreamer v1.22, Libcamera, Arducam-drivers, WHIP/WHEP GST plugins, Ffmpeg, Rust, AV1, and SRT support included. It was built on October 6th 2023 using the available installer script. Since it is a 64-bit version, it may not boot onto a Raspberry Pi 1 and probably many, if not all, Raspberry Pi 2 models. It has no GUI (no desktop) and is terminal-line only.
 
 ```
 Username: vdo  
