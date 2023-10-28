@@ -7,7 +7,7 @@ It is recommended to use the provided Raspberry Pi image, as the install process
 
 ### Simple install script:
 
-The simple installer will work on existing RPI OS systems, without needing to compile anything, however this will result in older versions of Gstreamer being installed without all the plugins and codecs being available. That said, I'd probably recommend this to most users over the pre-built image these days, and especially over the full-build-from-scratch script.
+The simple installer will work on existing RPI OS systems, without needing to compile anything, however this will result in older versions of Gstreamer being installed without all the plugins, bug-fixes, and codecs being available. That said, I'd probably recommend this to most users over the pre-built image these days, and especially over the full-build-from-scratch script.
 
 Gstreamer v1.18 is likely to be what Raspberry Pi OS will come with when using the simple installer, which is OK, but does miss out on some advanced features found in Gstreamer 1.22. I'd avoid older versions of Gstreamer if at all posssible though, found on legacy versions of Raspberry Pi OS / Raspbian. 
 
