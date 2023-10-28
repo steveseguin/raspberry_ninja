@@ -29,7 +29,7 @@ To install, write the image to a SD / microSD card (or compatible USB 3.0 drive 
 
 On Windows, you can use Win32DiskImager (https://sourceforge.net/projects/win32diskimager/) to write this image to a disk.  If you need to format your SD card first, you can use the SD Card Formatter (https://www.sdcard.org/downloads/formatter/).
 
-(balenaEtcher also works for writing the image, but using the official Raspberry Pi image writer may have problems.)
+Note: balenaEtcher also works for writing the image, but using the official Raspberry Pi image writer may have problems. The Raspberry Pi image writer does make it easy to setup WiFi during the install though, so give it a try if you want.
 
 #### Setting up and connecting the image
 
@@ -42,6 +42,8 @@ You can also open `X:/boot/config.txt` in notepad to uncomment a line to enable 
 To connect, use a display and keyboard, or you can SSH into it as SSH on port 22 if enabled.  If you didn't configure the WiFi, you connect either via USB or Ethernet instead. Refer to the Raspberry Pi documentation for more help on that topic.
 
 Note: By default the provided image will have SSH enabled, so if security is a concern, disable SSH. It is also suggested that you change the username and password to something more secure. I woudld also suggest not installing any BTC wallets on this image or anything like that, as security can't be guaranteed.
+
+note: You might be able to also setup WiFi during the image write step, rather than after, when using the official Raspberry Pi image writer tool.
 
 #### Login info for the image
 
@@ -61,6 +63,8 @@ You can then run `sudo raspi-config` from the command-line to configure the Pi a
 
 You will probably want to also update the pi with `sudo apt-get update && sudo apt-get upgrade`, to snure it's up to date.  You can also run `sudo raspi-config` and update the RPi that way, along with updating the bootloader if desired (on a pi4 at least).
 
+Note: There is NO graphical user interface (GUI / Desktop) installed with the provided images; only a terminal. I can offer a version with a GUI in the future if popular in request.
+
 ### Building the image from scratch instead
 
 If you do not want to use the provided image, you can try to build and install from scratch, but be prepared to lose a weekend on it. Please see the install script provided, but others exist online that might be better. Gstreamer 1.14 can be made to work with VDO.Ninja, but GStreamer 1.16 or newer is generally recommend; emphasis on the newer.
@@ -71,18 +75,34 @@ The `installer.sh` file in this folder contains the general idea on how to insta
 
 The simple installer script, that uses package manager builds of required libs, can be [found here instead](https://github.com/steveseguin/raspberry_ninja/blob/main/raspberry_pi/simpleinstall.md), if you give up trying to build the newest versions.
 
-## Running things
+## Rrunning the Raspberry Ninja code for the first time
 
-Once connected to you Pi, you can pull the most recent files from this Github repo to the disk using:
-
+Once connected to you Pi, you can pull the most recent Raspberry Ninja code files from this Github repo to the disk using:
 ```
 sudo rm raspberry_ninja -r
 git clone https://github.com/steveseguin/raspberry_ninja.git
+```
+I don't have time to update images all the time, perhaps just a couple times a year, so it's very important you update the publish.py to the newest version. Especially if having issues. There are new updates about every month or so.
+
+After cloning the code repository, if you have any problems or wish to update to the newest code in the future, run `git pull` from your raspberry_ninja folder. This should download the most recent code. You will need to clear or stash any changes before pulling though; `git reset --hard` will undo past changes. `git stash` is a method to store past changes; see Google on more info there though.
+
+You can then try running the publishing script using:
+```
 cd raspberry_ninja
 python3 publish.py --test
 ```
+This runs the script in a test mode that ensures the very basics are working and setup.  You should see a test pattern if you open the view link that is shown on screen.
 
-After cloning the code repository, if you have any problems or wish to update to the newest code in the future, run `git pull` from your raspberry_ninja folder. This should download the most recent code. You will need to clear or stash any changes before pulling though; `git reset --hard` will undo past changes. `git stash` is a method to store past changes; see Google on more info there though.
+Next you might try something like the following to see if any connected camera works
+```
+python3 publish.py --libcamera --noaudio
+```
+
+You may need to change the command line settings, depending on the camera / sensor / input connected.  While I try to have things auto work with just `python3 publish.py`, sometimes you need to pass specific parameters to tell the script what actually will work. A list of avialable options can be listed using the `--help` option:
+
+```python3 publish.py --help```
+
+I'm on discord at https://discord.vdo.ninja (in the #raspberry.ninja channel there), if you need help with this part.
 
 ### Camera considerations
 
