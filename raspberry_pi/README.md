@@ -100,8 +100,6 @@ Once that works, next you might try something like the following to see if any c
 ```
 python3 publish.py --libcamera --noaudio
 ```
-One user who had issues mentioned they had to disable "Legacy Camera" mode in the raspi-config settings app to have their Pi camera be detected.
-
 You also may need to change the command line settings, depending on the camera / sensor / input connected.  While I try to have things auto work with just `python3 publish.py`, sometimes you need to pass specific parameters to tell the script what actually will work. A list of avialable options can be listed using the `--help` option:
 
 ```python3 publish.py --help```
@@ -135,6 +133,8 @@ To enable RAW-mode (YUY2) via a USB Camera, instead of MJPEG, you'll need to add
 If using an HDMI adapter as a camera source, you may need to adjust things at a code level to account for the color-profiles of your camera source. `--bt601` is an option for one stanard profile, with the default profile set at `coloimetry=2:4:5:4` for a Raspberry Pi. 10-bit and interlaced video probably isn't a good idea to attempt to use, and if possible setting the HDMI output of your camera to 8-bit 1080p24,25 or 30 is the highest you should probably go.
 
 Raspberry Pis only support up to 1080p30 FPS with the hardware encoder. I have not tested a Raspberry Pi 5 yet to confirm this is still the case however. A raspberry Pi 5 might have enough CPu performance to do 1080p60 in software mode however, so it might still be managable.  I've not confirmed.
+
+One user who had issues mentioned they had to disable "Legacy Camera" mode in the raspi-config settings app to have their Pi camera be detected; this should be already off by default, but if you enabled it, I suppose try turning it off.
 
 ###### Please return to the parent folder for more details on how to run and configure
 
