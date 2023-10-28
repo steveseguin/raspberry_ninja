@@ -11,8 +11,6 @@ The simple installer will work on existing RPI OS systems, without needing to co
 
 Gstreamer v1.18 is likely to be what Raspberry Pi OS will come with when using the simple installer, which is OK, but does miss out on some advanced features found in Gstreamer 1.22. I'd avoid older versions of Gstreamer if at all posssible though, found on legacy versions of Raspberry Pi OS / Raspbian. 
 
-If using the build-script maintained here, you'll get Gstreamer 1.22 or newer, along with many commonly used tools, plugins, and optimizations. Stability is hit and miss if self-installing though, as bugs come and go like the wind when it comes to linux dependencies.
-
 That all said, the simple installer [can be found here.](https://github.com/steveseguin/raspberry_ninja/blob/main/raspberry_pi/simpleinstall.md)
 
 ### Installing from the provided image
