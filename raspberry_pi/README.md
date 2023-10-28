@@ -75,7 +75,7 @@ The `installer.sh` file in this folder contains the general idea on how to insta
 
 The simple installer script, that uses package manager builds of required libs, can be [found here instead](https://github.com/steveseguin/raspberry_ninja/blob/main/raspberry_pi/simpleinstall.md), if you give up trying to build the newest versions.
 
-## Rrunning the Raspberry Ninja code for the first time
+## Running the Raspberry Ninja code for the first time
 
 Once connected to you Pi, you can pull the most recent Raspberry Ninja code files from this Github repo to the disk using:
 ```
