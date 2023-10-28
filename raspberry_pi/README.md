@@ -79,21 +79,24 @@ The simple installer script, that uses package manager builds of required libs, 
 
 Once connected to you Pi, you can pull the most recent Raspberry Ninja code files from this Github repo to the disk using:
 ```
+cd ~
 sudo rm raspberry_ninja -r
 git clone https://github.com/steveseguin/raspberry_ninja.git
 ```
-I don't have time to update images all the time, perhaps just a couple times a year, so it's very important you update the publish.py to the newest version. Especially if having issues. There are new updates about every month or so.
+In the above code, we're just deleting the old copy of Raspberry Ninja and re-downloading it from scratch, just to be safe.
 
-After cloning the code repository, if you have any problems or wish to update to the newest code in the future, run `git pull` from your raspberry_ninja folder. This should download the most recent code. You will need to clear or stash any changes before pulling though; `git reset --hard` will undo past changes. `git stash` is a method to store past changes; see Google on more info there though.
+I don't have time to update images all the time, perhaps just a couple times a year, so it's very important you update the publish.py to the newest version. Especially if having issues. There are new updates about every month or so that improve the user experience and fixes bugs.
 
-You can then try running the publishing script using:
+After cloning the code repository, if you have any problems or wish to update to the newest code in the future, you can just run `git pull` from your raspberry_ninja folder. This should download the most recent code without needing to delete everything. You will need to clear or stash any changes before pulling though; `git reset --hard` will undo past changes. `git stash` is a method to store past changes; see Google on more info there though.
+
+Finally, you can now try running the publishing script using:
 ```
 cd raspberry_ninja
 python3 publish.py --test
 ```
-This runs the script in a test mode that ensures the very basics are working and setup.  You should see a test pattern if you open the view link that is shown on screen.
+This runs the script in a test mode that ensures the very basics are working and setup.  You should see a test pattern if you open the view link that is shown on screen. 
 
-Next you might try something like the following to see if any connected camera works
+Once that works, next you might try something like the following to see if any connected camera works
 ```
 python3 publish.py --libcamera --noaudio
 ```
@@ -114,15 +117,23 @@ Some USB devices may struggle with audio/video syncronization. Video normally is
 
 If you are using a Raspberry Pi 4, then you should be pretty good to go at this point, even at 1080p30 MJPEG over USB 2.0 seems to work well there. You might contend with audio/video sycronization issues if using a USB camera/audio source still, but hopefully that issue can be resolved shortly. 
 
-If you are using a Raspberry Pi 2 or 3, you might want to limit the resolution to 720p, at least if using a USB camera source.
+If you are using a Raspberry Pi 2 or 3, you might want to limit the resolution to 720p, at least if using a USB camera source. I can get 1080p30 on a Raspberry Pi 2 at fairly high bitrates, when running a stable version of the operating system with Gstreamer v1.22; this wasn't the case with older versions or nightly-built versions.
 
 If using the CSI camera, the hardware encoder often works quite well, although it might still be best to limit the resolution to 720p30 or 360p30 if using an older raspberry pi zero w. The Raspberry Pi Zero 2 however works quite well at 1080p30 with the official Raspberry Pi cameras.
 
-To enable the CSI camera, you'll need to add `--rpicam` to the command-line, as the default is USB MPJEG.  You may need to run `sudo raspi-config` ane enable the CSI camera inteface before the script will be able to use it. Some CSI cameras must be run with `--v4l2` instead, and some others require custom drivers to be installed first. Sticking with the official raspberry pi cameras is your best bet, but the $40 HDMI-to-CSI adapter and some knock off Raspberry Pi CSI cameras often will work pretty well too.
+To enable the CSI camera on older versions of Raspberry Pi OS (Raspbian), you may need to add `--rpicam` to the command-line, as the default is USB MPJEG. With newer versions of Raspberry Pi OS, you may instead need to use `--libcamera --rpi` instead.  If you don't have audio connected, you might also need to add `--noaudio`, as sometimes that can cause issues.
+
+If using a third-party CSI-based camera, it is strongly recommended you check compatilbility ahead of time. If you need to install a "driver" to have it work, I'd advise against using it. Drivers may not be compatible with the Gstreamer version used by Raspberry Ninja, or at the very least, can make setup and debugging a real nightmare.  Most Arducam cameras now seem to be driverless, with just a small change to the boot config file needed only, but this isn't the case for all Arducams or cameras from other providers.
+
+If using a Camlink, you may need to use `--camlink`, or `--raw --rpi`, or perhaps just `--raw`. 
+
+You may need to run `sudo raspi-config` ane enable the CSI camera inteface before the script will be able to use it. Some CSI cameras must be run with `--v4l2` instead, and some others require custom drivers to be installed first. Sticking with the official raspberry pi cameras is your best bet, but the $40 HDMI-to-CSI adapter and some knock off Raspberry Pi CSI cameras often will work pretty well too.
 
 To enable RAW-mode (YUY2) via a USB Camera, instead of MJPEG, you'll need to add `--raw` to the command line, and probably limit the resolution to around 480p. 
 
 If using an HDMI adapter as a camera source, you may need to adjust things at a code level to account for the color-profiles of your camera source. `--bt601` is an option for one stanard profile, with the default profile set at `coloimetry=2:4:5:4` for a Raspberry Pi. 10-bit and interlaced video probably isn't a good idea to attempt to use, and if possible setting the HDMI output of your camera to 8-bit 1080p24,25 or 30 is the highest you should probably go.
+
+Raspberry Pis only support up to 1080p30 FPS with the hardware encoder. I have not tested a Raspberry Pi 5 yet to confirm this is still the case however. A raspberry Pi 5 might have enough CPu performance to do 1080p60 in software mode however, so it might still be managable.  I've not confirmed.
 
 ###### Please return to the parent folder for more details on how to run and configure
 
@@ -259,4 +270,4 @@ fixup_file=fixup_x.dat
 
 You may need to update the /boot/config.txt file (`sudo vim /boot/config.txt`) for your specific camera.  ie: `dtoverlay=imx290` or `dtoverlay=arducam-pivariety`, then reboot
 
-If using an Arducam Pivariety IMX462, you don't need the pivariety daughterboard; just the camera directly into the Pi.  Most Arducams should work automatically or with a single line change, but a couple others might still need some further work.
+If using an Arducam Pivariety IMX462 (like I am), you don't need the pivariety daughterboard; just the camera directly into the Pi.  Most Arducams should work automatically or with a single line change (in my case, adding `dtoverlay=imx290`), but a couple others might still need some further work.
