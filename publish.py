@@ -72,7 +72,50 @@ def generateHash(input_str, length=None):
     else:
         hash_hex = sha256_hash.hex()
     return hash_hex
-    
+
+def hex_to_ansi(hex_color):
+    # Remove '#' character if present
+    hex_color = hex_color.lstrip('#')
+
+    # Convert hex to RGB
+    if len(hex_color)==6:
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
+    elif len(hex_color)==3:
+        r = int(hex_color[0:1]+hex_color[0:1], 16)
+        g = int(hex_color[1:2]+hex_color[1:2], 16)
+        b = int(hex_color[2:3]+hex_color[2:3], 16)
+    else:
+        return hex_color
+
+    # Calculate the nearest ANSI color
+    ansi_color = 16 + (36 * int(r / 255 * 5)) + (6 * int(g / 255 * 5)) + int(b / 255 * 5)
+
+    return f"\033[38;5;{ansi_color}m"
+
+def printc(message, color_code=None):
+    # ANSI escape code to reset to default text color
+    reset_color = "\033[0m"
+
+    if color_code is not None:
+        color_code = hex_to_ansi(color_code)
+        colored_message = f"{color_code}{message}{reset_color}"
+        print(colored_message)
+    else:
+        print(message)
+
+def printwin(message):
+    printc("<= "+message,"93F")
+def printwout(message):
+    printc("=> "+message,"9F3")
+def printin(message):
+    printc("<= "+message,"F6A")
+def printout(message):
+    printc("=> "+message,"6F6")
+def printwarn(message):
+    printc(message,"FF0")
+
 class WebRTCClient:
     def __init__(self, params):
 
@@ -132,12 +175,15 @@ class WebRTCClient:
         if self.room_name:
             msg = json.dumps({"request":"joinroom","roomid":self.room_name})
             await self.conn.send(msg)
+            printwout("joining room")
         elif self.streamin:
             msg = json.dumps({"request":"play","streamID":self.streamin+self.hashcode})
             await self.conn.send(msg)
+            printwout("requesting stream")
         else:
             msg = json.dumps({"request":"seed","streamID":self.stream_id+self.hashcode})
             await self.conn.send(msg)
+            printwout("seed start")
         
         
     def sendMessage(self, msg): # send message to wss
@@ -152,16 +198,16 @@ class WebRTCClient:
         
         if client and client['send_channel']:
             try:
-                #del msg['UUID']
                 client['send_channel'].emit('send-string', msg)
-                print("a message was sent via datachannels")
+                printout("a message was sent via datachannels: "+msg[:20])
             except Exception as e:
                 loop = asyncio.new_event_loop()
                 loop.run_until_complete(self.conn.send(msg))
-                #print("sent message wss")
+                printwout("a message was sent via websockets 2: "+msg[:20])
         else:
             loop = asyncio.new_event_loop()
             loop.run_until_complete(self.conn.send(msg))
+            printwout("a message was sent via websockets 1: "+msg[:20])
             #print("sent message wss")
         
 #    def needData(self,xx,yy):
@@ -233,8 +279,8 @@ class WebRTCClient:
             element.emit('create-offer', None, promise)
 
         def send_ice_local_candidate_message(_, mlineindex, candidate):
-            if " TCP " in candidate: ##  I Can revisit another time, but for now, this isn't needed: TODO: optimize
-                return
+#            if " TCP " in candidate: ##  I Can revisit another time, but for now, this isn't needed: TODO: optimize
+ #               return
             icemsg = {'candidates': [{'candidate': candidate, 'sdpMLineIndex': mlineindex}], 'session':client['session'], 'type':'local', 'UUID':client['UUID']}
             self.sendMessage(icemsg)
             
@@ -246,7 +292,14 @@ class WebRTCClient:
             print("ON SIGNALING STATE CHANGE: {}".format(client['webrtc'].get_property(p2.name)))
 
         def on_ice_connection_state(p1, p2):
-            print("ON ICE CONNECTION STATE CHANGE: {}".format(client['webrtc'].get_property(p2.name)))
+            if (client['webrtc'].get_property(p2.name)==1):
+                printwarn("ice changed to checking state")
+            elif (client['webrtc'].get_property(p2.name)==2):
+                printwarn("ice changed to connected state")
+            elif (client['webrtc'].get_property(p2.name)==3):
+                printwarn("ice changed to completed state")
+            elif (client['webrtc'].get_property(p2.name)>3):
+                printc("ice changed to state +4","FC2")
 
         def on_connection_state(p1, p2):
             print("on_connection_state")
@@ -294,7 +347,7 @@ class WebRTCClient:
                 self.clients[client["UUID"]] = client
                 try:
                     client['send_channel'].emit('send-string', '{"ping":"'+str(time.time())+'"}')
-                    print("PINGED")
+                    printout("PINGED")
                 except Exception as E:
                     print(E)
                     print("PING FAILED")
@@ -305,11 +358,11 @@ class WebRTCClient:
                 client['webrtc'].emit('get-stats', None, promise)
 
             else:
-                print("NO HEARTBEAT")
+                printc("NO HEARTBEAT", "F44")
                 self.stop_pipeline(client['UUID'])
                 
         def on_data_channel(webrtc, channel):
-            print("ON DATA CHANNEL")
+            print("    --------- ON DATA CHANNEL")
             if channel is None:
                 print('DATA CHANNEL: NOT AVAILABLE')
                 return
@@ -321,10 +374,10 @@ class WebRTCClient:
             channel.connect('on-message-string', on_data_channel_message)
 
         def on_data_channel_error(arg1, arg2):
-            print('DATA CHANNEL: ERROR')
+            printc('DATA CHANNEL: ERROR', "F44")
 
         def on_data_channel_open(channel):
-            print('DATA CHANNEL: OPENED')
+            printc('DATA CHANNEL: OPENED', "06F")
             client['send_channel'] = channel
             self.clients[client["UUID"]] = client
             if self.streamin:
@@ -338,44 +391,46 @@ class WebRTCClient:
                 self.sendMessage(msg)
             elif self.rotate:
                 msg = {"info":{"rotate_video":self.rotate}, "UUID": client["UUID"]}
-                print(msg)
                 self.sendMessage(msg)
 
 
         def on_data_channel_close(channel):
-            print('DATA CHANNEL: CLOSE')
+            printc('DATA CHANNEL: CLOSE', "F44")
 
         def on_data_channel_message(channel, msg_raw):
             try:
                 msg = json.loads(msg_raw)
             except:
-                print("DID NOT GET JSON")
+                printin("DID NOT GET JSON")
                 return
             if 'candidates' in msg:
-                print("INBOUND ICE BUNDLE - DC")
+                printin("INBOUND ICE BUNDLE - DC")
                 for ice in msg['candidates']:
                     self.handle_sdp_ice(ice, client["UUID"])
+            elif 'candidate' in msg:
+                printin("INBOUND ICE SINGLE - DC")
+                self.handle_sdp_ice(msg, client["UUID"])
             elif 'pong' in msg: # Supported in v19 of VDO.Ninja
-                print('PONG:', msg['pong'])
+                printin('PONG')
                 client['ping'] = 0     
                 self.clients[client["UUID"]] = client                
             elif 'bye' in msg: ## v19 of VDO.Ninja
-                print("PEER INTENTIONALLY HUNG UP")
+                printin("PEER INTENTIONALLY HUNG UP")
                 #self.stop_pipeline(client['UUID'])
             elif 'description' in msg:
-                print("INCOMING SDP - DC")
+                printin("INCOMING SDP - DC")
                 if msg['description']['type'] == "offer":
                     self.handle_offer(msg['description'], client['UUID'])
             elif 'midi' in msg:
-                print(msg)
+                printin(msg)
                 vdo2midi(msg['midi'])
             elif 'bitrate' in msg:
-                print(msg)
+                printin(msg)
                 if client['encoder'] and msg['bitrate']:
                     print("Trying to change bitrate...")
                     client['encoder'].set_property('bitrate', int(msg['bitrate'])*1000)
             else:
-                print("MISC DC DATA")
+                printin("MISC DC DATA")
                 return
 
         def vdo2midi(midi):
@@ -918,6 +973,7 @@ class WebRTCClient:
     def handle_sdp_ice(self, msg, UUID):
         client = self.clients[UUID]
         if not client or not client['webrtc']:
+            print("! CLIENT NOT FOUND OR INVALID")
             return
         if 'sdp' in msg:
             print("INCOMING ANSWER SDP TYPE: "+msg['type'])
@@ -931,7 +987,7 @@ class WebRTCClient:
             client['webrtc'].emit('set-remote-description', answer, promise)
             promise.interrupt()
         elif 'candidate' in msg:
-            print("HANDLE ICE")
+            print("  ~ HANDLING INBOUND ICE")
             candidate = msg['candidate']
             sdpmlineindex = msg['sdpMLineIndex']
             client['webrtc'].emit('add-ice-candidate', sdpmlineindex, candidate)
@@ -1077,10 +1133,11 @@ class WebRTCClient:
                             if msg['request'] == 'listing':
                                 if self.streamin:
                                     msg = json.dumps({"request":"play","streamID":self.streamin+self.hashcode}) ## we're just going to view a stream
-                                    print(msg)
+                                    printwout(msg)
                                     await self.conn.send(msg)
                                 else:
-                                    msg = json.dumps({"request":"seed","streamID":self.stream_id+self.hashcode}) ## we're just going to publish a stream
+                                    msg = jsoin.dumps({"request":"seed","streamID":self.stream_id+self.hashcode}) ## we're just going to publish a stream
+                                    printwout("seed start")
                                     await self.conn.send(msg)
                     continue
                     
@@ -1100,6 +1157,7 @@ class WebRTCClient:
                         print("sessions don't match")
 
                 if 'description' in msg:
+                    print("description via WSS")
                     msg = msg['description']
                     if 'type' in msg:
                         if msg['type'] == "offer":
@@ -1108,14 +1166,17 @@ class WebRTCClient:
                         elif msg['type'] == "answer":
                             self.handle_sdp_ice(msg, UUID)
                 elif 'candidates' in msg:
+                    print("ice candidates BUNDLE via WSS")
                     if type(msg['candidates']) is list:
                         for ice in msg['candidates']:
                             self.handle_sdp_ice(ice, UUID)
                     else:
                         print("Try with &password=false / --password=false instead, as encryption isn't supported currently")
-
+                elif 'candidate' in msg:
+                    print("ice candidate SINGLE via WSS")
+                    self.handle_sdp_ice(msg, UUID)
                 elif 'request' in msg:
-                    print("REQUEST: ", msg['request'])
+                    print("REQUEST via WSS: ", msg['request'])
                     if 'offerSDP' in  msg['request']:
                         await self.start_pipeline(UUID)
                     elif msg['request'] == "play":
@@ -1334,7 +1395,16 @@ async def main():
 #        sys.exit()
         print()
 
-                
+    if args.rpicam:
+        print("Please note: If rpicamsrc cannot be found, use --libcamera instead")
+        if not check_plugins(['rpicamsrc']):
+            print("rpicamsrc was not found. using just --rpi instead")
+            print()
+            args.raw = True
+            args.rpi = True
+            args.rpicam = False
+            
+ 
     if args.rpi and not args.v4l2 and not args.hdmi and not args.rpicam and not args.z1:
         if check_plugins(['libcamera']):
             args.libcamera = True
@@ -1433,11 +1503,25 @@ async def main():
             args.streamin = False
 
         if not args.novideo:
+
+            if not (args.nvidia or args.rpi) and args.h264:
+                if args.x264:
+                    needed += ['x264']
+                elif args.openh264:
+                    needed += ['openh264']
+                elif args.omx:
+                    needed += ['omx']
+                elif h264:
+                    needed += ['h264']
+                elif args.rpicam:
+                    needed += ['rpicamsrc']
+                else:
+                    print("Is there an H264 encoder installed?")
+
             if args.nvidia:
                 needed += ['omx', 'nvvidconv']
                 if not args.raw:
                     needed += ['nvjpeg']
-
             elif args.rpi and not args.rpicam:
                 needed += ['video4linux2']
                 if args.x264:
@@ -1450,23 +1534,10 @@ async def main():
                     needed += [h264]
                 else:
                     print("Is there an H264 encoder installed?")
-                    
+
                 if not args.raw:
                     needed += ['jpeg']
 
-            if not (args.nvidia or args.rpi) and args.h264:
-                if args.x264:
-                    needed += ['x264']
-                elif args.openh264:
-                    needed += ['openh264']
-                elif args.omx:
-                    needed += ['omx']
-                elif h264:
-                    needed += [h264]
-                elif args.rpicam:
-                    needed += ['rpicamsrc']
-                else:
-                    print("Is there an H264 encoder installed?")
 
             # THE VIDEO INPUT
             if args.streamin:
@@ -1586,20 +1657,14 @@ async def main():
                 elif args.rpicam:
                     pass
                 elif args.rpi:
-                    if args.width>1280: ## x264enc works at 1080p30, but only for static scenes with a bitrate of around 2500 or less.
-                        width = 1280  ## 720p60 is more accessible with the PI4, versus 1080p30.  
-                        height = 720
-                    else:
-                        width = args.width
-                        height = args.height
                     if args.omx:
                         pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc name="encoder" target-bitrate={args.bitrate}000 qos=true control-rate="constant" ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                     elif args.x264:
-                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! queue max-size-buffers=1 ! x264enc  name="encoder1" bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
+                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! queue max-size-buffers=1 ! x264enc  name="encoder1" bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
                     elif args.openh264:
-                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! queue max-size-buffers=1 ! openh264enc  name="encoder" bitrate={args.bitrate}000 complexity=0 ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
+                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! queue max-size-buffers=1 ! openh264enc  name="encoder" bitrate={args.bitrate}000 complexity=0 ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
                     else:
-                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4'
+                        pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw,format=I420 ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4' ## v4l2h264enc only supports 30fps max @ 1080p on most rpis, and there might be a spike or skipped frame causing the encode to fail; videorating it seems to fix it though
 
                     ## pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                 elif h264=="x264":
@@ -1619,14 +1684,7 @@ async def main():
                 if args.nvidia:
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxvp8enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                 elif args.rpi:
-                    if args.width>1280: ## x264enc works at 1080p30, but only for static scenes with a bitrate of around 2500 or less.
-                        width = 1280  ## 720p60 is more accessible with the PI4, versus 1080p30.
-                        height = 720
-                    else:
-                        width = args.width
-                        height = args.height
-
-                    pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420,width=(int){width},height=(int){height} ! queue max-size-buffers=1 ! vp8enc deadline=1 name="encoder" target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
+                    pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! queue max-size-buffers=1 ! vp8enc deadline=1 name="encoder" target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                 # need to add an nvidia vp8 hardware encoder option.
                 else:
                     pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=1 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 name="encoder" {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
