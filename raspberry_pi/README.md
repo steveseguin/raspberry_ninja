@@ -100,8 +100,9 @@ Once that works, next you might try something like the following to see if any c
 ```
 python3 publish.py --libcamera --noaudio
 ```
+One user who had issues mentioned they had to disable "Legacy Camera" mode in the raspi-config settings app to have their Pi camera be detected.
 
-You may need to change the command line settings, depending on the camera / sensor / input connected.  While I try to have things auto work with just `python3 publish.py`, sometimes you need to pass specific parameters to tell the script what actually will work. A list of avialable options can be listed using the `--help` option:
+You also may need to change the command line settings, depending on the camera / sensor / input connected.  While I try to have things auto work with just `python3 publish.py`, sometimes you need to pass specific parameters to tell the script what actually will work. A list of avialable options can be listed using the `--help` option:
 
 ```python3 publish.py --help```
 
