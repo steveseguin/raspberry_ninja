@@ -1186,7 +1186,8 @@ class WebRTCClient:
                             if msg['streamID'] == self.stream_id+self.hashcode:
                                 await self.start_pipeline(UUID)
             except websockets.ConnectionClosed:
-                print("WEB SOCKETS CLOSED");
+                print("WEB SOCKETS CLOSED; retrying in 5s");
+                await asyncio.sleep(5)
                 continue
             except Exception as E:
                 print(E);
