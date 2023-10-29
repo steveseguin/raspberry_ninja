@@ -1808,8 +1808,15 @@ async def main():
 
     args.pipeline = PIPELINE_DESC
     c = WebRTCClient(args)
-    await c.connect()
-    res = await c.loop()
+    while True:
+        try:
+            await c.connect()
+            res = await c.loop()
+        except KeyboardInterrupt:
+            print("Ctrl+C detected. Exiting...")
+            break
+        except:
+            await asyncio.sleep(5)
     disableLEDs()
     if c.shared_memory:
         c.shared_memory.close()
