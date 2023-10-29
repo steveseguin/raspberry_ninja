@@ -279,8 +279,8 @@ class WebRTCClient:
             element.emit('create-offer', None, promise)
 
         def send_ice_local_candidate_message(_, mlineindex, candidate):
-#            if " TCP " in candidate: ##  I Can revisit another time, but for now, this isn't needed: TODO: optimize
- #               return
+            if " TCP " in candidate: ##  I Can revisit another time, but for now, this isn't needed: TODO: optimize
+                return
             icemsg = {'candidates': [{'candidate': candidate, 'sdpMLineIndex': mlineindex}], 'session':client['session'], 'type':'local', 'UUID':client['UUID']}
             self.sendMessage(icemsg)
             
