@@ -248,9 +248,9 @@ I have added SRT support to the Raspberry Pi image.  You need to use it via Ffmp
 
 ### WHIP / Meshcast support
 
-I added WHIP/WHEP support to the Raspberry Pi x64 pre-built image, but for other users you may need to ensure you have the `gst-plugins-rs` installed. This may also mean you'll need Gstreamer 1.22 installed.
+I added WHIP/WHEP dependencies to the Raspberry Pi x64 pre-built image already (av1-whip support excluded), but for other users you may need to ensure you have the `gst-plugins-rs` installed to get WHIP out working. This may also mean you'll need Gstreamer 1.22 installed. If you want to use AV1, you'll also need to ensure you have an AV1 encoder available within Gstreamer; there's a few good options there.
 
-The WHIP/WHEP support within Raspberry Ninja is added by means of the Gstreamer's [whipsink](https://gstreamer.freedesktop.org/documentation/webrtchttp/whipsink.html?gi-language=python)
+The WHIP output support within Raspberry Ninja is added by means of the Gstreamer's [whipsink](https://gstreamer.freedesktop.org/documentation/webrtchttp/whipsink.html?gi-language=python)
 [whepsrc](https://gstreamer.freedesktop.org/documentation/webrtchttp/whepsrc.html?gi-language=python) Rust-based plugins.
 
 To use, you can just do:
@@ -283,6 +283,8 @@ gst-launch-1.0 videotestsrc ! av1enc usage-profile=realtime ! av1parse ! rtpav1p
 In this case, we're publishing direct to the browser, so it needs to be opened first, as we're using VDO.Ninja to do the WHIP playback without WHEP
 
 You can find many more WHIP/WHEP options within VDO.Ninja, and a great place to start playing is at [https://vdo.ninja/alpha/whip](https://vdo.ninja/alpha/whip). This page offers a web-based WHIP/WHEP player/publisher, as well as support for SVC, insertable streams, and all the advantages of VDO.Ninja in a simple to use web interface.
+
+As for Meshcast support, Meshcast is getting WHIP-ingest support; the availability of this update is just pending some more testing and deployment.
 
 ### NDI support
 
