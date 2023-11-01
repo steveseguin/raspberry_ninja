@@ -1,7 +1,7 @@
 # <img src="https://user-images.githubusercontent.com/2575698/107161314-f6523f80-6969-11eb-9e9b-9135554b87b5.png"  width="50" />  Raspberry Ninja
 Turn your Raspberry Pi, Nvidia Jetson, Orange Pi, Windows PC, Mac, Linux box, or nearly any Python-compatible system into a ninja-cam with hardware-acceleration enabled! This lets you publish live streaming video and audio directly to your web browser or OBS instance using VDO.Ninja.  Achieve very low streaming latency over the Internet or a LAN; all for free.
 
-<img src='https://github.com/steveseguin/raspberry_ninja/assets/2575698/0b3c7140-5aed-4b21-babb-3c842e2bc010' width="400"> | OR |  <img src='https://github.com/steveseguin/raspberry_ninja/assets/2575698/cf301391-0375-45c9-bb1c-d665dd0fe1bb' width="400">
+<img src='https://github.com/steveseguin/raspberry_ninja/assets/2575698/0b3c7140-5aed-4b21-babb-3c842e2bc010' width="400">    <img src='https://github.com/steveseguin/raspberry_ninja/assets/2575698/cf301391-0375-45c9-bb1c-d665dd0fe1bb' width="400">
 
 It also has the ability to record remote VDO.Ninja streams to disk (no transcode step), it can broadcast a low-latency video stream to multiple viewers (with a built-in SFU) at  time, and because it works with VDO.Ninja, you get access to its ecosystem and related features.
 
