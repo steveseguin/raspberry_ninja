@@ -652,11 +652,11 @@ class WebRTCClient:
                     elif self.framebuffer: ## send raw data to ffmpeg or something I guess, using the stdout?
                         print("APP SINK OUT")
                         if "VP8" in name:
-                            out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=1 leaky=downstream ! appsink name=appsink", True)
+                            out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=2 leaky=downstream ! appsink name=appsink", True)
                         elif "H264" in name:
                             #depay.set_property("request-keyframe", True)
                             ## LEAKY = 2 + Max-Buffer=1 means we will only keep the last most recent frame queued up for the appsink; older frames will get dropped, since we will prioritize latency.  You can change this of course.
-                            out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! openh264dec ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=1 leaky=downstream ! appsink name=appsink", True)
+                            out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! openh264dec ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=2 leaky=downstream ! appsink name=appsink", True)
                     else:
                         # filesink = self.pipe.get_by_name('mux2') ## WIP
                         if filesink:
@@ -1258,6 +1258,7 @@ async def main():
     parser.add_argument('--streamid', type=str, default=str(random.randint(1000000,9999999)), help='Stream ID of the peer to connect to')
     parser.add_argument('--room', type=str, default=None, help='optional - Room name of the peer to join')
     parser.add_argument('--rtmp', type=str, default=None, help='Use RTMP instead; pass the rtmp:// publishing address here to use')
+    parser.add_argument('--whip', type=str, default=None, help='Use WHIP output instead; pass the https://whip.publishing/address here to use')
     parser.add_argument('--server', type=str, default=None, help='Handshake server to use, eg: "wss://wss.vdo.ninja:443"')
     parser.add_argument('--bitrate', type=int, default=2500, help='Sets the video bitrate; kbps. If error correction (red) is on, the total bandwidth used may be up to 2X higher than the bitrate')
     parser.add_argument('--audiobitrate', type=int, default=64, help='Sets the audio bitrate; kbps.')
@@ -1284,7 +1285,7 @@ async def main():
     parser.add_argument('--openh264', action='store_true', help='Prioritizes OpenH264 encoder over hardware encoder')
     parser.add_argument('--vp8', action='store_true', help='Prioritizes vp8 codec over h264; software encoder')
     parser.add_argument('--vp9', action='store_true', help='Prioritizes vp9 codec over h264; software encoder')
-    parser.add_argument('--aom', action='store_true', help='Prioritizes AV1-AOM codec; software encoder. use 640x360@1fps for a Raspberry Pi 4')
+    parser.add_argument('--aom', action='store_true', help='Prioritizes AV1-AOM codec; software encoder')
     parser.add_argument('--omx', action='store_true', help='Try to use the OMX driver for encoding video; not recommended')
     parser.add_argument('--vorbis', action='store_true', help='Try to use the OMX driver for encoding video; not recommended')
     parser.add_argument('--nvidia', action='store_true', help='Creates a pipeline optimised for nvidia hardware.')
@@ -1684,17 +1685,17 @@ async def main():
                     if args.omx:
                         pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc name="encoder" target-bitrate={args.bitrate}000 qos=true control-rate="constant" ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                     elif args.x264:
-                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! queue max-size-buffers=1 ! x264enc  name="encoder1" bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
+                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! queue max-size-buffers=10 ! x264enc  name="encoder1" bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
                     elif args.openh264:
-                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! queue max-size-buffers=1 ! openh264enc  name="encoder" bitrate={args.bitrate}000 complexity=0 ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
+                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! queue max-size-buffers=10 ! openh264enc  name="encoder" bitrate={args.bitrate}000 complexity=0 ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
                     else:
                         pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw,format=I420 ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4' ## v4l2h264enc only supports 30fps max @ 1080p on most rpis, and there might be a spike or skipped frame causing the encode to fail; videorating it seems to fix it though
 
                     ## pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                 elif h264=="x264":
-                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=1 ! x264enc bitrate={args.bitrate} name="encoder1" speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline'
+                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=10 ! x264enc bitrate={args.bitrate} name="encoder1" speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline'
                 elif h264=="openh264":
-                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=1 ! openh264enc bitrate={args.bitrate}000 name="encoder" complexity=0 ! video/x-h264,profile=constrained-baseline'
+                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=10 ! openh264enc bitrate={args.bitrate}000 name="encoder" complexity=0 ! video/x-h264,profile=constrained-baseline'
                 else:
                     pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc name="encoder" target-bitrate={args.bitrate}000 qos=true control-rate=1 ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                     
@@ -1710,10 +1711,10 @@ async def main():
                 if args.nvidia:
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxvp8enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                 elif args.rpi:
-                    pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! queue max-size-buffers=1 ! vp8enc deadline=1 name="encoder" target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
+                    pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! queue max-size-buffers=10 ! vp8enc deadline=1 name="encoder" target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                 # need to add an nvidia vp8 hardware encoder option.
                 else:
-                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=1 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 name="encoder" {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
+                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=10 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 name="encoder" {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                     
             if args.multiviewer:
                 pipeline_video_input += ' ! tee name=videotee '
@@ -1768,9 +1769,9 @@ async def main():
             pipe.set_state(Gst.State.PLAYING)
 
             try:
-                loop = GLib.MainLoop
+                loop = GLib.MainLoop()
             except:
-                loop = GObject.MainLoop
+                loop = GObject.MainLoop()
 
             bus.connect("message", on_message, loop)
             try: 
@@ -1780,6 +1781,33 @@ async def main():
             
             pipe.set_state(Gst.State.NULL)
             sys.exit(1)
+        elif args.whip:
+            pipeline_whip = 'whipsink name=sendrecv whip-endpoint="'+args.whip+'"'
+            PIPELINE_DESC = f'{pipeline_video_input} {pipeline_audio_input} {pipeline_whip}'
+            print('gst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
+            pipe = Gst.parse_launch(PIPELINE_DESC)
+
+            bus = pipe.get_bus()
+
+            bus.add_signal_watch()
+
+            pipe.set_state(Gst.State.PLAYING)
+
+            try:
+                loop = GLib.MainLoop()
+            except:
+                loop = GObject.MainLoop()
+
+            #bus.connect("message", on_message, loop)
+            try:
+                loop.run()
+            except Exception as E:
+                print(E)
+                loop.quit()
+
+            pipe.set_state(Gst.State.NULL)
+            sys.exit(1)
+
 
         elif args.streamin:
             args.h264 = True
