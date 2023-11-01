@@ -250,6 +250,24 @@ I added WHIP/WHEP support to the Raspberry Pi x64 pre-built image, although curr
 
 You can technically build these plugins yourself also, using Rust (cargoc) and Gstreamer 1.22 I think, but I intend to offer my own version of WHEP/WHIP support as an integral part of Raspberry.Ninja at some point in the future instead.
 
+Please note that you don't need Raspberry Ninja to use WHIP, although they can be used together just fine also.
+
+To use WHIP via Gstreamer alone, you can quickly give it test.
+
+```
+# To view the stream, FIRSTLY, open this link:
+https://vdo.ninja/alpha/?whip=XXXXXX123
+
+# to publish h264 to that viewer, use the following
+gst-launch-1.0 videotestsrc ! videoconvert ! x264enc ! rtph264pay ! whipsink whip-endpoint="https://whip.vdo.ninja/XXXXXX123"
+
+# or to publish av1 to that viewer, use the following:
+gst-launch-1.0 videotestsrc ! av1enc usage-profile=realtime ! av1parse ! rtpav1pay ! whipsink whip-endpoint="http://whip.vdo.ninja/XXXXXX123"
+```
+In this case, we're publishing direct to the browser, so it needs to be opened first, as we're using VDO.Ninja to do the WHIP playback without WHEP
+
+You can find many more WHIP/WHEP options within VDO.Ninja, and a great place to start playing is at (https://vdo.ninja/alpha/whip)[https://vdo.ninja/alpha/whip].
+
 ### NDI support
 
 I've been experimenting with NDI support, but it's not officially working correct yet. 
@@ -343,7 +361,7 @@ midi demo video: https://youtu.be/Gry9UFtOTmQ
 
 - If you wish to play a video back, using a Raspberry Pi, try this "kiosk" mode image that can be found here: https://awesomeopensource.com/project/futurice/chilipie-kiosk. Raspberry Pis seem to handle video playback in Chromium-based browsers OK.  I'l try to have browser-free playback at some point in the future.
 
-- If needing to make a backup of your microSD, see: http://sigkillit.com/2022/10/13/shrink-a-raspberry-pi-or-retropie-img-on-windows-with-pishrink/ 
+- If needing to make a backup of your microSD, see: http://sigkillit.com/2022/10/13/shrink-a-raspberry-pi-or-retropie-img-on-windows-with-pishrink/
 
 ### TODO:
 
