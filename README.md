@@ -272,11 +272,13 @@ You can find many more WHIP/WHEP options within VDO.Ninja, and a great place to 
 
 I've been experimenting with NDI support, but it's not officially working correct yet. 
 
-### OpenCV / FFMPEG / FDSink / Framebuffer support
+### OpenCV / Tensorflow / FFMPEG / FDSink / Framebuffer support
 
 There's support for OpenCV/Framebuffer (--framebuffer STREAMIDHERE) and FDSink now. There's a Youtube video link below demoing how to use Raspberry.Ninja to bring raw BGR video frames into Numpy. 
 
 [https://www.youtube.com/watch?v=LGaruUjb8dg](https://www.youtube.com/watch?v=LGaruUjb8dg)
+
+This should allow you to use Tensorflow, OpenCV, or whatever Python script to access the webRTC video stream as raw frames. You can also use it to turn a webRTC stream into a motion-JPEG stream, useful if needing to publish to a device that doesn't support webRTC. ie: Octoprint 3d printer server supports a MJPEG video preview link, but not a webRTC link.
 
 ## Hardware options
 
