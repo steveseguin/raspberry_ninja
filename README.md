@@ -156,6 +156,7 @@ optional arguments:
   --bt601               Changes the input color profile when in raw mode to BT601
   --h264                For PC, instead of VP8, use x264.
   --vp8                 VP8 encoder instead of h264; likely software-based
+  --aom                 Use AV1-AOM software encoding for publishing
   --nvidia              Creates a pipeline optimised for nvidia hardware.
   --rpi                 Creates a pipeline optimised for raspberry pi hadware.
   --novideo             Disables video input.
