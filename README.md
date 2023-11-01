@@ -84,6 +84,8 @@ python3 publish.py --test
 ```
 Package managers with old versions of Gstreamers, or with no hardware acceleration or limited codec support, may be limited in what Raspberry.Ninja can offer. For the most up-to-date and comprehensive feature set, compiling Gstreamer from scratch may be still needed.
 
+If wanting to use AV1 streaming, you'll need to install `gst-plugins-rs` as well (`av1parse` and `av1pay` are needed), plus whatever AV1 encoder you wish to use.
+
 ## Updating
 
 Major updates sometimes will require that the latest Rasbperry Pi or Jetson image be installed on your device, but most updates are minor and only require the `publish.py` file to be updated.  If you've just installed the latest device image, you will still want to update before going further, as the image is not updated with every new code release.
