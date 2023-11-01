@@ -373,9 +373,7 @@ midi demo video: https://youtu.be/Gry9UFtOTmQ
 
 - Have an option to "playback" an incoming stream full-screened on a pi or jetson, to use as an input to an ATEM mixer.
 
-- Add a jitter buffer to the recording mode (moderate)
-
-- Add support for passwords and group rooms (steve)
+- Add support for passwords and group rooms (steve - partially added)
 
 - Make easier to use for novice users; perhaps adding a local web-interface or config file accessible via an SD card reader via Windows. These options could then allow for setting of wifi passwords, device, settings, stream IDs, etc, without needing to SSH in or using nano/vim. (moderate)
 
