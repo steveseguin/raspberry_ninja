@@ -247,17 +247,28 @@ I have added SRT support to the Raspberry Pi image.  You need to use it via Ffmp
 
 ### WHIP / Meshcast support
 
-I added WHIP/WHEP support to the Raspberry Pi x64 pre-built image, although currently its via the rust-based webrtchttp gstreamer plugins and is outside the scope of Raspberry.Ninja itself for now. 
+I added WHIP/WHEP support to the Raspberry Pi x64 pre-built image, but for other users you may need to ensure you have the `gst-plugins-rs` installed. This may also mean you'll need Gstreamer 1.22 installed.
 
-[whipsink](https://gstreamer.freedesktop.org/documentation/webrtchttp/whipsink.html?gi-language=python)
-[whepsrc](https://gstreamer.freedesktop.org/documentation/webrtchttp/whepsrc.html?gi-language=python)
+The WHIP/WHEP support within Raspberry Ninja is added by means of the Gstreamer's [whipsink](https://gstreamer.freedesktop.org/documentation/webrtchttp/whipsink.html?gi-language=python)
+[whepsrc](https://gstreamer.freedesktop.org/documentation/webrtchttp/whepsrc.html?gi-language=python) Rust-based plugins.
 
-You can technically build these plugins yourself also, using Rust (cargoc) and Gstreamer 1.22 I think, but I intend to offer my own version of WHEP/WHIP support as an integral part of Raspberry.Ninja at some point in the future instead.
+To use, you can just do:
+```
+python3 publish.py --whip "https://yourwhipurl.com/here" --test
+```
+The gst-launch-1.0 command line that's printed to screen can be run on its own after, without Raspberry Ninja in cases, as Raspberry Ninja doesn't need to make use of Websockets or other logic when dealing with WHIP.
 
-Please note that you don't need Raspberry Ninja to use WHIP, although they can be used together just fine also.
+You can test this out live using VDO.Ninja still, as VDO.Ninja supports WHIP playback without needing your own SFU or server. Just open [https://vdo.ninja/alpha/?whip=XXXXXX123](https://vdo.ninja/alpha/?whip=XXXXXX123) in your browser FIRST, and then run the following command line:
 
-To use WHIP via Gstreamer alone, you can quickly give it test.
+```
+python3 publish.py --whip "https://whip.vdo.ninja/XXXXXX123" --test
+```
+You should see your video play on the VDO.Ninja website within a few seconds after you start publishing, and there should be audio included. 
 
+
+Please note that you don't need Raspberry Ninja to use WHIP, but Raspberry Ninja will handle all the Gstreamer pipelining, audio/video device detection, and I am open to feature requests.
+
+As noted above, you can just re-use the gstreamer pipelines outputted by Raspberry Ninja when using WHIP output, but below I offer you a few test pipelines you can try from the command line to get you started there without Raspberry Ninja:
 ```
 # To view the stream, FIRSTLY, open this link:
 https://vdo.ninja/alpha/?whip=XXXXXX123
