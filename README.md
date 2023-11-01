@@ -266,7 +266,7 @@ gst-launch-1.0 videotestsrc ! av1enc usage-profile=realtime ! av1parse ! rtpav1p
 ```
 In this case, we're publishing direct to the browser, so it needs to be opened first, as we're using VDO.Ninja to do the WHIP playback without WHEP
 
-You can find many more WHIP/WHEP options within VDO.Ninja, and a great place to start playing is at (https://vdo.ninja/alpha/whip)[https://vdo.ninja/alpha/whip]. This page offers a web-based WHIP/WHEP player/publisher, as well as support for SVC, insertable streams, and all the advantages of VDO.Ninja in a simple to use web interface.
+You can find many more WHIP/WHEP options within VDO.Ninja, and a great place to start playing is at [https://vdo.ninja/alpha/whip](https://vdo.ninja/alpha/whip). This page offers a web-based WHIP/WHEP player/publisher, as well as support for SVC, insertable streams, and all the advantages of VDO.Ninja in a simple to use web interface.
 
 ### NDI support
 
