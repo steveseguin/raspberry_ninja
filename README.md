@@ -7,7 +7,7 @@ It also has the ability to record remote VDO.Ninja streams to disk (no transcode
 
 
 
-AV1 support is now available, however you will need a powerful system or one with an AV1 hardware encoder to make use of it.
+AV1 support is now available, however you will need a powerful system or one with an AV1 hardware encoder to make use of it.  WHIP-output support has also been added.
 
 ## Preface
 
