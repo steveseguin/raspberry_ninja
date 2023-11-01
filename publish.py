@@ -154,6 +154,8 @@ class WebRTCClient:
         self.password = params.password
         self.hostname = params.hostname
         self.hashcode = ""
+        self.aom = params.aom
+
         try:
             if self.password:
                 parsed_url = urlparse(self.hostname)
@@ -428,7 +430,11 @@ class WebRTCClient:
                 printin(msg)
                 if client['encoder'] and msg['bitrate']:
                     print("Trying to change bitrate...")
-                    client['encoder'].set_property('bitrate', int(msg['bitrate'])*1000)
+                    if self.aom:
+                        pass
+                       # client['encoder'].set_property('target-bitrate', int(msg['bitrate'])*1000)
+                    else:
+                        client['encoder'].set_property('bitrate', int(msg['bitrate'])*1000)
             else:
                 printin("MISC DC DATA")
                 return
@@ -540,7 +546,10 @@ class WebRTCClient:
                     self.bitrate = bitrate
                     print(str(bitrate))
                     try:
-                        if client['encoder']:
+                        if self.aom:
+                            pass
+                           # client['encoder'].set_property('target-bitrate', int(bitrate*1000))
+                        elif client['encoder']:
                             client['encoder'].set_property('bitrate', int(bitrate*1000))
                         elif client['encoder1']:
                             client['encoder1'].set_property('bitrate', int(bitrate))
@@ -560,7 +569,10 @@ class WebRTCClient:
                     self.bitrate = bitrate
                     print(str(bitrate))
                     try:
-                        if client['encoder']:
+                        if self.aom:
+                            pass
+                           # client['encoder'].set_property('target-bitrate', int(bitrate*1000))
+                        elif client['encoder']:
                             client['encoder'].set_property('bitrate', int(bitrate*1000))
                         elif client['encoder1']:
                             client['encoder1'].set_property('bitrate', int(bitrate))
@@ -1272,6 +1284,7 @@ async def main():
     parser.add_argument('--openh264', action='store_true', help='Prioritizes OpenH264 encoder over hardware encoder')
     parser.add_argument('--vp8', action='store_true', help='Prioritizes vp8 codec over h264; software encoder')
     parser.add_argument('--vp9', action='store_true', help='Prioritizes vp9 codec over h264; software encoder')
+    parser.add_argument('--aom', action='store_true', help='Prioritizes AV1-AOM codec; software encoder. use 640x360@1fps for a Raspberry Pi 4')
     parser.add_argument('--omx', action='store_true', help='Try to use the OMX driver for encoding video; not recommended')
     parser.add_argument('--vorbis', action='store_true', help='Try to use the OMX driver for encoding video; not recommended')
     parser.add_argument('--nvidia', action='store_true', help='Creates a pipeline optimised for nvidia hardware.')
@@ -1328,6 +1341,13 @@ async def main():
     elif args.password.lower() in ["false", "0", "off"]:
         args.password = None
         
+    if args.aom:
+        if not check_plugins(['aom','videoparsersbad','rsrtp']):
+            print("You'll probably need to install gst-plugins-rs to use AV1 (av1enc, av1parse, av1pay)")
+            print("ie: https://github.com/steveseguin/raspberry_ninja/blob/6873b97af02f720b9dc2e5c3ae2e9f02d486ba52/raspberry_pi/installer.sh#L347")
+            sys.exit()
+        if args.rpi:
+            print("A Raspberry Pi 4 can only handle like 640x360 @ 2 fps when using AV1; not recommended")
 
     if 'openh264' not in h264:
         h264 = "openh264"
@@ -1463,6 +1483,9 @@ async def main():
             args.h264 = True
 
         if args.vp8:
+            args.h264 = False
+
+        if args.aom:
             args.h264 = False
            
         if args.hdmi:
@@ -1680,6 +1703,8 @@ async def main():
                 else:
                     pipeline_video_input += f' ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! h264parse {saveVideo} ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
 
+            elif args.aom: 
+                pipeline_video_input += f' ! videoconvert ! av1enc cpu-used=8 target-bitrate={args.bitrate}000 name="encoder" usage-profile=realtime ! av1parse ! rtpav1pay'
             else:
                 # VP8
                 if args.nvidia:
