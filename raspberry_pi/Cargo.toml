@@ -27,3 +27,35 @@ members = [
     "video/videofx",
     "video/webp",
 ]
+# Only plugins without external dependencies
+default-members = [
+    "version-helper",
+
+    "mux/mp4",
+
+    "net/hlssink3",
+    "net/rtp",
+    "net/webrtchttp",
+    "net/ndi",
+
+    "utils/fallbackswitch",
+    "utils/livesync",
+    "utils/togglerecord",
+    "utils/uriplaylistbin",
+
+    "video/cdg",
+    "video/ffv1",
+    "video/gif",
+    "video/hsv",
+    "video/png",
+    "video/rav1e",
+]
+
+[profile.release]
+lto = true
+opt-level = 3
+debug = true
+panic = 'unwind'
+
+[profile.dev]
+opt-level = 1
