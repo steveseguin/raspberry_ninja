@@ -351,7 +351,9 @@ cargo install cargo-c # slow, bloated, with many weak depedencies; careful
 cd ~
 git clone https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs.git
 cd gst-plugins-rs
-cargo cinstall -p gst-plugin-webrtchttp --prefix=./tmp  # whip/whep plugins for gstreamer
+rm Cargo.toml # this won is bloated; we're going to delete some install options to speed things up and to avoid crashing things during the build
+git clone https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs.githttps://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/raspberry_pi/Cargo.toml
+cargo cinstall --prefix=./tmp  # whip/whep plugins for gstreamer
 sudo cp ./tmp/lib/gstreamer-1.0/* /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0
 sudo cp ./tmp/lib/pkgconfig/* /usr/local/lib/aarch64-linux-gnu/pkgconfig
 sudo cp ./tmp/lib/gstreamer-1.0/* /usr/local/lib/gstreamer-1.0
