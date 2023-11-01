@@ -274,7 +274,9 @@ I've been experimenting with NDI support, but it's not officially working correc
 
 ### OpenCV / FFMPEG / FDSink / Framebuffer support
 
-There's support for OpenCV/Framebuffer (--framebuffer STREAMIDHERE) and FDSink now. There's a Youtube video online demoing how to use Raspberry.Ninja to bring raw BGR video frames into Numpy. 
+There's support for OpenCV/Framebuffer (--framebuffer STREAMIDHERE) and FDSink now. There's a Youtube video link below demoing how to use Raspberry.Ninja to bring raw BGR video frames into Numpy. 
+
+(https://www.youtube.com/watch?v=LGaruUjb8dg)[https://www.youtube.com/watch?v=LGaruUjb8dg]
 
 ## Hardware options
 
