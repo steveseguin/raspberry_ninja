@@ -371,6 +371,8 @@ midi demo video: https://youtu.be/Gry9UFtOTmQ
 
 - Fix VP8/VP9 recordings and add muxing to the H264 recordings (moderate)
 
+- Offer a Docker version
+
 - Have an option to "playback" an incoming stream full-screened on a pi or jetson, to use as an input to an ATEM mixer.
 
 - Add support for passwords and group rooms (steve - partially added)
