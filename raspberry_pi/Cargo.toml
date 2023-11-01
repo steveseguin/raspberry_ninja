@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "version-helper",
+    "audio/spotify",
+    "mux/mp4",
+    "net/hlssink3",
+    "net/ndi",
+    "net/rtp",
+    "net/webrtchttp",
+
+    "utils/fallbackswitch",
+    "utils/livesync",
+    "utils/togglerecord",
+    "utils/uriplaylistbin",
+
+    "video/cdg",
+    "video/closedcaption",
+    "video/dav1d",
+    "video/ffv1",
+    "video/gif",
+    "video/gtk4",
+    "video/hsv",
+    "video/png",
+    "video/rav1e",
+    "video/videofx",
+    "video/webp",
+]
