@@ -282,16 +282,7 @@ gst-launch-1.0 videotestsrc ! videoconvert ! x264enc ! rtph264pay ! whipsink whi
 # or to publish av1 to that viewer, use the following:
 gst-launch-1.0 videotestsrc ! av1enc usage-profile=realtime ! av1parse ! rtpav1pay ! whipsink whip-endpoint="http://whip.vdo.ninja/XXXXXX123"
 ```
-In this case, we're publishing direct to the browser, so it needs to be opened first, as we're using VDO.Ninja to do the WHIP playback without WHEP
-
-Just for fun, below is how you can pull WHEP feeds from VDO.Ninja into Gstreamer, bypassing the need for Raspberry.Ninja in some situations. 
-```
-# first, start publishing with VDO.Ninja using, to create a WHEP source: https://vdo.ninja/alpha/?whepout&push=XXXXXX123
-
-## WIP 
-gst-launch-1.0 whepsrc whep-endpoint="https://whep.vdo.ninja/sSB57cX" whep-endpoint="https://whep.vdo.ninja/XXXXXX123" audio-caps="application/x-rtp,payload=111,encoding-name=OPUS,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=98,encoding-name=VP9,media=video,clock-rate=90000" ! queue ! tee name=t t. ! queue ! application/x-rtp,payload=111 ! rtpopusdepay ! opusparse ! matroskamux name=mux ! filesink location=output.webm  t. ! queue ! application/x-rtp,payload=98 ! rtpvp9depay !  mux.
-```
-`whepsrc` can be used with Raspberry.Ninja of course also if you wanted to use Raspberry.Ninja as an SFU, for example.
+In this case, we're publishing direct to the browser, so it needs to be opened first, as we're using VDO.Ninja to do the WHIP playback without WHEP.
 
 You can find many more WHIP/WHEP options within VDO.Ninja, and a great place to start playing is at [https://vdo.ninja/alpha/whip](https://vdo.ninja/alpha/whip). This page offers a web-based WHIP/WHEP player/publisher, as well as support for SVC, insertable streams, and all the advantages of VDO.Ninja in a simple to use web interface.
 
