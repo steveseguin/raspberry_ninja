@@ -164,6 +164,8 @@ optional arguments:
   --h264                For PC, instead of VP8, use x264.
   --vp8                 VP8 encoder instead of h264; likely software-based
   --aom                 Use AV1-AOM software encoding for publishing
+  --av1                 Whatever AV1 encoder the script can find; more can be added on request
+  --qsv                 Intel quicksync avi encoder
   --nvidia              Creates a pipeline optimised for nvidia hardware.
   --rpi                 Creates a pipeline optimised for raspberry pi hadware.
   --novideo             Disables video input.
