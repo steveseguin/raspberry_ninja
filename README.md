@@ -296,7 +296,7 @@ As for Meshcast support, Meshcast is getting WHIP-ingest support; the availabili
 
 ### NDI support
 
-I've been experimenting with NDI support, but it's not officially working correct yet. 
+I've been experimenting with NDI support, but it's not working properly yet; debugging needed still. Some users have it working though, although they haven't contributed those changes. It will be a bit before I can get around to doing it myself. Probably not too hard if you wanted to give it a go and contribute to the project.
 
 ### OpenCV / Tensorflow / FFMPEG / FDSink / Framebuffer support
 
