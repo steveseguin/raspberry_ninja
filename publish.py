@@ -155,6 +155,7 @@ class WebRTCClient:
         self.hostname = params.hostname
         self.hashcode = ""
         self.aom = params.aom
+        self.av1 = params.av1
 
         try:
             if self.password:
@@ -1286,6 +1287,9 @@ async def main():
     parser.add_argument('--vp8', action='store_true', help='Prioritizes vp8 codec over h264; software encoder')
     parser.add_argument('--vp9', action='store_true', help='Prioritizes vp9 codec over h264; software encoder')
     parser.add_argument('--aom', action='store_true', help='Prioritizes AV1-AOM codec; software encoder')
+    parser.add_argument('--av1', action='store_true', help='Auto selects an AV1 codec for encoding; hardware or software')
+    parser.add_argument('--rav1e', action='store_true', help='rav1e AV1 encoder used')
+    parser.add_argument('--qsv', action='store_true', help='Intel quicksync AV1 encoder used')
     parser.add_argument('--omx', action='store_true', help='Try to use the OMX driver for encoding video; not recommended')
     parser.add_argument('--vorbis', action='store_true', help='Try to use the OMX driver for encoding video; not recommended')
     parser.add_argument('--nvidia', action='store_true', help='Creates a pipeline optimised for nvidia hardware.')
@@ -1341,14 +1345,37 @@ async def main():
         args.password = "someEncryptionKey123"
     elif args.password.lower() in ["false", "0", "off"]:
         args.password = None
-        
+    
+    
+
     if args.aom:
         if not check_plugins(['aom','videoparsersbad','rsrtp']):
             print("You'll probably need to install gst-plugins-rs to use AV1 (av1enc, av1parse, av1pay)")
             print("ie: https://github.com/steveseguin/raspberry_ninja/blob/6873b97af02f720b9dc2e5c3ae2e9f02d486ba52/raspberry_pi/installer.sh#L347")
             sys.exit()
+        else:
+            args.av1 = True
         if args.rpi:
             print("A Raspberry Pi 4 can only handle like 640x360 @ 2 fps when using AV1; not recommended")
+    elif args.av1:
+        if args.rpi:
+            print("A Raspberry Pi 4 can only handle like 640x360 @ 2 fps when using AV1; not recommended")
+        if check_plugins(['qsv','videoparsersbad','rsrtp']):
+            args.qsv = True
+            print("Intel Quick Sync AV1 encoder selected")
+        elif check_plugins(['aom','videoparsersbad','rsrtp']):
+            args.aom = True
+            print("AOM AV1 encoder selected")
+        elif check_plugins(['rav1e','videoparsersbad','rsrtp']):
+            args.rav1e = True
+            print("rav1e AV1 encoder selected; see: https://github.com/xiph/rav1e")
+        elif not check_plugins(['videoparsersbad','rsrtp']):
+            print("You'll probably need to install gst-plugins-rs to use AV1 (av1parse, av1pay)")
+            print("ie: https://github.com/steveseguin/raspberry_ninja/blob/6873b97af02f720b9dc2e5c3ae2e9f02d486ba52/raspberry_pi/installer.sh#L347")
+            sys.exit()
+        else:
+            print("No AV1 encoder found")
+            sys.exit()
 
     if 'openh264' not in h264:
         h264 = "openh264"
@@ -1486,7 +1513,7 @@ async def main():
         if args.vp8:
             args.h264 = False
 
-        if args.aom:
+        if args.av1:
             args.h264 = False
            
         if args.hdmi:
@@ -1637,7 +1664,7 @@ async def main():
 
             elif args.libcamera:
                 needed += ['libcamera']
-                pipeline_video_input = f'libcamerasrc'
+                pipeline_video_input = f'libcamerasrc wbmode=1'
                 pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string)YUY2,framerate=(fraction){args.framerate}/1'
 #                pipeline_video_input += f' ! video/x-raw,width=(int)1280,height=(int)720,framerate=(fraction)30/1,format=(string)YUY2'
             elif args.v4l2:
@@ -1705,7 +1732,12 @@ async def main():
                     pipeline_video_input += f' ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! h264parse {saveVideo} ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
 
             elif args.aom: 
-                pipeline_video_input += f' ! videoconvert ! av1enc cpu-used=8 target-bitrate={args.bitrate}000 name="encoder" usage-profile=realtime ! av1parse ! rtpav1pay'
+                pipeline_video_input += f' ! videoconvert ! av1enc cpu-used=8 target-bitrate={args.bitrate} name="encoder" usage-profile=realtime qos=true ! av1parse ! rtpav1pay'
+            elif args.rav1e:
+                pipeline_video_input += f' ! videoconvert ! rav1enc bitrate={args.bitrate}000 name="encoder" low-latency=true error-resilient=true speed-preset=10 qos=true ! av1parse ! rtpav1pay'
+            elif args.qsv:
+                pipeline_video_input += f' ! videoconvert ! qsvav1enc gop-size=60 bitrate={args.bitrate} name="encoder1" ! av1parse ! rtpav1pay'
+
             else:
                 # VP8
                 if args.nvidia:
