@@ -282,6 +282,14 @@ gst-launch-1.0 videotestsrc ! av1enc usage-profile=realtime ! av1parse ! rtpav1p
 ```
 In this case, we're publishing direct to the browser, so it needs to be opened first, as we're using VDO.Ninja to do the WHIP playback without WHEP
 
+Just for fun, below is how you can pull WHEP feeds from VDO.Ninja into Gstreamer, bypassing the need for Raspberry.Ninja in some situations. 
+```
+# first, start publishing with VDO.Ninja using, to create a WHEP source: https://vdo.ninja/alpha/?whepout&push=XXXXXX123
+
+gst-launch-1.0 whepsrc whep-endpoint="https://whep.vdo.ninja/XXXXXX123" audio-caps="application/x-rtp,payload=111,encoding-name=opus,media=audio,clock-rate=48000" video-caps="application/x-rtp,payload=98,encoding-name=VP9,media=video,clock-rate=90000" ! rtpvp9depay ! vp9dec ! videoconvert ! fakesink
+```
+`whepsrc` can be used with Raspberry.Ninja of course also if you wanted to use Raspberry.Ninja as an SFU, for example.
+
 You can find many more WHIP/WHEP options within VDO.Ninja, and a great place to start playing is at [https://vdo.ninja/alpha/whip](https://vdo.ninja/alpha/whip). This page offers a web-based WHIP/WHEP player/publisher, as well as support for SVC, insertable streams, and all the advantages of VDO.Ninja in a simple to use web interface.
 
 As for Meshcast support, Meshcast is getting WHIP-ingest support; the availability of this update is just pending some more testing and deployment.
