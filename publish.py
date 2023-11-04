@@ -10,6 +10,7 @@ import time
 import gi
 import threading
 import socket
+import re
 try:
     import hashlib
     from urllib.parse import urlparse
@@ -116,6 +117,25 @@ def printout(message):
 def printwarn(message):
     printc(message,"FF0")
 
+def replace_ssrc_and_cleanup_sdp(sdp): ## fix for audio-only gstreamer -> chrome
+    def generate_ssrc():
+        return str(random.randint(0, 0xFFFFFFFF))
+
+    lines = sdp.split('\r\n')
+
+    in_audio_section = False
+    new_ssrc = generate_ssrc()
+
+    for i in range(len(lines)):
+        if lines[i].startswith('m=audio '):
+            in_audio_section = True
+        elif lines[i].startswith('m=') and not lines[i].startswith('m=audio '):
+            in_audio_section = False
+        if in_audio_section and lines[i].startswith('a=ssrc:'):
+            lines[i] = re.sub(r'a=ssrc:\d+', f'a=ssrc:{new_ssrc}', lines[i])
+    
+    return '\r\n'.join(lines)
+
 class WebRTCClient:
     def __init__(self, params):
 
@@ -146,6 +166,7 @@ class WebRTCClient:
         self.rotate = int(params.rotate)
         self.save_file = params.save
         self.noaudio = params.noaudio
+        self.novideo = params.novideo
         self.counter = 0
         self.shared_memory = False
         self.trigger_socket = False
@@ -259,14 +280,20 @@ class WebRTCClient:
             text = offer.sdp.as_text()
              ## fix for older gstreamer, since nack/fec seems to mess things up?  Not sure if this is breaking something else though.
             if ("96 96 96 96 96" in text):
+                printc("Patching SDP due to Gstreamer webRTC bug - none-unique line values","A6F")
                 text = text.replace(" 96 96 96 96 96", " 96 96 97 98 96")
                 text = text.replace("a=rtpmap:96 red/90000\r\n","a=rtpmap:97 red/90000\r\n")
                 text = text.replace("a=rtpmap:96 ulpfec/90000\r\n","a=rtpmap:98 ulpfec/90000\r\n")
                 text = text.replace("a=rtpmap:96 rtx/90000\r\na=fmtp:96 apt=96\r\n","")
             elif self.nored and (" 96 96" in text): ## fix for older gstreamer is using --nored
+                printc("Patching SDP due to Gstreamer webRTC bug - issue with nored","A6F")
                 text = text.replace(" 96 96", " 96 97")
                 text = text.replace("a=rtpmap:96 ulpfec/90000\r\n","a=rtpmap:97 ulpfec/90000\r\n")
                 text = text.replace("a=rtpmap:96 rtx/90000\r\na=fmtp:96 apt=96\r\n","")
+
+            if self.novideo and not self.noaudio: # impacts audio and video as well, but chrome / firefox seems to handle it
+                printc("Patching SDP due to Gstreamer webRTC bug - audio-only issue", "A6F") # just chrome doesn't handle this
+                text = replace_ssrc_and_cleanup_sdp(text)
 
             msg = {'description': {'type': 'offer', 'sdp': text}, 'UUID': client['UUID'], 'session': client['session'], 'streamID':self.stream_id+self.hashcode}
             self.sendMessage(msg)
@@ -1664,7 +1691,7 @@ async def main():
 
             elif args.libcamera:
                 needed += ['libcamera']
-                pipeline_video_input = f'libcamerasrc wbmode=1'
+                pipeline_video_input = f'libcamerasrc'
                 pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string)YUY2,framerate=(fraction){args.framerate}/1'
 #                pipeline_video_input += f' ! video/x-raw,width=(int)1280,height=(int)720,framerate=(fraction)30/1,format=(string)YUY2'
             elif args.v4l2:
