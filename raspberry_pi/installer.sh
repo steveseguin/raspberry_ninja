@@ -358,6 +358,8 @@ sudo cp ./tmp/lib/gstreamer-1.0/* /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0
 sudo cp ./tmp/lib/pkgconfig/* /usr/local/lib/aarch64-linux-gnu/pkgconfig
 sudo cp ./tmp/lib/gstreamer-1.0/* /usr/local/lib/gstreamer-1.0
 sudo cp ./tmp/lib/pkgconfig/* /usr/local/lib/pkgconfig
+# sudo cp ./tmp/lib/gstreamer-1.0/* /usr/lib/aarch64-linux-gnu/gstreamer-1.0 # orangepi
+# sudo cp ./tmp/lib/pkgconfig/* /usr/lib/aarch64-linux-gnu/pkgconfig # orangepi
 
 # modprobe bcm2835-codecfg
 
