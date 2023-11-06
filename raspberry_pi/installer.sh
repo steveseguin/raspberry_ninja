@@ -59,7 +59,7 @@ sudo apt-get install ccache curl bison flex \
 	libsidplay1-dev libx264-dev libusb-1.0 pulseaudio libpulse-dev \
 	libomxil-bellagio-dev libfreetype6-dev checkinstall fonts-freefont-ttf -y
 
-sudo apt-get install libcamera-dev
+sudo apt-get install libcamera-dev -y
 sudo apt-get install libatk1.0-dev -y
 sudo apt-get install -y libgdk-pixbuf2.0-dev
 sudo apt-get install libffi6 libffi-dev -y
