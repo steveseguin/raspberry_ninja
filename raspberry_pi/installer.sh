@@ -77,7 +77,7 @@ sudo apt-get install autotools-dev automake autoconf \
 	libv4l-dev libcairo2-dev libcaca-dev libspeex-dev \
 	libshout3-dev libaa1-dev libflac-dev libdv4-dev \
 	libtag1-dev libwavpack-dev libsoup2.4-dev \
-	libcdaudio-dev libdc1394-22-dev ladspa-sdk libass-dev \
+	libcdaudio-dev ladspa-sdk libass-dev \
 	libcurl4-gnutls-dev libdca-dev libdvdnav-dev \
 	libexempi-dev libexif-dev libgme-dev libgsm1-dev \
 	libiptcdata0-dev libkate-dev \
