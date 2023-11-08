@@ -459,6 +459,7 @@ class WebRTCClient:
                 if client['encoder'] and msg['bitrate']:
                     print("Trying to change bitrate...")
                     if self.aom:
+                        print("Aom doesn't support dynamic bitrates currently")
                         pass
                        # client['encoder'].set_property('target-bitrate', int(msg['bitrate'])*1000)
                     else:
@@ -561,7 +562,9 @@ class WebRTCClient:
             if (len(stats)>1):
                 stats = stats[1].split(",")[0]
                 print("Packet loss:"+stats)
-                if " vp8enc " in self.pipeline:
+                if " vp8enc " in self.pipeline: # doesn't support dynamic bitrates? not sure the property to use at least
+                    return
+                elif " av1enc " in self.pipeline: # seg-fault if I try to change it currently
                     return
                 stats = float(stats)
                 if (stats>0.01) and not self.noqos:
@@ -575,8 +578,7 @@ class WebRTCClient:
                     print(str(bitrate))
                     try:
                         if self.aom:
-                            pass
-                           # client['encoder'].set_property('target-bitrate', int(bitrate*1000))
+                            client['encoder'].set_property('target-bitrate', int(bitrate))  # line not active due to 'elif " av1enc " in self.pipeline:' line
                         elif client['encoder']:
                             client['encoder'].set_property('bitrate', int(bitrate*1000))
                         elif client['encoder1']:
@@ -598,8 +600,7 @@ class WebRTCClient:
                     print(str(bitrate))
                     try:
                         if self.aom:
-                            pass
-                           # client['encoder'].set_property('target-bitrate', int(bitrate*1000))
+                            client['encoder'].set_property('target-bitrate', int(bitrate))  # line not active due to 'elif " av1enc " in self.pipeline:' line
                         elif client['encoder']:
                             client['encoder'].set_property('bitrate', int(bitrate*1000))
                         elif client['encoder1']:
@@ -898,6 +899,7 @@ class WebRTCClient:
             client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
             try:
                 client['webrtc'].set_property('latency', self.buffer)
+                client['webrtc'].set_property('async-handling', True)
             except:
                 pass
             self.pipe.add(client['webrtc'])
@@ -919,6 +921,7 @@ class WebRTCClient:
             client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
             try:
                 client['webrtc'].set_property('latency', self.buffer)
+                client['webrtc'].set_property('async-handling', True)
             except:
                 pass
             self.pipe.add(client['webrtc'])
@@ -976,9 +979,12 @@ class WebRTCClient:
             if not self.streamin:
                 trans = client['webrtc'].emit("get-transceiver",0)
                 if trans is not None:
-                    if not self.nored:
-                        trans.set_property("fec-type", GstWebRTC.WebRTCFECType.ULP_RED)
-                        print("FEC ENABLED")
+                    try:
+                        if not self.nored:
+                            trans.set_property("fec-type", GstWebRTC.WebRTCFECType.ULP_RED)
+                            print("FEC ENABLED")
+                    except:
+                        pass
                     trans.set_property("do-nack", True)
                     print("SEND NACKS ENABLED")
 
@@ -1692,7 +1698,10 @@ async def main():
             elif args.libcamera:
                 needed += ['libcamera']
                 pipeline_video_input = f'libcamerasrc'
-                pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string)YUY2,framerate=(fraction){args.framerate}/1'
+                if args.aom:
+                    pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string)I420,framerate=(fraction){args.framerate}/1' # might not be compatible with all video sources, but its compatible with AOM. lower CPU usage this way
+                else:
+                    pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string)YUY2,framerate=(fraction){args.framerate}/1'
 #                pipeline_video_input += f' ! video/x-raw,width=(int)1280,height=(int)720,framerate=(fraction)30/1,format=(string)YUY2'
             elif args.v4l2:
                 needed += ['video4linux2']
@@ -1873,13 +1882,13 @@ async def main():
             pass
         elif not args.multiviewer:
             if Gst.version().minor >= 18:
-                PIPELINE_DESC = f'webrtcbin name=sendrecv latency={args.buffer} stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
-            else:
+                PIPELINE_DESC = f'webrtcbin name=sendrecv latency={args.buffer} async-handling=true do-latency=true  stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
+            else: ## oldvers v1.16 options  non-advanced options
                 PIPELINE_DESC = f'webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
-            print('gst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
+            printc('\ngst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'), "FFF")
         else:
             PIPELINE_DESC = f'{pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
-            print('Partial pipeline used: ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
+            printc('\ngst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'), "FFF")
             
         
         if not check_plugins(needed) or error:
@@ -1904,19 +1913,26 @@ async def main():
             watchURL += "?password="+args.password+"&"
     else:
         watchURL += "?password=false&"
+        
+    
+    
+    # reset_color = "\033[0m"
+    bold_color = hex_to_ansi("FAF")
     
     if args.streamin:
         if not args.room:
-            print(f"\nYou can publish a stream to capture at: {watchURL}push={args.streamin}{server}")
+            printc(f"\n-> You can publish a stream to capture at: {bold_color}{watchURL}push={args.streamin}{server}", "77F")
         else:
-            print(f"\nYou can publish a stream to capture at: {watchURL}push={args.streamin}{server}&room={args.room}")
+            printc(f"\n-> You can publish a stream to capture at: {bold_color}{watchURL}push={args.streamin}{server}&room={args.room}", "77F")
         print("\nAvailable options include --noaudio, --ndiout, --record and --server. See --help for more options.")
-    elif args.room:
-        print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default bitrate is 2500 (kbps)")
-        print(f"\nYou can view this stream at: {watchURL}view={args.streamid}&room={args.room}&scene{server}");
     else:
-        print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default bitrate is 2500 (kbps) ")
-        print(f"\nYou can view this stream at: {watchURL}view={args.streamid}{server}")
+        print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default video bitrate is 2500 (kbps)")
+        if not args.nored and not args.novideo:
+            print("Note: Redundant error correction is enabled (default). This will double the sending video bitrate, but handle packet loss better. Use --nored to disable this.")
+        if args.room:
+            printc(f"\n-> You can view this stream at: {bold_color}{watchURL}view={args.streamid}&room={args.room}&scene{server}\n", "77F")
+        else:
+            printc(f"\n-> You can view this stream at: {bold_color}{watchURL}view={args.streamid}{server}\n", "7FF")
 
     args.pipeline = PIPELINE_DESC
     c = WebRTCClient(args)
