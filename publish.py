@@ -578,7 +578,7 @@ class WebRTCClient:
                     print(str(bitrate))
                     try:
                         if self.aom:
-                            client['encoder'].set_property('target-bitrate', int(bitrate*1000))
+                            client['encoder'].set_property('target-bitrate', int(bitrate))  # line not active due to 'elif " av1enc " in self.pipeline:' line
                         elif client['encoder']:
                             client['encoder'].set_property('bitrate', int(bitrate*1000))
                         elif client['encoder1']:
@@ -600,7 +600,7 @@ class WebRTCClient:
                     print(str(bitrate))
                     try:
                         if self.aom:
-                            client['encoder'].set_property('target-bitrate', int(bitrate*1000))
+                            client['encoder'].set_property('target-bitrate', int(bitrate))  # line not active due to 'elif " av1enc " in self.pipeline:' line
                         elif client['encoder']:
                             client['encoder'].set_property('bitrate', int(bitrate*1000))
                         elif client['encoder1']:
@@ -979,9 +979,12 @@ class WebRTCClient:
             if not self.streamin:
                 trans = client['webrtc'].emit("get-transceiver",0)
                 if trans is not None:
-                    if not self.nored:
-                        trans.set_property("fec-type", GstWebRTC.WebRTCFECType.ULP_RED)
-                        print("FEC ENABLED")
+                    try:
+                        if not self.nored:
+                            trans.set_property("fec-type", GstWebRTC.WebRTCFECType.ULP_RED)
+                            print("FEC ENABLED")
+                    except:
+                        pass
                     trans.set_property("do-nack", True)
                     print("SEND NACKS ENABLED")
 
@@ -1765,7 +1768,7 @@ async def main():
                     pipeline_video_input += f' ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! h264parse {saveVideo} ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
 
             elif args.aom: 
-                pipeline_video_input += f' ! videoconvert ! av1enc  target-bitrate={args.bitrate} name="encoder" ! av1parse ! rtpav1pay'
+                pipeline_video_input += f' ! videoconvert ! av1enc cpu-used=8 target-bitrate={args.bitrate} name="encoder" usage-profile=realtime qos=true ! av1parse ! rtpav1pay'
             elif args.rav1e:
                 pipeline_video_input += f' ! videoconvert ! rav1enc bitrate={args.bitrate}000 name="encoder" low-latency=true error-resilient=true speed-preset=10 qos=true ! av1parse ! rtpav1pay'
             elif args.qsv:
@@ -1805,11 +1808,11 @@ async def main():
             if args.rtmp:
                pipeline_audio_input += f' ! queue ! audioconvert dithering=0 ! audio/x-raw,rate=48000,channel=1 ! fdkaacenc bitrate=65536 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
             elif args.zerolatency:
-               pipeline_audio_input += f' ! queue max-size-buffers=2 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=0 bitrate=16000 inband-fec=false audio-type=2051 frame-size=20 {saveAudio} ! rtpopuspay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
+               pipeline_audio_input += f' ! queue max-size-buffers=2 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=0 bitrate=16000 inband-fec=false audio-type=2051 frame-size=20 {saveAudio} ! rtpopuspay pt=100 ssrc=-1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
             elif args.vorbis:
-               pipeline_audio_input += f' ! queue max-size-buffers=3 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! vorbisenc bitrate={args.audiobitrate}000 {saveAudio} ! rtpvorbispay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=VORBIS,payload=100' 
+               pipeline_audio_input += f' ! queue max-size-buffers=3 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! vorbisenc bitrate={args.audiobitrate}000 {saveAudio} ! rtpvorbispay pt=100 ssrc=-1 ! application/x-rtp,media=audio,encoding-name=VORBIS,payload=100' 
             else:
-               pipeline_audio_input += f' ! queue ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=1 bitrate={args.audiobitrate}000 inband-fec=true {saveAudio} ! rtpopuspay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
+               pipeline_audio_input += f' ! queue ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=1 bitrate={args.audiobitrate}000 inband-fec=true {saveAudio} ! rtpopuspay pt=100 ssrc=-1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
 
             if args.multiviewer: # a 'tee' element may use more CPU or cause extra stuttering, so by default not enabled, but needed to support multiple viewers
                 pipeline_audio_input += ' ! tee name=audiotee '
@@ -1882,10 +1885,10 @@ async def main():
                 PIPELINE_DESC = f'webrtcbin name=sendrecv latency={args.buffer} async-handling=true do-latency=true  stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
             else: ## oldvers v1.16 options  non-advanced options
                 PIPELINE_DESC = f'webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
-            print('gst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
+            printc('\ngst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'), "FFF")
         else:
             PIPELINE_DESC = f'{pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
-            print('Partial pipeline used: ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
+            printc('\ngst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'), "FFF")
             
         
         if not check_plugins(needed) or error:
@@ -1910,19 +1913,26 @@ async def main():
             watchURL += "?password="+args.password+"&"
     else:
         watchURL += "?password=false&"
+        
+    
+    
+    # reset_color = "\033[0m"
+    bold_color = hex_to_ansi("FAF")
     
     if args.streamin:
         if not args.room:
-            print(f"\nYou can publish a stream to capture at: {watchURL}push={args.streamin}{server}")
+            printc(f"\n-> You can publish a stream to capture at: {bold_color}{watchURL}push={args.streamin}{server}", "77F")
         else:
-            print(f"\nYou can publish a stream to capture at: {watchURL}push={args.streamin}{server}&room={args.room}")
+            printc(f"\n-> You can publish a stream to capture at: {bold_color}{watchURL}push={args.streamin}{server}&room={args.room}", "77F")
         print("\nAvailable options include --noaudio, --ndiout, --record and --server. See --help for more options.")
-    elif args.room:
-        print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default bitrate is 2500 (kbps)")
-        print(f"\nYou can view this stream at: {watchURL}view={args.streamid}&room={args.room}&scene{server}");
     else:
-        print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default bitrate is 2500 (kbps) ")
-        print(f"\nYou can view this stream at: {watchURL}view={args.streamid}{server}")
+        print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default video bitrate is 2500 (kbps)")
+        if not args.nored and not args.novideo:
+            print("Note: Redundant error correction is enabled (default). This will double the sending video bitrate, but handle packet loss better. Use --nored to disable this.")
+        if args.room:
+            printc(f"\n-> You can view this stream at: {bold_color}{watchURL}view={args.streamid}&room={args.room}&scene{server}\n", "77F")
+        else:
+            printc(f"\n-> You can view this stream at: {bold_color}{watchURL}view={args.streamid}{server}\n", "7FF")
 
     args.pipeline = PIPELINE_DESC
     c = WebRTCClient(args)
