@@ -461,7 +461,7 @@ class WebRTCClient:
                     if self.aom:
                         print("Aom doesn't support dynamic bitrates currently")
                         pass
-                       # client['encoder'].set_property('target-bitrate', int(msg['bitrate'])*1000)
+                       # client['encoder'].set_property('target-bitrate', int(msg['bitrate']))
                     else:
                         client['encoder'].set_property('bitrate', int(msg['bitrate'])*1000)
             else:
