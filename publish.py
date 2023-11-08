@@ -1912,10 +1912,10 @@ async def main():
             print(f"\nYou can publish a stream to capture at: {watchURL}push={args.streamin}{server}&room={args.room}")
         print("\nAvailable options include --noaudio, --ndiout, --record and --server. See --help for more options.")
     elif args.room:
-        print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default bitrate is 4000 (kbps)")
+        print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default bitrate is 2500 (kbps)")
         print(f"\nYou can view this stream at: {watchURL}view={args.streamid}&room={args.room}&scene{server}");
     else:
-        print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default bitrate is 4000 (kbps) ")
+        print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default bitrate is 2500 (kbps) ")
         print(f"\nYou can view this stream at: {watchURL}view={args.streamid}{server}")
 
     args.pipeline = PIPELINE_DESC
