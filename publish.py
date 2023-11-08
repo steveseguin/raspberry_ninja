@@ -459,6 +459,7 @@ class WebRTCClient:
                 if client['encoder'] and msg['bitrate']:
                     print("Trying to change bitrate...")
                     if self.aom:
+                        print("Aom doesn't support dynamic bitrates currently")
                         pass
                        # client['encoder'].set_property('target-bitrate', int(msg['bitrate'])*1000)
                     else:
@@ -561,7 +562,9 @@ class WebRTCClient:
             if (len(stats)>1):
                 stats = stats[1].split(",")[0]
                 print("Packet loss:"+stats)
-                if " vp8enc " in self.pipeline:
+                if " vp8enc " in self.pipeline: # doesn't support dynamic bitrates? not sure the property to use at least
+                    return
+                elif " av1enc " in self.pipeline: # seg-fault if I try to change it currently
                     return
                 stats = float(stats)
                 if (stats>0.01) and not self.noqos:
@@ -575,8 +578,7 @@ class WebRTCClient:
                     print(str(bitrate))
                     try:
                         if self.aom:
-                            pass
-                           # client['encoder'].set_property('target-bitrate', int(bitrate*1000))
+                            client['encoder'].set_property('target-bitrate', int(bitrate*1000))
                         elif client['encoder']:
                             client['encoder'].set_property('bitrate', int(bitrate*1000))
                         elif client['encoder1']:
@@ -598,8 +600,7 @@ class WebRTCClient:
                     print(str(bitrate))
                     try:
                         if self.aom:
-                            pass
-                           # client['encoder'].set_property('target-bitrate', int(bitrate*1000))
+                            client['encoder'].set_property('target-bitrate', int(bitrate*1000))
                         elif client['encoder']:
                             client['encoder'].set_property('bitrate', int(bitrate*1000))
                         elif client['encoder1']:
@@ -898,6 +899,7 @@ class WebRTCClient:
             client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
             try:
                 client['webrtc'].set_property('latency', self.buffer)
+                client['webrtc'].set_property('async-handling', True)
             except:
                 pass
             self.pipe.add(client['webrtc'])
@@ -919,6 +921,7 @@ class WebRTCClient:
             client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
             try:
                 client['webrtc'].set_property('latency', self.buffer)
+                client['webrtc'].set_property('async-handling', True)
             except:
                 pass
             self.pipe.add(client['webrtc'])
@@ -1692,7 +1695,10 @@ async def main():
             elif args.libcamera:
                 needed += ['libcamera']
                 pipeline_video_input = f'libcamerasrc'
-                pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string)YUY2,framerate=(fraction){args.framerate}/1'
+                if args.aom:
+                    pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string)I420,framerate=(fraction){args.framerate}/1' # might not be compatible with all video sources, but its compatible with AOM. lower CPU usage this way
+                else:
+                    pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string)YUY2,framerate=(fraction){args.framerate}/1'
 #                pipeline_video_input += f' ! video/x-raw,width=(int)1280,height=(int)720,framerate=(fraction)30/1,format=(string)YUY2'
             elif args.v4l2:
                 needed += ['video4linux2']
@@ -1759,7 +1765,7 @@ async def main():
                     pipeline_video_input += f' ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! h264parse {saveVideo} ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
 
             elif args.aom: 
-                pipeline_video_input += f' ! videoconvert ! av1enc cpu-used=8 target-bitrate={args.bitrate} name="encoder" usage-profile=realtime qos=true ! av1parse ! rtpav1pay'
+                pipeline_video_input += f' ! videoconvert ! av1enc  target-bitrate={args.bitrate} name="encoder" ! av1parse ! rtpav1pay'
             elif args.rav1e:
                 pipeline_video_input += f' ! videoconvert ! rav1enc bitrate={args.bitrate}000 name="encoder" low-latency=true error-resilient=true speed-preset=10 qos=true ! av1parse ! rtpav1pay'
             elif args.qsv:
@@ -1799,11 +1805,11 @@ async def main():
             if args.rtmp:
                pipeline_audio_input += f' ! queue ! audioconvert dithering=0 ! audio/x-raw,rate=48000,channel=1 ! fdkaacenc bitrate=65536 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
             elif args.zerolatency:
-               pipeline_audio_input += f' ! queue max-size-buffers=2 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=0 bitrate=16000 inband-fec=false audio-type=2051 frame-size=20 {saveAudio} ! rtpopuspay pt=100 ssrc=-1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
+               pipeline_audio_input += f' ! queue max-size-buffers=2 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=0 bitrate=16000 inband-fec=false audio-type=2051 frame-size=20 {saveAudio} ! rtpopuspay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
             elif args.vorbis:
-               pipeline_audio_input += f' ! queue max-size-buffers=3 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! vorbisenc bitrate={args.audiobitrate}000 {saveAudio} ! rtpvorbispay pt=100 ssrc=-1 ! application/x-rtp,media=audio,encoding-name=VORBIS,payload=100' 
+               pipeline_audio_input += f' ! queue max-size-buffers=3 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! vorbisenc bitrate={args.audiobitrate}000 {saveAudio} ! rtpvorbispay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=VORBIS,payload=100' 
             else:
-               pipeline_audio_input += f' ! queue ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=1 bitrate={args.audiobitrate}000 inband-fec=true {saveAudio} ! rtpopuspay pt=100 ssrc=-1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
+               pipeline_audio_input += f' ! queue ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=1 bitrate={args.audiobitrate}000 inband-fec=true {saveAudio} ! rtpopuspay pt=100 ssrc=1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
 
             if args.multiviewer: # a 'tee' element may use more CPU or cause extra stuttering, so by default not enabled, but needed to support multiple viewers
                 pipeline_audio_input += ' ! tee name=audiotee '
@@ -1873,8 +1879,8 @@ async def main():
             pass
         elif not args.multiviewer:
             if Gst.version().minor >= 18:
-                PIPELINE_DESC = f'webrtcbin name=sendrecv latency={args.buffer} stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
-            else:
+                PIPELINE_DESC = f'webrtcbin name=sendrecv latency={args.buffer} async-handling=true do-latency=true  stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
+            else: ## oldvers v1.16 options  non-advanced options
                 PIPELINE_DESC = f'webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
             print('gst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
         else:
