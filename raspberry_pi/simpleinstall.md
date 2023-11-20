@@ -10,6 +10,9 @@ Run command to update the board, be sure that python3 and pip are installed
 
 ``sudo apt update && sudo apt upgrade -y``
 
+If running a Debian 12-based system, including new Raspberry OS systems, you'll either want to deploy things as a virtual environment, or disable the flag that prevents self-managing depedencies. You can skip this step if you don't have issues otherwise though.
+``sudo rm /usr/lib/python3.11/EXTERNALLY-MANAGED``
+
 ``sudo apt install python3-pip``
 
 #### Installing from scratch
