@@ -72,7 +72,8 @@ The basic install script for Ubuntu-like systems is as below:
 ```
 sudo apt-get update && sudo apt upgrade -y
 
-sudo rm /usr/lib/python3.11/EXTERNALLY-MANAGED # You may need to use a virtual environment with Debian 12-based system, including new Raspberry OS systems, or just delete this flag.
+ # Use a virtual environment or delete the following file if having issues
+sudo rm /usr/lib/python3.11/EXTERNALLY-MANAGED ## For Debian 12-based systems
 
 sudo apt-get install python3-pip -y
 
