@@ -71,11 +71,9 @@ Many modern versions of Linux distributions, such as Ubuntu 22, support Raspberr
 The basic install script for Ubuntu-like systems is as below:
 ```
 sudo apt-get update && sudo apt upgrade -y
-```
-Update: If running a Debian 12-based system, including new Raspberry OS systems, you'll either want to deploy things as a virtual environment, or disable the new system flag that prevents self-managing dependencies. You can skip this step if you don't have issues otherwise though.
-```sudo rm /usr/lib/python3.11/EXTERNALLY-MANAGED```
-and continuing..
-```
+
+sudo rm /usr/lib/python3.11/EXTERNALLY-MANAGED # You may need to use a virtual environment with Debian 12-based system, including new Raspberry OS systems, or just delete this flag.
+
 sudo apt-get install python3-pip -y
 
 sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools gstreamer1.0-x python3-pyqt5 python3-opengl gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-qt5 gstreamer1.0-gtk3 gstreamer1.0-pulseaudio gstreamer1.0-nice gstreamer1.0-plugins-base-apps
