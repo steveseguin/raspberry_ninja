@@ -11,7 +11,7 @@ The simple installer will work on existing RPI OS systems, without needing to co
 
 Gstreamer v1.18 is likely to be what Raspberry Pi OS will come with when using the simple installer, which is OK, but does miss out on some advanced features found in Gstreamer 1.22. I'd avoid older versions of Gstreamer if at all posssible though, found on legacy versions of Raspberry Pi OS / Raspbian. 
 
-That all said, the simple installer [can be found here.](https://github.com/steveseguin/raspberry_ninja/blob/main/raspberry_pi/simpleinstall.md)
+The simple installer [can be found here.](https://github.com/steveseguin/raspberry_ninja/blob/main/raspberry_pi/simpleinstall.md)
 
 ### Installing from the provided image
 
@@ -25,7 +25,7 @@ Username: vdo
 Password: ninja
 ```
 
-To install, write the image to a SD / microSD card (or compatible USB 3.0 drive if using a RPI 4/5). At least 16GB is needed for the image.
+To install, write the image to a SD / microSD card (or compatible USB 3.0 drive if using a RPI 4/5). At least 16GB is needed for the image and it's recommended that the drive be fast. One user reported they had reduced frame loss when switching from a slow uSD card to a USB 3.0 SSD.
 
 On Windows, you can use Win32DiskImager (https://sourceforge.net/projects/win32diskimager/) to write this image to a disk.  If you need to format your SD card first, you can use the SD Card Formatter (https://www.sdcard.org/downloads/formatter/).
 
