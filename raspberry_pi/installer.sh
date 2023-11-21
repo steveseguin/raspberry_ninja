@@ -367,4 +367,7 @@ sudo cp ./tmp/lib/pkgconfig/* /usr/local/lib/pkgconfig
 
 systemctl --user restart pulseaudio.socket
 
+## Turn off the swap file, to avoid issues caused by slow sd caching?
+sudo dphys-swapfile swapoff
+
 ## If things still don't work, run it all again, a section at a time, making sure it all passes
