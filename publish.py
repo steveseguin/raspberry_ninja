@@ -1804,13 +1804,13 @@ async def main():
                 needed += ['pulseaudio']
                 pipeline_audio_input += f'pulsesrc device={args.pulse}'
                 if args.stereo:
-                     pipeline_audio_input += ' channels=2'
+                     pipeline_audio_input += ' ! audio/x-raw,channels=2'
 
             else:
                 needed += ['alsa']
                 pipeline_audio_input += f'alsasrc device={args.alsa} use-driver-timestamps=TRUE'
                 if args.stereo:
-                     pipeline_audio_input += ' channels=2'
+                     pipeline_audio_input += ' ! audio/x-raw,channels=2'
 
             if args.rtmp:
                pipeline_audio_input += f' ! queue ! audioconvert dithering=0 ! audio/x-raw,rate=48000,channel=1 ! fdkaacenc bitrate=65536 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
