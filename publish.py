@@ -1311,6 +1311,7 @@ async def main():
     parser.add_argument('--nvidiacsi', action='store_true', help='Sets the input to the nvidia csi port.')
     parser.add_argument('--alsa', type=str, default=None, help='Use alsa audio input.')
     parser.add_argument('--pulse', type=str, help='Use pulse audio (or pipewire) input.')
+    parser.add_argument('--stereo', action='store_true', help='Enable stereo audio')
     parser.add_argument('--zerolatency', action='store_true', help='A mode designed for the lowest audio output latency')
     parser.add_argument('--raw', action='store_true', help='Opens the V4L2 device with raw capabilities.')
     parser.add_argument('--bt601', action='store_true', help='Use colormetery bt601 mode; enables raw mode also')
@@ -1794,16 +1795,22 @@ async def main():
                 pipeline_audio_input += 'ts. ! queue ! decodebin'
             elif args.test:
                 needed += ['audiotestsrc']
-                pipeline_audio_input += 'audiotestsrc is-live=true wave=red-noise'
+                if args.stereo:
+                    pipeline_audio_input = 'audiotestsrc is-live=true wave=sine ! audioconvert ! audio/x-raw,channels=1,channel-mask=(bitmask)0x1 ! queue ! interleave. audiotestsrc is-live=true wave=saw ! audioconvert ! volume volume=0.5 ! audio/x-raw,channels=1,channel-mask=(bitmask)0x2 ! queue ! interleave. interleave name=interleave ! audioconvert ! audio/x-raw,channels=2,layout=interleaved ! queue ! audioresample quality=0 resample-method=0'
+                else:
+                    pipeline_audio_input = 'audiotestsrc is-live=true wave=red-noise'
 
             elif args.pulse:
                 needed += ['pulseaudio']
                 pipeline_audio_input += f'pulsesrc device={args.pulse}'
+                if args.stereo:
+                     pipeline_audio_input += ' channels=2'
 
             else:
                 needed += ['alsa']
                 pipeline_audio_input += f'alsasrc device={args.alsa} use-driver-timestamps=TRUE'
-               
+                if args.stereo:
+                     pipeline_audio_input += ' channels=2'
 
             if args.rtmp:
                pipeline_audio_input += f' ! queue ! audioconvert dithering=0 ! audio/x-raw,rate=48000,channel=1 ! fdkaacenc bitrate=65536 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
@@ -1914,7 +1921,8 @@ async def main():
     else:
         watchURL += "?password=false&"
         
-    
+    if args.stereo:
+        watchURL += "s=6&" # &stereo in/out without poking bitrate I think, but not liek that matters.
     
     # reset_color = "\033[0m"
     bold_color = hex_to_ansi("FAF")
