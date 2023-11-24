@@ -1769,7 +1769,7 @@ async def main():
                     pipeline_video_input += f' ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! h264parse {saveVideo} ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
 
             elif args.aom: 
-                pipeline_video_input += f' ! videoconvert ! av1enc cpu-used=8 target-bitrate={args.bitrate} name="encoder" usage-profile=realtime qos=true ! av1parse ! rtpav1pay'
+                pipeline_video_input += f' ! videoconvert ! av1enc cpu-used=7 target-bitrate={args.bitrate} name="encoder" usage-profile=realtime qos=true ! av1parse ! rtpav1pay'
             elif args.rav1e:
                 pipeline_video_input += f' ! videoconvert ! rav1enc bitrate={args.bitrate}000 name="encoder" low-latency=true error-resilient=true speed-preset=10 qos=true ! av1parse ! rtpav1pay'
             elif args.qsv:
