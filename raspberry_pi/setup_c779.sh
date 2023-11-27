@@ -1,7 +1,12 @@
 ## This configures the C779 HDMI to CSI adapter for use.
 
-## First, Setup /boot/config.txt ; you will need to uncomment a line near the bottom. ie: dtoverlay=tc358743 or whatever your board/requirements need
-## Second, enable the camera module:
+## First, Setup /boot/config.txt ; you will need to uncomment or add a line near the bottom of the file and then save then file.
+# ie: dtoverlay=tc358743, dtoverlay=tc358743-audio, dtoverlay=tc358743,4lane=1 or whatever your board/requirements support
+## Second, ensure you have enough CMA memory
+dmesg | grep cma
+# If you have less than 96M, add some more
+## cma=96M can be added to /boot/cmdline.txt if needed (leave no blank last line)
+## Third, enable the camera module. More recently, you'll need to enable the legacy camera mode to continue.
 sudo raspi-config
 # -> `-'Interfacing Options' -> '[Legacy] Camera' -> enable and "Finish"
 ## REBOOT
