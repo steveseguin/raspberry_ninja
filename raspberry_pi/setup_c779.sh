@@ -3,11 +3,21 @@
 
 ## First, Setup /boot/config.txt ; you will need to uncomment or add a line near the bottom of the file and then save then file.
 # ie: dtoverlay=tc358743, dtoverlay=tc358743-audio, dtoverlay=tc358743,4lane=1 or whatever your board/requirements support
-# You may also need "dtoverlay=vc4-kms-v3d" added, in place of whate is already there, or if nothing is there at all
-## Second, ensure you have enough CMA memory
+# You may also need "dtoverlay=vc4-kms-v3d" or "dtoverlay=vc4-fkms-v3d" added also. 
+########## For reference, my own RPi4 2023 config.txt for the C779 looks like:
+##     arm_64bit=1
+##     disable_overscan=1
+##     [all]
+##     dtoverlay=vc4-fkms-v3d
+##     max_framebuffers=2
+##     dtoverlay=tc358743
+####################
+
+## Second, ensure you have enough CMA memory; this probabably isn't an issue, but still...
 dmesg | grep cma
 # If you have less than 96M, add some more
 ## cma=96M can be added to /boot/cmdline.txt if needed (leave no blank last line)
+
 ## Third, enable the camera module. More recently, you'll need to enable the legacy camera mode to continue.
 sudo raspi-config
 # -> `-'Interfacing Options' -> '[Legacy] Camera' -> enable and "Finish"
@@ -15,8 +25,9 @@ sudo raspi-config
 ## REBOOT
 sudo reboot
 
+## you can make your own EDID file; 1080P25 / 1080P30 and even in some cases 1080P60 are possible
 wget https://raw.githubusercontent.com/steveseguin/CSI2_device_config/master/1080P50EDID.txt
-v4l2-ctl --set-edid=file=1080P50EDID.txt
+v4l2-ctl --set-edid=file=1080P50EDID.txt # load it
 ## If you get an error at this step, check the community forum here: https://forums.raspberrypi.com//viewtopic.php?f=38&t=281972
 # https://raw.githubusercontent.com/steveseguin/CSI2_device_config/master/1080P60EDID.txt
 # v4l2-ctl --set-edid=file=1080P60EDID.txt ## Only if using a RPi Compute Module, since a basic rpi lacks enough data lanes
