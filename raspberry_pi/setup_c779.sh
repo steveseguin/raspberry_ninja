@@ -9,6 +9,7 @@ dmesg | grep cma
 ## Third, enable the camera module. More recently, you'll need to enable the legacy camera mode to continue.
 sudo raspi-config
 # -> `-'Interfacing Options' -> '[Legacy] Camera' -> enable and "Finish"
+## Fourth, unplug any HDMI input from the board; we will plug an HDMI source in later
 ## REBOOT
 sudo reboot
 
