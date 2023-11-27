@@ -167,6 +167,11 @@ Things should now auto-boot on system boot, and restart if things crash.
 
 note: If using an Nvidia Jetson, please see its folder on github here for its service file.
 
+## a proper Power Supply is very important
+
+Raspberry Pi devices do not run on the normal 5.0V, like what a cell phone charger puts out. They are designed to run on 5.1V, with the Raspberry Pi 5 actually using even higher voltages.
+
+Many instability issues can be resolved by using an official Raspberry Pi power adapter, which output 5.1V and have rather thick cables to ensure enough power delivery. 
 
 ## Details about cameras and performance
 
