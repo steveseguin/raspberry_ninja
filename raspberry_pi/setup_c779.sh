@@ -3,6 +3,7 @@
 
 ## First, Setup /boot/config.txt ; you will need to uncomment or add a line near the bottom of the file and then save then file.
 # ie: dtoverlay=tc358743, dtoverlay=tc358743-audio, dtoverlay=tc358743,4lane=1 or whatever your board/requirements support
+# You may also need "dtoverlay=vc4-kms-v3d" added, in place of whate is already there, or if nothing is there at all
 ## Second, ensure you have enough CMA memory
 dmesg | grep cma
 # If you have less than 96M, add some more
