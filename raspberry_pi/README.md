@@ -177,6 +177,12 @@ There are some non-supported cameras that use the CSI port, like the Arducam Son
 Lastly, unless using the RPi Compute Module, any HDMI to CSI adapter for the RPi will be limited to 25-fps.  With a 4-lane camera and the compute module, you might be able to do 1080p30 with HDMI to SCI adapters.  HDMI to CSI adapters do not include audio, unless you route the audio from the adapter to the I2S pins, which may require some tinkering to setup.
 
 
+## Legacy camera support
+
+If you want to use v4l2src and all the legacy camera options with your updated Rasbperry Pi OS, you can enable it via `sudo raspi-config` -> interfacing options -> enable Legacy camera mode.
+
+Things like the HDMI to CSI adapter probably won't work without the legacy mode enabled. Things are moving to libcamera it seems, but it's leaving behind quite a lot also, so if libcamera isn't working for, the past isn't such a bad place.
+
 ## Optimizing the Pi to reduce packet loss
 
 Before: ![image](https://user-images.githubusercontent.com/2575698/146271521-ed9f8742-d584-4214-938c-687388b658bf.png)
