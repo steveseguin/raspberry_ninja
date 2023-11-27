@@ -461,7 +461,7 @@ class WebRTCClient:
                     if self.aom:
                         print("Aom doesn't support dynamic bitrates currently")
                         pass
-                       # client['encoder'].set_property('target-bitrate', int(msg['bitrate']))
+                       # client['encoder'].set_property('target-bitrate', int(msg['bitrate'])*1000)
                     else:
                         client['encoder'].set_property('bitrate', int(msg['bitrate'])*1000)
             else:
@@ -1282,6 +1282,27 @@ def on_message(bus: Gst.Bus, message: Gst.Message, loop):
 
     return True
 
+def supports_resolution_and_format(device, width, height, framerate=None):
+    supported_formats = []
+    if framerate is not None:
+        framerate = str(framerate)+"/1"
+
+    if device and device.get_caps():
+        for structure in device.get_caps().to_string().split(';'):
+            if 'video/x-raw' in structure and 'width=(int)' + str(width) in structure and 'height=(int)' + str(height) in structure:
+                if framerate and 'framerate=' in structure:
+                    if framerate in structure:
+                        format_type = structure.split('format=(string)')[1].split(',')[0]  # Extract the format
+                        supported_formats.append(format_type)
+                else:
+                    format_type = structure.split('format=(string)')[1].split(',')[0]  # Extract the format
+                    supported_formats.append(format_type)
+            elif 'jpeg' in structure:
+                 supported_formats.append('JPEG')
+            elif '264' in structure:
+                 supported_formats.append('H264')
+    priority_order = ['JPEG', 'I420', 'YVYU','YUY2','NV12', 'NV21', 'UYVY', 'RGB', 'BGR', 'BGRx', 'RGBx']
+    return sorted(supported_formats, key=lambda x: priority_order.index(x) if x in priority_order else len(priority_order))
 
 WSS="wss://wss.vdo.ninja:443"
 
@@ -1307,11 +1328,11 @@ async def main():
     parser.add_argument('--v4l2', type=str, default=None, help='Sets the V4L2 input device.')
     parser.add_argument('--libcamera', action='store_true',  help='Use libcamera as the input source')
     parser.add_argument('--rpicam', action='store_true', help='Sets the RaspberryPi CSI input device. If this fails, try --rpi --raw or just --raw instead.')
+    parser.add_argument('--format', type=str, default=None, help='The capture format type: YUYV, I420, BGR, or even JPEG/H264')
     parser.add_argument('--rotate', type=int, default=0, help='Rotates the camera in degrees; 0 (default), 90, 180, 270 are possible values.')
     parser.add_argument('--nvidiacsi', action='store_true', help='Sets the input to the nvidia csi port.')
     parser.add_argument('--alsa', type=str, default=None, help='Use alsa audio input.')
     parser.add_argument('--pulse', type=str, help='Use pulse audio (or pipewire) input.')
-    parser.add_argument('--stereo', action='store_true', help='Enable stereo audio')
     parser.add_argument('--zerolatency', action='store_true', help='A mode designed for the lowest audio output latency')
     parser.add_argument('--raw', action='store_true', help='Opens the V4L2 device with raw capabilities.')
     parser.add_argument('--bt601', action='store_true', help='Use colormetery bt601 mode; enables raw mode also')
@@ -1348,6 +1369,9 @@ async def main():
     parser.add_argument('--buffer',  type=int, default=200, help='The jitter buffer latency in milliseconds; default is 200ms. (gst +v1.18)')
     parser.add_argument('--password', type=str, nargs='?', default=None, required=False, const='', help='Partial password support. If not used, passwords will be off. If a blank value is passed, it will use the default system password. If you pass a value, it will use that value for the pass. No added encryption support however. Works for publishing to vdo.ninja/alpha/ (v24) currently')
     parser.add_argument('--hostname', type=str, default='https://vdo.ninja/alpha/', help='Your URL for vdo.ninja, if self-hosting the website code')
+    parser.add_argument('--video-pipeline', type=str, default=None, help='Custom GStreamer video source pipeline')
+    parser.add_argument('--audio-pipeline', type=str, default=None, help='Custom GStreamer audio source pipeline')
+
 
     args = parser.parse_args()
     
@@ -1453,7 +1477,6 @@ async def main():
             args.noaudio = True
             print("\nNo microphone or audio source found; disabling audio.")
         else:
-            #args.noaudio = True
             print("\nDetected audio sources:")
             for i, d in enumerate(audiodevices):
                 print("  - ",audiodevices[i].get_display_name(), audiodevices[i].get_property("internal-name"), audiodevices[i].get_properties().get_value("alsa.card"), audiodevices[i].get_properties().get_value("is-default"))
@@ -1463,7 +1486,6 @@ async def main():
             for d in audiodevices:
                 props = d.get_properties()
                 for e in range(int(props.n_fields())):
-#                    print(props.nth_field_name(e),"=",props.get_value(props.nth_field_name(e)))
                     if (props.nth_field_name(e) == "device.api" and props.get_value(props.nth_field_name(e)) == "alsa"):
                         default = d
                         break
@@ -1474,8 +1496,6 @@ async def main():
             if not default:
                 args.noaudio = True
                 print("\nNo audio source selected; disabling audio.")
-                #print("======================")
-#        sys.exit()
         print()
 
     if args.rpicam:
@@ -1519,7 +1539,10 @@ async def main():
 
     elif not args.v4l2:
         args.v4l2 = '/dev/video0'
-    
+   
+    if args.format:
+        args.format = args.format.upper()
+
     if args.pipeline is not None:
         PIPELINE_DESC = args.pipeline
         print('We assume you have tested your custom pipeline with: gst-launch-1.0 ' + args.pipeline.replace('(', '\\(').replace('(', '\\)'))
@@ -1628,6 +1651,8 @@ async def main():
             # THE VIDEO INPUT
             if args.streamin:
                 pass
+            elif args.video_pipeline:
+                pipeline_video_input = args.video_pipeline
             elif args.test:
                 needed += ['videotestsrc']
                 pipeline_video_input = 'videotestsrc'
@@ -1697,13 +1722,52 @@ async def main():
                 pipeline_video_input = f'nvarguscamerasrc ! video/x-raw(memory:NVMM),width=(int){args.width},height=(int){args.height},format=(string)NV12,framerate=(fraction){args.framerate}/1'
 
             elif args.libcamera:
-                needed += ['libcamera']
-                pipeline_video_input = f'libcamerasrc'
-                if args.aom:
-                    pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string)I420,framerate=(fraction){args.framerate}/1' # might not be compatible with all video sources, but its compatible with AOM. lower CPU usage this way
-                else:
-                    pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string)YUY2,framerate=(fraction){args.framerate}/1'
-#                pipeline_video_input += f' ! video/x-raw,width=(int)1280,height=(int)720,framerate=(fraction)30/1,format=(string)YUY2'
+
+                print("Detecting video devices")
+                video_monitor = Gst.DeviceMonitor.new()
+                video_monitor.add_filter("Video/Source", None)
+                videodevices = video_monitor.get_devices()
+                print("devices", videodevices)
+
+                if len(videodevices) > 0:
+                    print("\nDetected video sources:")
+                    for device in videodevices:
+                        print("Device Name:", device.get_display_name())
+                    if args.format is None:
+                        formats = supports_resolution_and_format(videodevices[0], args.width, args.height, args.framerate)
+                        print(formats)
+                        if len(formats):
+                            args.format = formats[0]
+                        elif args.aom:
+                            args.format = "I420"
+                        else:
+                            args.format = "UYVY"
+
+                    print(f"\n >> Default video device selected : {videodevices[0]} /w  {args.format}")
+
+                    needed += ['libcamera']
+                    pipeline_video_input = f'libcamerasrc'
+
+                    if args.format == "JPEG":
+                        pipeline_video_input += f' ! image/jpeg,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
+                        if args.nvidia:
+                            pipeline_video_input += ' ! jpegparse ! nvjpegdec ! video/x-raw'
+                        elif args.rpi:
+                            pipeline_video_input += ' ! jpegparse ! v4l2jpegdec '
+                        else:
+                            pipeline_video_input += ' ! jpegdec'
+
+                    elif args.format == "H264": # Not going to try to support this right now
+                        print("Not support h264 at the moment as an input")
+                        pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string)YUY2,framerate=(fraction){args.framerate}/1'
+
+                    else:                        
+                        pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string){args.format},framerate=(fraction){args.framerate}/1'
+
+                elif len(videodevices) == 0:
+                    args.novideo = True
+                    print("\nNo camera or video source found; disabling video.")
+
             elif args.v4l2:
                 needed += ['video4linux2']
                 pipeline_video_input = f'v4l2src device={args.v4l2} io-mode=2 do-timestamp=true'
@@ -1752,6 +1816,9 @@ async def main():
                         pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! queue max-size-buffers=10 ! x264enc  name="encoder1" bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
                     elif args.openh264:
                         pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! queue max-size-buffers=10 ! openh264enc  name="encoder" bitrate={args.bitrate}000 complexity=0 ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
+
+                    elif args.format in ["I420", "YV12", "NV12" "NV21", "RGB16", "RGB", "BGR", "RGBA", "BGRx", "BGRA", "YUY2", "YVYU", "UYVY"]:
+                        pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4'
                     else:
                         pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw,format=I420 ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4' ## v4l2h264enc only supports 30fps max @ 1080p on most rpis, and there might be a spike or skipped frame causing the encode to fail; videorating it seems to fix it though
 
@@ -1769,7 +1836,7 @@ async def main():
                     pipeline_video_input += f' ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! h264parse {saveVideo} ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
 
             elif args.aom: 
-                pipeline_video_input += f' ! videoconvert ! av1enc cpu-used=7 target-bitrate={args.bitrate} name="encoder" usage-profile=realtime qos=true ! av1parse ! rtpav1pay'
+                pipeline_video_input += f' ! videoconvert ! av1enc cpu-used=8 target-bitrate={args.bitrate} name="encoder" usage-profile=realtime qos=true ! av1parse ! rtpav1pay'
             elif args.rav1e:
                 pipeline_video_input += f' ! videoconvert ! rav1enc bitrate={args.bitrate}000 name="encoder" low-latency=true error-resilient=true speed-preset=10 qos=true ! av1parse ! rtpav1pay'
             elif args.qsv:
@@ -1791,26 +1858,22 @@ async def main():
                 pipeline_video_input += ' ! queue ! sendrecv. '
 
         if not args.noaudio:
-            if args.pipein:
+            if args.audio_pipeline:
+                pipeline_audio_input = args.audio_pipeline
+            elif args.pipein:
                 pipeline_audio_input += 'ts. ! queue ! decodebin'
             elif args.test:
                 needed += ['audiotestsrc']
-                if args.stereo:
-                    pipeline_audio_input = 'audiotestsrc is-live=true wave=sine ! audioconvert ! audio/x-raw,channels=1,channel-mask=(bitmask)0x1 ! queue ! interleave. audiotestsrc is-live=true wave=saw ! audioconvert ! volume volume=0.5 ! audio/x-raw,channels=1,channel-mask=(bitmask)0x2 ! queue ! interleave. interleave name=interleave ! audioconvert ! audio/x-raw,channels=2,layout=interleaved ! queue ! audioresample quality=0 resample-method=0'
-                else:
-                    pipeline_audio_input = 'audiotestsrc is-live=true wave=red-noise'
+                pipeline_audio_input += 'audiotestsrc is-live=true wave=red-noise'
 
             elif args.pulse:
                 needed += ['pulseaudio']
                 pipeline_audio_input += f'pulsesrc device={args.pulse}'
-                if args.stereo:
-                     pipeline_audio_input += ' ! audio/x-raw,channels=2'
 
             else:
                 needed += ['alsa']
                 pipeline_audio_input += f'alsasrc device={args.alsa} use-driver-timestamps=TRUE'
-                if args.stereo:
-                     pipeline_audio_input += ' ! audio/x-raw,channels=2'
+               
 
             if args.rtmp:
                pipeline_audio_input += f' ! queue ! audioconvert dithering=0 ! audio/x-raw,rate=48000,channel=1 ! fdkaacenc bitrate=65536 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
@@ -1921,8 +1984,7 @@ async def main():
     else:
         watchURL += "?password=false&"
         
-    if args.stereo:
-        watchURL += "s=6&" # &stereo in/out without poking bitrate I think, but not liek that matters.
+    
     
     # reset_color = "\033[0m"
     bold_color = hex_to_ansi("FAF")
