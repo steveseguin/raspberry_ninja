@@ -1,4 +1,5 @@
 ## This configures the C779 HDMI to CSI adapter for use.
+## You can also find a guide with your board's manufacture, such as https://wiki.geekworm.com/C779-Software
 
 ## First, Setup /boot/config.txt ; you will need to uncomment or add a line near the bottom of the file and then save then file.
 # ie: dtoverlay=tc358743, dtoverlay=tc358743-audio, dtoverlay=tc358743,4lane=1 or whatever your board/requirements support
