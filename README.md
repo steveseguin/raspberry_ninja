@@ -292,6 +292,18 @@ You can find many more WHIP/WHEP options within VDO.Ninja, and a great place to 
 
 As for Meshcast support, Meshcast is getting WHIP-ingest support; the availability of this update is just pending some more testing and deployment.
 
+### Custom Gstreamer audio/video source pipeline
+
+You can set your own custom video and audio device, as shown below, if you want more control over the inputs.  The encoder portion is still handled by the code.
+
+`python publish.py --rpi --video-pipeline "v4l2src device=/dev/video0 ! video/x-raw,framerate=30/1,format=UYVY" --noaudio --debug`
+
+Avoid apostrophes in your pipelines, as that can cause a syntax issue, and you shouldn't need to escape the brackets.   
+
+--video-pipeline and --audio-pipeline are available.
+
+`--format` can specify what the encoder should be expecting, if that's needed. ie: `--format YUYV`
+
 ### NDI support
 
 I've been experimenting with NDI support, but it's not working properly yet; debugging needed still. Some users have it working though, although they haven't contributed those changes. It will be a bit before I can get around to doing it myself. Probably not too hard if you wanted to give it a go and contribute to the project.
