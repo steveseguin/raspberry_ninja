@@ -1231,8 +1231,12 @@ class WebRTCClient:
                         if 'streamID' in msg:
                             if msg['streamID'] == self.stream_id+self.hashcode:
                                 await self.start_pipeline(UUID)
+            except KeyboardInterrupt:
+                print("Ctrl+C detected. Exiting...")
+                break
+
             except websockets.ConnectionClosed:
-                print("WEB SOCKETS CLOSED; retrying in 5s");
+                print("WEB SOCKETS CLOSED; retrying in 5s"); 
                 await asyncio.sleep(5)
                 continue
             except Exception as E:
@@ -1325,6 +1329,7 @@ async def main():
     parser.add_argument('--camlink', action='store_true', help='Try to setup an Elgato Cam Link')
     parser.add_argument('--z1', action='store_true', help='Try to setup a Theta Z1 360 camera')
     parser.add_argument('--z1passthru', action='store_true', help='Try to setup a Theta Z1 360 camera, but do not transcode')
+    parser.add_argument('--apple', type=str, action=None, help='Sets Apple Video Foundation media device; takes a device index value (0,1,2,3,etc)')
     parser.add_argument('--v4l2', type=str, default=None, help='Sets the V4L2 input device.')
     parser.add_argument('--libcamera', action='store_true',  help='Use libcamera as the input source')
     parser.add_argument('--rpicam', action='store_true', help='Sets the RaspberryPi CSI input device. If this fails, try --rpi --raw or just --raw instead.')
@@ -1396,6 +1401,10 @@ async def main():
     needed = ["nice", "webrtc", "dtls", "srtp", "rtp", "sctp", "rtpmanager"]
     
     h264 = list(filter(lambda p: Gst.Registry.get().find_plugin(p) is None, ['x264', 'openh264']))
+
+    if (args.omx or not h264) and Gst.ElementFactory.find('avenc_h264_omx'):
+        h264 = 'libav'
+
 
     if args.password == None:
         pass
@@ -1506,9 +1515,29 @@ async def main():
             args.raw = True
             args.rpi = True
             args.rpicam = False
-            
- 
-    if args.rpi and not args.v4l2 and not args.hdmi and not args.rpicam and not args.z1:
+    if args.apple:
+        if not check_plugins(['applemedia']):
+            print("Required media source plugin, applemedia, was not found")
+            sys.exit()
+
+        monitor = Gst.DeviceMonitor.new()
+        monitor.add_filter("Video/Source", None)
+        devices = monitor.get_devices()
+        index = -1
+        camlook = args.apple.lower()
+        appleidx = -1
+        appledev = None
+        for d in devices:
+            index += 1
+            cam = d.get_display_name().lower()
+            if camlook in cam:
+                print("Video device found: "+cam)
+                appleidx = index
+                appledev = d
+                break
+        print("")
+    
+    elif args.rpi and not args.v4l2 and not args.hdmi and not args.rpicam and not args.z1:
         if check_plugins(['libcamera']):
             args.libcamera = True
 
@@ -1613,7 +1642,7 @@ async def main():
 
         if not args.novideo:
 
-            if not (args.nvidia or args.rpi) and args.h264:
+            if not (args.nvidia or args.rpi or args.apple) and args.h264:
                 if args.x264:
                     needed += ['x264']
                 elif args.openh264:
@@ -1720,7 +1749,14 @@ async def main():
                 needed += ['nvarguscamerasrc']
                 args.nvidia = True
                 pipeline_video_input = f'nvarguscamerasrc ! video/x-raw(memory:NVMM),width=(int){args.width},height=(int){args.height},format=(string)NV12,framerate=(fraction){args.framerate}/1'
+            elif args.apple:
+                needed += ['applemedia']
+                pipeline_video_input = f'avfvideosrc device-index={appleidx}'
+                pipeline_video_input += f' ! video/x-raw'
 
+                if appledev and (args.format is None):
+                    formats = supports_resolution_and_format(appledev, args.width, args.height, args.framerate)
+                    print(formats)
             elif args.libcamera:
 
                 print("Detecting video devices")
@@ -1744,7 +1780,7 @@ async def main():
                             args.format = "UYVY"
 
                     print(f"\n >> Default video device selected : {videodevices[0]} /w  {args.format}")
-
+                    
                     needed += ['libcamera']
                     pipeline_video_input = f'libcamerasrc'
 
@@ -1756,11 +1792,10 @@ async def main():
                             pipeline_video_input += ' ! jpegparse ! v4l2jpegdec '
                         else:
                             pipeline_video_input += ' ! jpegdec'
-
+        
                     elif args.format == "H264": # Not going to try to support this right now
                         print("Not support h264 at the moment as an input")
                         pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string)YUY2,framerate=(fraction){args.framerate}/1'
-
                     else:                        
                         pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string){args.format},framerate=(fraction){args.framerate}/1'
 
@@ -1805,7 +1840,9 @@ async def main():
                 pass
             elif args.h264:
                 # H264
-                if args.nvidia:
+                if args.apple:
+                    pipeline_video_input += f' ! vtenc_h264_hw name="encoder" qos=true ! video/x-h264'
+                elif args.nvidia:
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! video/x-h264,stream-format=(string)byte-stream'
                 elif args.rpicam:
                     pass
@@ -1825,8 +1862,8 @@ async def main():
                     ## pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                 elif h264=="x264":
                     pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=10 ! x264enc bitrate={args.bitrate} name="encoder1" speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline'
-                elif h264=="openh264":
-                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=10 ! openh264enc bitrate={args.bitrate}000 name="encoder" complexity=0 ! video/x-h264,profile=constrained-baseline'
+                elif h264=="libav":
+                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=10 ! avenc_h264_omx bitrate={args.bitrate}000 name="encoder" complexity=0 ! video/x-h264,profile=constrained-baseline'
                 else:
                     pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc name="encoder" target-bitrate={args.bitrate}000 qos=true control-rate=1 ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                     
