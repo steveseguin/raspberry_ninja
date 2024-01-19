@@ -1648,9 +1648,11 @@ async def main():
                 elif args.openh264:
                     needed += ['openh264']
                 elif args.omx:
-                    needed += ['omx']
+#                    needed += ['omx']
+                    pass
                 elif h264:
-                    needed += ['h264']
+ #                   needed += ['h264']
+                    pass
                 elif args.rpicam:
                     needed += ['rpicamsrc']
                 else:
