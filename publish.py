@@ -1858,8 +1858,7 @@ async def main():
                 pipeline_video_input = f'nvarguscamerasrc ! video/x-raw(memory:NVMM),width=(int){args.width},height=(int){args.height},format=(string)NV12,framerate=(fraction){args.framerate}/1'
             elif args.apple:
                 needed += ['applemedia']
-                pipeline_video_input = f'avfvideosrc device-index={appleidx}'
-                pipeline_video_input += f' ! video/x-raw'
+                pipeline_video_input = f'avfvideosrc device-index={appleidx} do-timestamp=true ! autovideoconvert ! video/x-raw'
 
                 if appledev and (args.format is None):
                     formats = supports_resolution_and_format(appledev, args.width, args.height, args.framerate)
@@ -1961,12 +1960,12 @@ async def main():
                         pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! queue max-size-buffers=10 ! x264enc  name="encoder1" bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
                     elif h264 == "openh264enc":
                         pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! queue max-size-buffers=10 ! openh264enc  name="encoder" bitrate={args.bitrate}000 complexity=0 ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
-
+                                                                                                                                                                                                                                                                                                                                                                                                                                                              
                     elif args.format in ["I420", "YV12", "NV12" "NV21", "RGB16", "RGB", "BGR", "RGBA", "BGRx", "BGRA", "YUY2", "YVYU", "UYVY"]:
                         pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4'
                     else:
                         pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw,format=I420 ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4' ## v4l2h264enc only supports 30fps max @ 1080p on most rpis, and there might be a spike or skipped frame causing the encode to fail; videorating it seems to fix it though
-
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
                         ## pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                 elif h264=="x264enc":
                     pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=10 ! x264enc bitrate={args.bitrate} name="encoder1" speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline'
