@@ -1259,7 +1259,6 @@ def check_plugins(needed, require=False):
     if type(needed)==type("str"):
         needed = [needed]
     missing = list(filter(lambda p: (Gst.Registry.get().find_plugin(p) is None and not Gst.ElementFactory.find(p)), needed))
-
     if len(missing):
         if require:
             print('Missing gstreamer plugin/element:', missing)
@@ -1684,8 +1683,10 @@ async def main():
         h264 = None
         if args.omx and check_plugins('omxh264enc'):
             h264 = 'omxh264enc'
-        elif args.omx and check_plugins('avenc_h264_omx'):
+        if args.omx and check_plugins('avenc_h264_omx'):
             h264 = 'avenc_h264_omx'
+        elif args.apple and check_plugins('vtenc_h264_hw'):
+            h264 = 'vtenc_h264_hw'
         elif args.x264 and check_plugins('x264enc'):
             h264 = 'x264enc'
         elif args.openh264 and check_plugins('openh264enc'):
@@ -1693,6 +1694,8 @@ async def main():
         elif args.h264:
             if check_plugins('v4l2h264enc'):
                 h264 = 'v4l2h264enc'
+            elif check_plugins('vtenc_h264_hw'):
+                h264 = 'vtenc_h264_hw'
             elif check_plugins('omxh264enc'):
                 h264 = 'omxh264enc'
             elif check_plugins('avenc_h264_omx'):
@@ -1948,6 +1951,7 @@ async def main():
                 # H264
                 print("h264 preferred codec is ",h264)
                 if h264 == "vtenc_h264_hw":
+                    print("MATACH")
                     pipeline_video_input += f' ! vtenc_h264_hw name="encoder" qos=true ! video/x-h264'
                 elif args.nvidia:
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! video/x-h264,stream-format=(string)byte-stream'
@@ -1969,7 +1973,7 @@ async def main():
                         ## pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                 elif h264=="x264enc":
                     pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=10 ! x264enc bitrate={args.bitrate} name="encoder1" speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline'
-                elif h264=="libav":
+                elif h264=="avenc_h264_omx":
                     pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=10 ! avenc_h264_omx bitrate={args.bitrate}000 name="encoder" complexity=0 ! video/x-h264,profile=constrained-baseline'
                 else:
                     pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc name="encoder" target-bitrate={args.bitrate}000 qos=true control-rate=1 ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
