@@ -1685,12 +1685,12 @@ async def main():
             h264 = 'omxh264enc'
         if args.omx and check_plugins('avenc_h264_omx'):
             h264 = 'avenc_h264_omx'
-        elif args.apple and check_plugins('vtenc_h264_hw'):
-            h264 = 'vtenc_h264_hw'
         elif args.x264 and check_plugins('x264enc'):
             h264 = 'x264enc'
         elif args.openh264 and check_plugins('openh264enc'):
             h264 = 'openh264enc'
+        elif args.apple and check_plugins('vtenc_h264_hw'):
+            h264 = 'vtenc_h264_hw'
         elif args.h264:
             if check_plugins('v4l2h264enc'):
                 h264 = 'v4l2h264enc'
@@ -1861,7 +1861,7 @@ async def main():
                 pipeline_video_input = f'nvarguscamerasrc ! video/x-raw(memory:NVMM),width=(int){args.width},height=(int){args.height},format=(string)NV12,framerate=(fraction){args.framerate}/1'
             elif args.apple:
                 needed += ['applemedia']
-                pipeline_video_input = f'avfvideosrc device-index={appleidx} do-timestamp=true ! autovideoconvert ! video/x-raw'
+                pipeline_video_input = f'avfvideosrc device-index={appleidx} do-timestamp=true ! video/x-raw'
 
                 if appledev and (args.format is None):
                     formats = supports_resolution_and_format(appledev, args.width, args.height, args.framerate)
@@ -1951,8 +1951,7 @@ async def main():
                 # H264
                 print("h264 preferred codec is ",h264)
                 if h264 == "vtenc_h264_hw":
-                    print("MATACH")
-                    pipeline_video_input += f' ! vtenc_h264_hw name="encoder" qos=true ! video/x-h264'
+                    pipeline_video_input += f' ! autovideoconvert ! vtenc_h264_hw name="encoder" qos=true bitrate={args.bitrate}realtime=true allow-frame-reordering=false ! video/x-h264'
                 elif args.nvidia:
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! video/x-h264,stream-format=(string)byte-stream'
                 elif args.rpicam:
