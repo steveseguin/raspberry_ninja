@@ -11,6 +11,7 @@ import gi
 import threading
 import socket
 import re
+import traceback
 try:
     import hashlib
     from urllib.parse import urlparse
@@ -40,7 +41,16 @@ def handle_unhandled_exception(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
-    print("!!!  Unhandled exception !!! ", exc_type, exc_value, exc_traceback)
+
+    print("!!! Unhandled exception !!!")
+    print("Type:", exc_type)
+    print("Value:", exc_value)
+    print("Traceback:", ''.join(traceback.format_tb(exc_traceback)))
+
+    # Extract and print the line number
+    tb = traceback.extract_tb(exc_traceback)
+    for frame in tb:
+        print(f"File \"{frame.filename}\", line {frame.lineno}, in {frame.name}")
 sys.excepthook = handle_unhandled_exception
 
 def enableLEDs(level=False):
@@ -1245,10 +1255,14 @@ class WebRTCClient:
         return 0
 
 
-def check_plugins(needed):
-    missing = list(filter(lambda p: Gst.Registry.get().find_plugin(p) is None, needed))
+def check_plugins(needed, require=False):
+    if type(needed)==type("str"):
+        needed = [needed]
+    missing = list(filter(lambda p: (Gst.Registry.get().find_plugin(p) is None and not Gst.ElementFactory.find(p)), needed))
+
     if len(missing):
-        print('Missing gstreamer plugins:', missing)
+        if require:
+            print('Missing gstreamer plugin/element:', missing)
         return False
     return True
 
@@ -1388,68 +1402,68 @@ async def main():
     else:
         Gst.debug_set_default_threshold(0)
      
-    if Gst.Registry.get().find_plugin("rpicamsrc"):
-        args.rpi=True
-    elif Gst.Registry.get().find_plugin("nvvidconv"):
-        args.nvidia=True
-        if Gst.Registry.get().find_plugin("nvarguscamerasrc"):
-            if not args.nvidiacsi and not args.record:
-                print("\nTip: If using the Nvidia CSI camera, you'll want to use --nvidiacsi to enable it.\n")
+                                                   
+                     
+                                                     
+                        
+                                                              
+                                                      
+                                                                                                              
 
-    PIPELINE_DESC = ""
+                      
 
-    needed = ["nice", "webrtc", "dtls", "srtp", "rtp", "sctp", "rtpmanager"]
+                                                                            
     
-    h264 = list(filter(lambda p: Gst.Registry.get().find_plugin(p) is None, ['x264', 'openh264']))
+    ## LED SETUP 
 
-    if (args.omx or not h264) and Gst.ElementFactory.find('avenc_h264_omx'):
-        h264 = 'libav'
+                                                                            
+                      
 
 
-    if args.password == None:
-        pass
-    elif args.password.lower() in ["", "true", "1", "on"]:
-        args.password = "someEncryptionKey123"
-    elif args.password.lower() in ["false", "0", "off"]:
-        args.password = None
+                             
+            
+                                                          
+                                              
+                                                        
+                            
     
     
 
-    if args.aom:
-        if not check_plugins(['aom','videoparsersbad','rsrtp']):
-            print("You'll probably need to install gst-plugins-rs to use AV1 (av1enc, av1parse, av1pay)")
-            print("ie: https://github.com/steveseguin/raspberry_ninja/blob/6873b97af02f720b9dc2e5c3ae2e9f02d486ba52/raspberry_pi/installer.sh#L347")
-            sys.exit()
-        else:
-            args.av1 = True
-        if args.rpi:
-            print("A Raspberry Pi 4 can only handle like 640x360 @ 2 fps when using AV1; not recommended")
-    elif args.av1:
-        if args.rpi:
-            print("A Raspberry Pi 4 can only handle like 640x360 @ 2 fps when using AV1; not recommended")
-        if check_plugins(['qsv','videoparsersbad','rsrtp']):
-            args.qsv = True
-            print("Intel Quick Sync AV1 encoder selected")
-        elif check_plugins(['aom','videoparsersbad','rsrtp']):
-            args.aom = True
-            print("AOM AV1 encoder selected")
-        elif check_plugins(['rav1e','videoparsersbad','rsrtp']):
-            args.rav1e = True
-            print("rav1e AV1 encoder selected; see: https://github.com/xiph/rav1e")
-        elif not check_plugins(['videoparsersbad','rsrtp']):
-            print("You'll probably need to install gst-plugins-rs to use AV1 (av1parse, av1pay)")
-            print("ie: https://github.com/steveseguin/raspberry_ninja/blob/6873b97af02f720b9dc2e5c3ae2e9f02d486ba52/raspberry_pi/installer.sh#L347")
-            sys.exit()
-        else:
-            print("No AV1 encoder found")
-            sys.exit()
+                
+                                                                
+                                                                                                         
+                                                                                                                                                                                                     
+                      
+             
+                           
+                    
+                                                                                                          
+                  
+                    
+                                                                                                          
+                                                            
+                           
+                                                          
+                                                              
+                           
+                                             
+                                                                
+                             
+                                                                                   
+                                                            
+                                                                                                 
+                                                                                                                                                                                                     
+                      
+             
+                                         
+                      
 
-    if 'openh264' not in h264:
-        h264 = "openh264"
-    elif 'x264' not in h264:
-        h264 = "x264"
-    else:
-        h264 = False
+                              
+                         
+                            
+                     
+         
+                    
 
     if args.led:
         try:
@@ -1465,7 +1479,27 @@ async def main():
             enableLEDs(0.1)
         except Exception as E:
             pass
+    
+    ## PASSWORD
+    if args.password == None:
+        pass
+    elif args.password.lower() in ["", "true", "1", "on"]:
+        args.password = "someEncryptionKey123"
+    elif args.password.lower() in ["false", "0", "off"]:
+        args.password = None
         
+    
+    PIPELINE_DESC = ""
+
+    needed = ["rtp", "rtpmanager"]
+    if not args.rtmp:
+        needed += ["webrtc","nice", "sctp", "dtls", "srtp"];
+    if not check_plugins(needed, True):
+        sys.exit(1)
+    needed = []
+    
+    ## AUDIO DEVICE SETUP
+    
     audiodevices = [] 
     if not (args.test or args.noaudio):     
         monitor = Gst.DeviceMonitor.new()
@@ -1507,16 +1541,61 @@ async def main():
                 print("\nNo audio source selected; disabling audio.")
         print()
 
+    
+    ## AUTO DETERMINE PLATFORM
+    
+    if check_plugins("rpicamsrc"):
+        args.rpi=True
+    elif check_plugins("nvvidconv"):
+        args.nvidia=True
+        if check_plugins("nvarguscamerasrc"):
+            if not args.nvidiacsi and not args.record:
+                print("\nTip: If using the Nvidia CSI camera, you'll want to use --nvidiacsi to enable it.\n")
+
     if args.rpicam:
         print("Please note: If rpicamsrc cannot be found, use --libcamera instead")
-        if not check_plugins(['rpicamsrc']):
+        if not check_plugins('rpicamsrc'):
             print("rpicamsrc was not found. using just --rpi instead")
             print()
             args.raw = True
             args.rpi = True
             args.rpicam = False
+
+    ## END OF AUTO PLATFORM
+
+    if args.aom:
+        if not check_plugins(['aom','videoparsersbad','rsrtp'], True):
+            print("You'll probably need to install gst-plugins-rs to use AV1 (av1enc, av1parse, av1pay)")
+            print("ie: https://github.com/steveseguin/raspberry_ninja/blob/6873b97af02f720b9dc2e5c3ae2e9f02d486ba52/raspberry_pi/installer.sh#L347")
+            sys.exit()
+        else:
+            args.av1 = True
+        if args.rpi:
+            print("A Raspberry Pi 4 can only handle like 640x360 @ 2 fps when using AV1; not recommended")
+    elif args.av1:
+        if args.rpi:
+            print("A Raspberry Pi 4 can only handle like 640x360 @ 2 fps when using AV1; not recommended")
+        if check_plugins(['qsv','videoparsersbad','rsrtp']):
+            args.qsv = True
+            print("Intel Quick Sync AV1 encoder selected")
+        elif check_plugins(['aom','videoparsersbad','rsrtp']):
+            args.aom = True
+            print("AOM AV1 encoder selected")
+        elif check_plugins(['rav1e','videoparsersbad','rsrtp']):
+            args.rav1e = True
+            print("rav1e AV1 encoder selected; see: https://github.com/xiph/rav1e")
+        elif not check_plugins(['videoparsersbad','rsrtp'], True):
+            print("You'll probably need to install gst-plugins-rs to use AV1 (av1parse, av1pay)")
+            print("ie: https://github.com/steveseguin/raspberry_ninja/blob/6873b97af02f720b9dc2e5c3ae2e9f02d486ba52/raspberry_pi/installer.sh#L347")
+            sys.exit()
+        else:
+            print("No AV1 encoder found")
+            sys.exit()
+            
+            
+    
     if args.apple:
-        if not check_plugins(['applemedia']):
+        if not check_plugins(['applemedia'], True):
             print("Required media source plugin, applemedia, was not found")
             sys.exit()
 
@@ -1593,14 +1672,40 @@ async def main():
         if args.zerolatency:
             args.novideo = True
 
-        if args.nvidia or args.rpi or args.x264 or args.openh264:
+        if args.nvidia or args.rpi or args.x264 or args.openh264 or args.omx or args.apple:
             args.h264 = True
-
+            
         if args.vp8:
             args.h264 = False
 
         if args.av1:
             args.h264 = False
+            
+        h264 = None
+        if args.omx and check_plugins('omxh264enc'):
+            h264 = 'omxh264enc'
+        elif args.omx and check_plugins('avenc_h264_omx'):
+            h264 = 'avenc_h264_omx'
+        elif args.x264 and check_plugins('x264enc'):
+            h264 = 'x264enc'
+        elif args.openh264 and check_plugins('openh264enc'):
+            h264 = 'openh264enc'
+        elif args.h264:
+            if check_plugins('v4l2h264enc'):
+                h264 = 'v4l2h264enc'
+            elif check_plugins('omxh264enc'):
+                h264 = 'omxh264enc'
+            elif check_plugins('avenc_h264_omx'):
+                h264 = 'avenc_h264_omx'
+            elif check_plugins('x264enc'):
+                h264 = 'x264enc'
+            elif check_plugins('openh264enc'):
+                h264 = 'openh264enc'
+            else:
+                print("Couldn't find an h264 encoder")
+        elif args.omx or args.x264 or args.openh264 or args.h264:
+            print("Couldn't find the h264 encoder")    
+
            
         if args.hdmi:
             args.v4l2 = '/dev/v4l/by-id/usb-MACROSILICON_*'
@@ -1642,38 +1747,38 @@ async def main():
 
         if not args.novideo:
 
-            if not (args.nvidia or args.rpi or args.apple) and args.h264:
-                if args.x264:
-                    needed += ['x264']
-                elif args.openh264:
-                    needed += ['openh264']
-                elif args.omx:
-#                    needed += ['omx']
-                    pass
-                elif h264:
- #                   needed += ['h264']
-                    pass
-                elif args.rpicam:
-                    needed += ['rpicamsrc']
-                else:
-                    print("Is there an H264 encoder installed?")
+            if args.rpicam:
+                             
+                                      
+                                   
+                                          
+                              
+                                      
+                        
+                          
+                                       
+                        
+                                 
+                needed += ['rpicamsrc']
+                     
+                                                                
 
-            if args.nvidia:
+            elif args.nvidia:
                 needed += ['omx', 'nvvidconv']
                 if not args.raw:
                     needed += ['nvjpeg']
             elif args.rpi and not args.rpicam:
                 needed += ['video4linux2']
-                if args.x264:
-                    needed += ['x264']
-                elif args.openh264:
-                    needed += ['openh264']
-                elif args.omx:
-                    needed += ['omx']
-                elif h264:
-                    needed += [h264]
-                else:
-                    print("Is there an H264 encoder installed?")
+                             
+                                      
+                                   
+                                          
+                              
+                                     
+                          
+                                    
+                     
+                                                                
 
                 if not args.raw:
                     needed += ['jpeg']
@@ -1842,18 +1947,19 @@ async def main():
                 pass
             elif args.h264:
                 # H264
-                if args.apple:
+                print("h264 preferred codec is ",h264)
+                if h264 == "vtenc_h264_hw":
                     pipeline_video_input += f' ! vtenc_h264_hw name="encoder" qos=true ! video/x-h264'
                 elif args.nvidia:
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! video/x-h264,stream-format=(string)byte-stream'
                 elif args.rpicam:
                     pass
                 elif args.rpi:
-                    if args.omx:
+                    if h264 == "omxh264enc":
                         pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc name="encoder" target-bitrate={args.bitrate}000 qos=true control-rate="constant" ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
-                    elif args.x264:
+                    elif h264 == "x264enc":
                         pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! queue max-size-buffers=10 ! x264enc  name="encoder1" bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
-                    elif args.openh264:
+                    elif h264 == "openh264enc":
                         pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! queue max-size-buffers=10 ! openh264enc  name="encoder" bitrate={args.bitrate}000 complexity=0 ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
 
                     elif args.format in ["I420", "YV12", "NV12" "NV21", "RGB16", "RGB", "BGR", "RGBA", "BGRx", "BGRA", "YUY2", "YVYU", "UYVY"]:
@@ -1861,8 +1967,8 @@ async def main():
                     else:
                         pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw,format=I420 ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4' ## v4l2h264enc only supports 30fps max @ 1080p on most rpis, and there might be a spike or skipped frame causing the encode to fail; videorating it seems to fix it though
 
-                    ## pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
-                elif h264=="x264":
+                        ## pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
+                elif h264=="x264enc":
                     pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=10 ! x264enc bitrate={args.bitrate} name="encoder1" speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline'
                 elif h264=="libav":
                     pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=10 ! avenc_h264_omx bitrate={args.bitrate}000 name="encoder" complexity=0 ! video/x-h264,profile=constrained-baseline'
