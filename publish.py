@@ -1311,7 +1311,8 @@ async def main():
     parser.add_argument('--video-pipeline', type=str, default=None, help='Custom GStreamer video source pipeline')
     parser.add_argument('--audio-pipeline', type=str, default=None, help='Custom GStreamer audio source pipeline')
     parser.add_argument('--timestamp', action='store_true',  help='Add a timestamp to the video output, if possible')
-
+    parser.add_argument('--clockstamp', action='store_true',  help='Add a clock overlay to the video output, if possible')
+    
     args = parser.parse_args()
 
     Gst.init(None)
@@ -1339,6 +1340,8 @@ async def main():
     timestampOverlay = '';
     if args.timestamp:
         timestampOverlay = ' ! timeoverlay valignment=bottom halignment=right font-desc="Sans, 36"'
+    elif args.clockstamp:
+        timestampOverlay = ' ! clockoverlay valignment=bottom halignment=right font-desc="Sans, 36"'
 
     if args.password == None:
         pass
