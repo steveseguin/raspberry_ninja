@@ -47,7 +47,6 @@ def handle_unhandled_exception(exc_type, exc_value, exc_traceback):
     print("Value:", exc_value)
     print("Traceback:", ''.join(traceback.format_tb(exc_traceback)))
 
-    # Extract and print the line number
     tb = traceback.extract_tb(exc_traceback)
     for frame in tb:
         print(f"File \"{frame.filename}\", line {frame.lineno}, in {frame.name}")
@@ -74,7 +73,7 @@ def disableLEDs():
     p_R.stop()
     GPIO.output(pin, GPIO.HIGH)    # Turn off all leds
     GPIO.cleanup()
-    
+
 def generateHash(input_str, length=None):
     input_bytes = input_str.encode('utf-8')
     sha256_hash = hashlib.sha256(input_bytes).digest()
@@ -85,10 +84,8 @@ def generateHash(input_str, length=None):
     return hash_hex
 
 def hex_to_ansi(hex_color):
-    # Remove '#' character if present
     hex_color = hex_color.lstrip('#')
 
-    # Convert hex to RGB
     if len(hex_color)==6:
         r = int(hex_color[0:2], 16)
         g = int(hex_color[2:4], 16)
@@ -100,13 +97,11 @@ def hex_to_ansi(hex_color):
     else:
         return hex_color
 
-    # Calculate the nearest ANSI color
     ansi_color = 16 + (36 * int(r / 255 * 5)) + (6 * int(g / 255 * 5)) + int(b / 255 * 5)
 
     return f"\033[38;5;{ansi_color}m"
 
 def printc(message, color_code=None):
-    # ANSI escape code to reset to default text color
     reset_color = "\033[0m"
 
     if color_code is not None:
@@ -143,7 +138,7 @@ def replace_ssrc_and_cleanup_sdp(sdp): ## fix for audio-only gstreamer -> chrome
             in_audio_section = False
         if in_audio_section and lines[i].startswith('a=ssrc:'):
             lines[i] = re.sub(r'a=ssrc:\d+', f'a=ssrc:{new_ssrc}', lines[i])
-    
+
     return '\r\n'.join(lines)
 
 class WebRTCClient:
@@ -201,7 +196,7 @@ class WebRTCClient:
             self.pipe = Gst.parse_launch(self.pipeline)
             self.pipe.set_state(Gst.State.PLAYING)
             print("RECORDING TO DISK STARTED")
-        
+
     async def connect(self):
         print("Connecting to handshake server")
         sslctx = ssl.create_default_context()
@@ -218,18 +213,18 @@ class WebRTCClient:
             msg = json.dumps({"request":"seed","streamID":self.stream_id+self.hashcode})
             await self.conn.send(msg)
             printwout("seed start")
-        
-        
+
+
     def sendMessage(self, msg): # send message to wss
         if self.puuid:
             msg['from'] = self.puuid
-        
+
         client = None
         if "UUID" in msg and msg['UUID'] in self.clients:
             client = self.clients[msg['UUID']]
-        
+
         msg = json.dumps(msg)
-        
+
         if client and client['send_channel']:
             try:
                 client['send_channel'].emit('send-string', msg)
@@ -242,43 +237,17 @@ class WebRTCClient:
             loop = asyncio.new_event_loop()
             loop.run_until_complete(self.conn.send(msg))
             printwout("a message was sent via websockets 1: "+msg[:20])
-            #print("sent message wss")
-        
-#    def needData(self,xx,yy):
- #       print("NEED DATA")
-        #buf = Gst.Buffer.new_allocate(self.size)
-        #buf.fill(0, self.data)
-  #      buffer = Gst.Buffer.new_allocate(None, 100, None)
-   #     self.appsrc.emit('push-buffer', buffer)
 
-   # def getBuffer(self):
-
-        #self.appsrc = self.pipe.get_by_name('appsrc')
-        #self.appsrc.connect('need-data', self.needData)
-    #    while True:
-#            print(".")
-#            nal_unit = read_next_nal_unit_from_source()
- #           if not nal_unit:
-  #              break
-            # Create a new buffer with the NAL unit data
-#$            nal_unit = 100
-     #       buffer = Gst.Buffer.new_allocate(None, 100, None)
-  #          buffer.map(Gst.MapFlags.WRITE)
-  #          buffer.fill(0, nal_unit)
-    #        buffer.unmap()
-
-      #      self.appsrc.emit("push-buffer", buffer)
-       #     time.sleep(1001.0/30000)
 
     async def createPeer(self, UUID):
-        
+
         if UUID in self.clients:
             client = self.clients[UUID]
         else:
             print("peer not yet created; error")
             return
-            
-        def on_offer_created(promise, _, __): 
+
+        def on_offer_created(promise, _, __):
             print("ON OFFER CREATED")
             promise.wait()
             reply = promise.get_reply()
@@ -288,7 +257,6 @@ class WebRTCClient:
             promise.interrupt()
             print("SEND SDP OFFER")
             text = offer.sdp.as_text()
-             ## fix for older gstreamer, since nack/fec seems to mess things up?  Not sure if this is breaking something else though.
             if ("96 96 96 96 96" in text):
                 printc("Patching SDP due to Gstreamer webRTC bug - none-unique line values","A6F")
                 text = text.replace(" 96 96 96 96 96", " 96 96 97 98 96")
@@ -310,8 +278,6 @@ class WebRTCClient:
 
         def on_new_tranceiver(element, trans):
             print("ON NEW TRANS")
-            #trans.set_property("fec-type", GstWebRTC.WebRTCFECType.ULP_RED)
-            #trans.set_property("do-nack", True)
 
         def on_negotiation_needed(element):
             print("ON NEGO NEEDED")
@@ -323,11 +289,11 @@ class WebRTCClient:
                 return
             icemsg = {'candidates': [{'candidate': candidate, 'sdpMLineIndex': mlineindex}], 'session':client['session'], 'type':'local', 'UUID':client['UUID']}
             self.sendMessage(icemsg)
-            
+
         def send_ice_remote_candidate_message(_, mlineindex, candidate):
             icemsg = {'candidates': [{'candidate': candidate, 'sdpMLineIndex': mlineindex}], 'session':client['session'], 'type':'remote', 'UUID':client['UUID']}
             self.sendMessage(icemsg)
-        
+
         def on_signaling_state(p1, p2):
             print("ON SIGNALING STATE CHANGE: {}".format(client['webrtc'].get_property(p2.name)))
 
@@ -343,16 +309,12 @@ class WebRTCClient:
 
         def on_connection_state(p1, p2):
             print("on_connection_state")
-            
+
             if (client['webrtc'].get_property(p2.name)==2): # connected
                 print("PEER CONNECTION ACTIVE")
                 promise = Gst.Promise.new_with_change_func(on_stats, client['webrtc'], None) # check stats
                 client['webrtc'].emit('get-stats', None, promise)
-                
-                # if self.streamin:
-                    # direction = GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY
-                    # caps = Gst.caps_from_string("application/x-rtp,media=video,encoding-name=VP8/9000,payload=96")
-                    # client['webrtc'].emit('add-transceiver', direction, caps)
+
                 if not self.streamin and not client['send_channel']:
                     channel = client['webrtc'].emit('create-data-channel', 'sendChannel', None)
                     on_data_channel(client['webrtc'], channel)
@@ -362,26 +324,26 @@ class WebRTCClient:
                     client['timer'] = threading.Timer(3, pingTimer)
                     client['timer'].start()
                     self.clients[client["UUID"]] = client
-                    
+
             elif (client['webrtc'].get_property(p2.name)>=4): # closed/failed , but this won't work unless Gstreamer / LibNice support it -- which isn't the case in most versions.
                 print("PEER CONNECTION DISCONNECTED")
-                self.stop_pipeline(client['UUID'])     
+                self.stop_pipeline(client['UUID'])
             else:
                 print("PEER CONNECTION STATE {}".format(client['webrtc'].get_property(p2.name)))
         def print_trans(p1,p2):
             print("trans:  {}".format(client['webrtc'].get_property(p2.name)))
 
         def pingTimer():
-            
+
             if not client['send_channel']:
                 client['timer'] = threading.Timer(3, pingTimer)
                 client['timer'].start()
                 print("data channel not setup yet")
                 return
-                
+
             if "ping" not in client:
                 client['ping'] = 0
-                
+
             if client['ping'] < 10:
                 client['ping'] += 1
                 self.clients[client["UUID"]] = client
@@ -400,14 +362,14 @@ class WebRTCClient:
             else:
                 printc("NO HEARTBEAT", "F44")
                 self.stop_pipeline(client['UUID'])
-                
+
         def on_data_channel(webrtc, channel):
             print("    --------- ON DATA CHANNEL")
             if channel is None:
                 print('DATA CHANNEL: NOT AVAILABLE')
                 return
             else:
-                print('DATA CHANNEL SETUP')                               
+                print('DATA CHANNEL SETUP')
             channel.connect('on-open', on_data_channel_open)
             channel.connect('on-error', on_data_channel_error)
             channel.connect('on-close', on_data_channel_close)
@@ -452,11 +414,10 @@ class WebRTCClient:
                 self.handle_sdp_ice(msg, client["UUID"])
             elif 'pong' in msg: # Supported in v19 of VDO.Ninja
                 printin('PONG')
-                client['ping'] = 0     
-                self.clients[client["UUID"]] = client                
+                client['ping'] = 0
+                self.clients[client["UUID"]] = client
             elif 'bye' in msg: ## v19 of VDO.Ninja
                 printin("PEER INTENTIONALLY HUNG UP")
-                #self.stop_pipeline(client['UUID'])
             elif 'description' in msg:
                 printin("INCOMING SDP - DC")
                 if msg['description']['type'] == "offer":
@@ -471,7 +432,6 @@ class WebRTCClient:
                     if self.aom:
                         print("Aom doesn't support dynamic bitrates currently")
                         pass
-                       # client['encoder'].set_property('target-bitrate', int(msg['bitrate'])*1000)
                     else:
                         client['encoder'].set_property('bitrate', int(msg['bitrate'])*1000)
             else:
@@ -479,7 +439,6 @@ class WebRTCClient:
                 return
 
         def vdo2midi(midi):
-            #print(midi)
             try:
                 if self.midiout == None:
                     self.midiout = rtmidi.MidiOut()
@@ -488,7 +447,6 @@ class WebRTCClient:
                 if new_out_port != self.midiout_ports:
                     print("New MIDI Out device(s) initializing...")
                     self.midiout_ports = new_out_port
-                    #print(self.midiout_ports)
                     try:
                         self.midiout.close_port()
                     except:
@@ -503,17 +461,14 @@ class WebRTCClient:
                         print(i) ## midi output device
                     else:
                         return ## no MIDI out found; skipping
-                    
+
                 self.midiout.send_message(midi['d'])
-                #print("midi processed")
             except Exception as E:
                 print(E)
-            
+
         def sendMIDI(data, template):
-            #print(data)
             if data:
                  template['midi']['d'] = data[0];
-                 #template['midi']['t'] = data[1];  ## since this is real-time midi, i don't see the point in including this
                  data = json.dumps(template)
                  for client in self.clients:
                       if self.clients[client]['send_channel']:
@@ -521,7 +476,7 @@ class WebRTCClient:
                                self.clients[client]['send_channel'].emit('send-string', data)
                            except:
                                pass
-                
+
         def midi2vdo(midi):
             in_ports = None
             self.midiin = rtmidi.MidiIn()
@@ -548,19 +503,17 @@ class WebRTCClient:
                         else:
                             time.sleep(0.5)
                             in_ports = self.midiin.get_ports()
-                            
+
 
                     template = {}
                     template['midi'] = {}
                     template['midi']['d'] = []
-                    #template['midi']['t'] = 0 ## I don't see the point in including this currently
                     if self.puuid:
                         template['from'] = self.puuid
                     self.midiin.cancel_callback()
                     self.midiin.set_callback(sendMIDI, template)
                 else:
                     time.sleep(4)
-                    
 
 
         def on_stats(promise, abin, data):
@@ -595,7 +548,6 @@ class WebRTCClient:
                             client['encoder1'].set_property('bitrate', int(bitrate))
                         elif client['encoder2']:
                             pass
-                            # client['encoder2'].set_property('extra-controls',"controls,video_bitrate="+str(bitrate)+"000;") ## sadly, this is set on startup
 
                     except Exception as E:
                         print(E)
@@ -617,7 +569,6 @@ class WebRTCClient:
                             client['encoder1'].set_property('bitrate', int(bitrate))
                         elif client['encoder2']:
                             pass
-                            # client['encoder2'].set_property('extra-controls',"controls,video_bitrate="+str(bitrate)+"000;")  ## set on startup; can't change
                     except Exception as E:
                         print(E)
 
@@ -636,9 +587,7 @@ class WebRTCClient:
                     frame_data = buffer.extract_dup(0, buffer.get_size())
                     np_frame_data = np.frombuffer(frame_data, dtype=np.uint8).reshape(height, width, 3)
                     print(np.shape(np_frame_data), np_frame_data[0,0,:])
-                    #np_frame_data = np_frame_data[:, :, ::-1]  # Convert from RGB to BGR (OpenCV format)
-            
-                    # Update shared memory
+
                     frame_shape = (720 * 1280 * 3)
                     frame_buffer = np.ndarray(frame_shape+5, dtype=np.uint8, buffer=self.shared_memory.buf)
                     frame_buffer[5:5+width*height*3] = np_frame_data.flatten(order='K') # K means order as how ordered in memory
@@ -666,10 +615,10 @@ class WebRTCClient:
                 if Gst.PadDirection.SRC != pad.direction:
                     print("pad direction wrong?")
                     return
-    
+
                 caps = pad.get_current_caps()
                 name = caps.to_string()
-    
+
                 print(name)
                 filesink = False
                 if "video" in name:
@@ -679,42 +628,34 @@ class WebRTCClient:
                         if "VP8" in name:
                             out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! decodebin ! videoconvert ! queue ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! ndisink ndi-name='"+self.streamin+"'", True)
                         elif "H264" in name:
-                            #depay.set_property("request-keyframe", True)
                             out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! queue max-size-buffers=0 max-size-time=0 ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! queue ! ndisink ndi-name='"+self.streamin+"'", True)
                     elif self.fdsink: ## send raw data to ffmpeg or something I guess, using the stdout?
                         print("FD SINK OUT")
                         if "VP8" in name:
                             out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! queue max-size-buffers=0 max-size-time=0 ! video/x-raw,format=BGR ! fdsink", True)
                         elif "H264" in name:
-                            #depay.set_property("request-keyframe", True)
                             out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! openh264dec ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=0 max-size-time=0 ! fdsink", True)
                     elif self.framebuffer: ## send raw data to ffmpeg or something I guess, using the stdout?
                         print("APP SINK OUT")
                         if "VP8" in name:
                             out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=2 leaky=downstream ! appsink name=appsink", True)
                         elif "H264" in name:
-                            #depay.set_property("request-keyframe", True)
-                            ## LEAKY = 2 + Max-Buffer=1 means we will only keep the last most recent frame queued up for the appsink; older frames will get dropped, since we will prioritize latency.  You can change this of course.
                             out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! openh264dec ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=2 leaky=downstream ! appsink name=appsink", True)
                     else:
-                        # filesink = self.pipe.get_by_name('mux2') ## WIP
                         if filesink:
                             print("Video being added after audio")
                             if "VP8" in name:
                                 out = Gst.parse_bin_from_description("queue ! rtpvp8depay", True)
                             elif "H264" in name:
-                                #depay.set_property("request-keyframe", True)
                                 out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse", True)
-                        
+
                         else:
                             print("video being saved...")
                             if "VP8" in name:
                                 out = Gst.parse_bin_from_description("queue ! rtpvp8depay !  webmmux  name=mux1 ! filesink sync=false location="+self.streamin+"_"+str(int(time.time()))+"_video.webm", True)
                             elif "H264" in name:
-                                #depay.set_property("request-keyframe", True)
                                 out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! mp4mux  name=mux1 ! queue ! filesink sync=true location="+self.streamin+"_"+str(int(time.time()))+"_video.mp4", True)
-    
-#                    print(Gst.debug_bin_to_dot_data(out, Gst.DebugGraphDetails.ALL))
+
                     self.pipe.add(out)
                     out.sync_state_with_parent()
                     sink = out.get_static_pad('sink')
@@ -739,7 +680,7 @@ class WebRTCClient:
                 elif "audio" in name:
                     if self.ndiout:
                         out = Gst.parse_bin_from_description("queue ! fakesink", True)
-                        pass  #WIP 
+                        pass  #WIP
                     elif self.fdsink:
                         out = Gst.parse_bin_from_description("queue ! fakesink", True)
                         pass # WIP
@@ -747,22 +688,20 @@ class WebRTCClient:
                         out = Gst.parse_bin_from_description("queue ! fakesink", True)
                         pass # WIP
                     else:
-                        # filesink = self.pipe.get_by_name('mux1') ## WIP
                         if filesink:
                             print("Audio being added after video")
                             if "OPUS" in name:
                                 out = Gst.parse_bin_from_description("queue rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,channels=2,rate=48000", True)
                         else:
-                            print("audio being saved...") 
+                            print("audio being saved...")
                             if "OPUS" in name:
                                 out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,channels=2,rate=48000 ! mp4mux name=mux2 ! queue ! filesink sync=true location="+self.streamin+"_"+str(int(time.time()))+"_audio.mp4", True)
-        
+
                     self.pipe.add(out)
                     out.sync_state_with_parent()
-                    # self.pipe.sync_children_states()
-    
+
                     sink = out.get_static_pad('sink')
-    
+
                     if filesink:
                         out.link(filesink)
                     pad.link(sink)
@@ -802,7 +741,7 @@ class WebRTCClient:
                 if "H264" in name:
                     sink.set_property("location", str(time.time())+'.h264')
                     depay = Gst.ElementFactory.make('rtph264depay', "depay")
-                    depay.set_property("request-keyframe", True)  
+                    depay.set_property("request-keyframe", True)
                     p = Gst.ElementFactory.make('h264parse', "parse")
                     caps = Gst.ElementFactory.make("capsfilter", "caps")
                     caps.set_property("caps", Gst.Caps.from_string("video/x-h264,stream-format=byte-stream"))
@@ -868,13 +807,13 @@ class WebRTCClient:
                 decode.link(sink)
 
         print("creating a new webrtc bin")
-        
+
         started = True
         if not self.pipe:
             print("loading pipe")
-           
+
             if self.streamin:
-                self.pipe = Gst.Pipeline.new('decode-pipeline') ## decode or capture 
+                self.pipe = Gst.Pipeline.new('decode-pipeline') ## decode or capture
             elif len(self.pipeline)<=1:
                 self.pipe = Gst.Pipeline.new('data-only-pipeline')
             else:
@@ -882,7 +821,7 @@ class WebRTCClient:
                 self.pipe = Gst.parse_launch(self.pipeline)
             print(self.pipe)
             started = False
-            
+
 
         client['webrtc'] = self.pipe.get_by_name('sendrecv')
         client['qv'] = None
@@ -926,7 +865,7 @@ class WebRTCClient:
             pass
         else:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
-            client['webrtc'].set_property('bundle-policy', 'max-bundle') 
+            client['webrtc'].set_property('bundle-policy', 'max-bundle')
             client['webrtc'].set_property('stun-server', "stun://stun4.l.google.com:19302")  ## older versions of gstreamer might break with this
             client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
             try:
@@ -935,7 +874,7 @@ class WebRTCClient:
             except:
                 pass
             self.pipe.add(client['webrtc'])
-            
+
             atee = self.pipe.get_by_name('audiotee')
             vtee = self.pipe.get_by_name('videotee')
 
@@ -948,7 +887,7 @@ class WebRTCClient:
                     return
                 if qv is not None: qv.sync_state_with_parent()
                 client['qv'] = qv
-            
+
             if atee is not None:
                 qa = Gst.ElementFactory.make('queue', f"qa-{client['UUID']}")
                 self.pipe.add(qa)
@@ -960,7 +899,6 @@ class WebRTCClient:
                 client['qa'] = qa
 
             if self.midi and (self.midi_thread == None):
-                #client['webrtc'].set_state(Gst.State.READY)
                 self.midi_thread = threading.Thread(target=midi2vdo, args=(self.midi,))
                 self.midi_thread.start()
                 print(self.midi_thread)
@@ -970,11 +908,11 @@ class WebRTCClient:
             client['webrtc'].connect('notify::ice-connection-state', on_ice_connection_state)
             client['webrtc'].connect('notify::connection-state', on_connection_state)
             client['webrtc'].connect('notify::signaling-state', on_signaling_state)
-                
+
         except Exception as e:
             print(e)
             pass
-            
+
         if self.streamin:
             client['webrtc'].connect('pad-added', on_incoming_stream)
             client['webrtc'].connect('on-ice-candidate', send_ice_remote_candidate_message)
@@ -983,8 +921,7 @@ class WebRTCClient:
             client['webrtc'].connect('on-ice-candidate', send_ice_local_candidate_message)
             client['webrtc'].connect('on-negotiation-needed', on_negotiation_needed)
             client['webrtc'].connect('on-new-transceiver', on_new_tranceiver)
-            #client['webrtc'].connect('on-data-channel', on_data_channel)
- 
+
         try:
             if not self.streamin:
                 trans = client['webrtc'].emit("get-transceiver",0)
@@ -1004,28 +941,17 @@ class WebRTCClient:
 
         if not started and self.pipe.get_state(0)[1] is not Gst.State.PLAYING:
             self.pipe.set_state(Gst.State.PLAYING)
-                           
-        #client['webrtc'].connect('on-ice-candidate', send_ice_local_candidate_message) ## already set this!
+
         client['webrtc'].sync_state_with_parent()
 
         if not self.streamin and not client['send_channel']:
             channel = client['webrtc'].emit('create-data-channel', 'sendChannel', None)
             on_data_channel(client['webrtc'], channel)
 
-#        try: ## not working yet
- #           if self.pipein and not self.appsrc:
-  #              self.appsrc = self.pipe.get_by_name('appsrc')
-            #    self.appsrc.connect('need-data', self.needData)
-
-   #             self.emitter = threading.Thread(target=self.getBuffer)
-    #            self.emitter.start()
-     #           print("EMITTER THREAD STARTED")
-      #  except Exception as E:
-       #     print(E)
 
         self.clients[client["UUID"]] = client
 
-        
+
     def handle_sdp_ice(self, msg, UUID):
         client = self.clients[UUID]
         if not client or not client['webrtc']:
@@ -1035,7 +961,6 @@ class WebRTCClient:
             print("INCOMING ANSWER SDP TYPE: "+msg['type'])
             assert(msg['type'] == 'answer')
             sdp = msg['sdp']
-#            print ('Received answer:\n%s' % sdp)
             res, sdpmsg = GstSdp.SDPMessage.new()
             GstSdp.sdp_message_parse_buffer(bytes(sdp.encode()), sdpmsg)
             answer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.ANSWER, sdpmsg)
@@ -1067,7 +992,7 @@ class WebRTCClient:
         print(text)
         msg = {'description': {'type': 'answer', 'sdp': text}, 'UUID': client['UUID'], 'session': client['session']}
         self.sendMessage(msg)
-            
+
     def handle_offer(self, msg, UUID):
         print("HANDLE SDP OFFER")
         print("-----")
@@ -1088,7 +1013,7 @@ class WebRTCClient:
             client['webrtc'].emit('create-answer', None, promise2)
         else:
             print("No SDP as expected")
-        
+
     async def start_pipeline(self, UUID):
         print("START PIPE")
         enableLEDs(100)
@@ -1106,24 +1031,24 @@ class WebRTCClient:
                 print("setting pipe to null")
                 self.pipe.set_state(Gst.State.NULL)
                 self.pipe = None
-                
+
                 if UUID in self.clients:
                     print("Resetting existing pipe and p2p connection.");
                     session = self.clients[UUID]["session"]
-                    
+
                     if self.clients[UUID]['timer']:
                         self.clients[UUID]['timer'].cancel()
                         print("stop previous ping/pong timer")
-                    
+
                     self.clients[UUID] = {}
                     self.clients[UUID]["UUID"] = UUID
                     self.clients[UUID]["session"] = session
                     self.clients[UUID]["send_channel"] = None
-                    
+
                     self.clients[UUID]["timer"] = None
                     self.clients[UUID]["ping"] = 0
                     self.clients[UUID]["webrtc"] = None
-                    
+
             await self.createPeer(UUID)
 
     def stop_pipeline(self, UUID):
@@ -1135,15 +1060,15 @@ class WebRTCClient:
             atee = self.pipe.get_by_name('audiotee')
             vtee = self.pipe.get_by_name('videotee')
 
-            if atee is not None and self.clients[UUID]['qa'] is not None: 
+            if atee is not None and self.clients[UUID]['qa'] is not None:
                 atee.unlink(self.clients[UUID]['qa'])
-            if vtee is not None and self.clients[UUID]['qv'] is not None: 
+            if vtee is not None and self.clients[UUID]['qv'] is not None:
                 vtee.unlink(self.clients[UUID]['qv'])
 
-            if self.clients[UUID]['webrtc'] is not None: 
+            if self.clients[UUID]['webrtc'] is not None:
                 self.pipe.remove(self.clients[UUID]['webrtc'])
                 self.clients[UUID]['webrtc'].set_state(Gst.State.NULL)
-            if self.clients[UUID]['qa'] is not None: 
+            if self.clients[UUID]['qa'] is not None:
                 self.pipe.remove(self.clients[UUID]['qa'])
                 self.clients[UUID]['qa'].set_state(Gst.State.NULL)
             if self.clients[UUID]['qv'] is not None:
@@ -1152,7 +1077,7 @@ class WebRTCClient:
             del self.clients[UUID]
 
         if len(self.clients)==0:
-            enableLEDs(0.1) 
+            enableLEDs(0.1)
 
         if self.pipe:
             if self.save_file:
@@ -1160,14 +1085,14 @@ class WebRTCClient:
             elif len(self.clients)==0:
                 self.pipe.set_state(Gst.State.NULL)
                 self.pipe = None
-            
+
     async def loop(self):
         assert self.conn
         print("WSS CONNECTED")
         async for message in self.conn:
             try:
                 msg = json.loads(message)
-                
+
                 if 'vector' in msg:
                     print("Try with --password false (here) and &password=false (sender side) instead, as encryption isn't supported it seems with your setup")
                     continue
@@ -1196,7 +1121,7 @@ class WebRTCClient:
                                     printwout("seed start")
                                     await self.conn.send(msg)
                     continue
-                    
+
                 if UUID not in self.clients:
                     self.clients[UUID] = {}
                     self.clients[UUID]["UUID"] = UUID
@@ -1205,7 +1130,7 @@ class WebRTCClient:
                     self.clients[UUID]["timer"] = None
                     self.clients[UUID]["ping"] = 0
                     self.clients[UUID]["webrtc"] = None
-                    
+
                 if 'session' in msg:
                     if not self.clients[UUID]['session']:
                         self.clients[UUID]['session'] = msg['session']
@@ -1246,12 +1171,12 @@ class WebRTCClient:
                 break
 
             except websockets.ConnectionClosed:
-                print("WEB SOCKETS CLOSED; retrying in 5s"); 
+                print("WEB SOCKETS CLOSED; retrying in 5s");
                 await asyncio.sleep(5)
                 continue
             except Exception as E:
                 print(E);
-               
+
         return 0
 
 
@@ -1267,10 +1192,7 @@ def check_plugins(needed, require=False):
 
 def on_message(bus: Gst.Bus, message: Gst.Message, loop):
     mtype = message.type
-    """
-        Gstreamer Message Types and how to parse
-        https://lazka.github.io/pgi-docs/Gst-1.0/flags.html#Gst.MessageType
-    """
+
     if not loop:
         try:
             loop = GLib.MainLoop
@@ -1289,11 +1211,10 @@ def on_message(bus: Gst.Bus, message: Gst.Message, loop):
     elif mtype == Gst.MessageType.WARNING:
         err, debug = message.parse_warning()
         print(err, debug)
-        
+
     elif mtype == Gst.MessageType.LATENCY:  # needs self. scope added
         print("LATENCY")
-        # self.pipe.recalculate_latency() 
-        
+
     elif mtype == Gst.MessageType.ELEMENT:
         print("ELEMENT")
 
@@ -1379,7 +1300,7 @@ async def main():
     parser.add_argument('--midi', action='store_true', help='Transparent MIDI bridge mode; no video or audio.')
     parser.add_argument('--filesrc', type=str, default=None,  help='Provide a media file (local file location) as a source instead of physical device; it can be a transparent webm or whatever. It will be transcoded, which offers the best results.')
     parser.add_argument('--filesrc2', type=str, default=None,  help='Provide a media file (local file location) as a source instead of physical device; it can be a transparent webm or whatever. It will not be transcoded, so be sure its encoded correctly. Specify if --vp8 or --vp9, else --h264 is assumed.')
-    parser.add_argument('--pipein', type=str, default=None, help='Pipe a media stream in as the input source. Pass `auto` for auto-decode,pass codec type for pass-thru (mpegts,h264,vp8,vp9), or use `raw`'); 
+    parser.add_argument('--pipein', type=str, default=None, help='Pipe a media stream in as the input source. Pass `auto` for auto-decode,pass codec type for pass-thru (mpegts,h264,vp8,vp9), or use `raw`');
     parser.add_argument('--ndiout',  type=str, help='VDO.Ninja to NDI output; requires the NDI Gstreamer plugin installed')
     parser.add_argument('--fdsink',  type=str, help='VDO.Ninja to the stdout pipe; common for piping data between command line processes')
     parser.add_argument('--framebuffer', type=str, help='VDO.Ninja to local frame buffer; performant and Numpy/OpenCV friendly')
@@ -1389,81 +1310,17 @@ async def main():
     parser.add_argument('--hostname', type=str, default='https://vdo.ninja/alpha/', help='Your URL for vdo.ninja, if self-hosting the website code')
     parser.add_argument('--video-pipeline', type=str, default=None, help='Custom GStreamer video source pipeline')
     parser.add_argument('--audio-pipeline', type=str, default=None, help='Custom GStreamer audio source pipeline')
-
+    parser.add_argument('--timestamp', action='store_true',  help='Add a timestamp to the video output, if possible')
 
     args = parser.parse_args()
-    
+
     Gst.init(None)
     Gst.debug_set_active(False)
-    
+
     if args.debug:
         Gst.debug_set_default_threshold(2)
     else:
         Gst.debug_set_default_threshold(0)
-     
-                                                   
-                     
-                                                     
-                        
-                                                              
-                                                      
-                                                                                                              
-
-                      
-
-                                                                            
-    
-    ## LED SETUP 
-
-                                                                            
-                      
-
-
-                             
-            
-                                                          
-                                              
-                                                        
-                            
-    
-    
-
-                
-                                                                
-                                                                                                         
-                                                                                                                                                                                                     
-                      
-             
-                           
-                    
-                                                                                                          
-                  
-                    
-                                                                                                          
-                                                            
-                           
-                                                          
-                                                              
-                           
-                                             
-                                                                
-                             
-                                                                                   
-                                                            
-                                                                                                 
-                                                                                                                                                                                                     
-                      
-             
-                                         
-                      
-
-                              
-                         
-                            
-                     
-         
-                    
-
     if args.led:
         try:
             import RPi.GPIO as GPIO
@@ -1478,16 +1335,19 @@ async def main():
             enableLEDs(0.1)
         except Exception as E:
             pass
-    
-    ## PASSWORD
+
+    timestampOverlay = '';
+    if args.timestamp:
+        timestampOverlay = ' ! timeoverlay valignment=bottom halignment=right font-desc="Sans, 36"'
+
     if args.password == None:
         pass
     elif args.password.lower() in ["", "true", "1", "on"]:
         args.password = "someEncryptionKey123"
     elif args.password.lower() in ["false", "0", "off"]:
         args.password = None
-        
-    
+
+
     PIPELINE_DESC = ""
 
     needed = ["rtp", "rtpmanager"]
@@ -1496,14 +1356,12 @@ async def main():
     if not check_plugins(needed, True):
         sys.exit(1)
     needed = []
-    
-    ## AUDIO DEVICE SETUP
-    
-    audiodevices = [] 
-    if not (args.test or args.noaudio):     
+
+
+    audiodevices = []
+    if not (args.test or args.noaudio):
         monitor = Gst.DeviceMonitor.new()
         monitor.add_filter("Audio/Source", None)
-        #monitor.start()
         audiodevices = monitor.get_devices()
 
     if not args.alsa and not args.noaudio and not args.pulse and not args.test and not args.pipein:
@@ -1540,9 +1398,7 @@ async def main():
                 print("\nNo audio source selected; disabling audio.")
         print()
 
-    
-    ## AUTO DETERMINE PLATFORM
-    
+
     if check_plugins("rpicamsrc"):
         args.rpi=True
     elif check_plugins("nvvidconv"):
@@ -1560,7 +1416,6 @@ async def main():
             args.rpi = True
             args.rpicam = False
 
-    ## END OF AUTO PLATFORM
 
     if args.aom:
         if not check_plugins(['aom','videoparsersbad','rsrtp'], True):
@@ -1590,9 +1445,8 @@ async def main():
         else:
             print("No AV1 encoder found")
             sys.exit()
-            
-            
-    
+
+
     if args.apple:
         if not check_plugins(['applemedia'], True):
             print("Required media source plugin, applemedia, was not found")
@@ -1614,7 +1468,7 @@ async def main():
                 appledev = d
                 break
         print("")
-    
+
     elif args.rpi and not args.v4l2 and not args.hdmi and not args.rpicam and not args.z1:
         if check_plugins(['libcamera']):
             args.libcamera = True
@@ -1628,25 +1482,25 @@ async def main():
                 continue
             print("Video device found: "+d.get_display_name())
         print("")
-   
+
         camlink = [d for d in devices if "Cam Link" in  d.get_display_name()]
-        
+
         if len(camlink):
             args.camlink = True
 
         picam = [d for d in devices if "Raspberry Pi Camera Module" in  d.get_display_name()]
-        
+
         if len(picam):
             args.rpicam = True
 
         usbcam = [d for d in devices if "USB Vid" in  d.get_display_name()]
-        
+
         if len(usbcam) and not args.v4l2:
-            args.v4l2 = "/dev/video0"  
+            args.v4l2 = "/dev/video0"
 
     elif not args.v4l2:
         args.v4l2 = '/dev/video0'
-   
+
     if args.format:
         args.format = args.format.upper()
 
@@ -1673,13 +1527,13 @@ async def main():
 
         if args.nvidia or args.rpi or args.x264 or args.openh264 or args.omx or args.apple:
             args.h264 = True
-            
+
         if args.vp8:
             args.h264 = False
 
         if args.av1:
             args.h264 = False
-            
+
         h264 = None
         if args.omx and check_plugins('omxh264enc'):
             h264 = 'omxh264enc'
@@ -1707,9 +1561,9 @@ async def main():
             else:
                 print("Couldn't find an h264 encoder")
         elif args.omx or args.x264 or args.openh264 or args.h264:
-            print("Couldn't find the h264 encoder")    
+            print("Couldn't find the h264 encoder")
 
-           
+
         if args.hdmi:
             args.v4l2 = '/dev/v4l/by-id/usb-MACROSILICON_*'
             args.alsa = 'hw:MS2109'
@@ -1720,7 +1574,7 @@ async def main():
 
         if args.camlink:
             args.v4l2 = '/dev/video0'
-                
+
         if args.save:
             args.multiviewer = True
 
@@ -1729,7 +1583,7 @@ async def main():
         if args.save:
             saveAudio = ' ! tee name=saveaudiotee ! queue ! mux.audio_0 saveaudiotee.'
             saveVideo = ' ! tee name=savevideotee ! queue ! mux.video_0 savevideotee.'
-       
+
         if args.ndiout:
             needed += ['ndi']
             if not args.record:
@@ -1751,43 +1605,16 @@ async def main():
         if not args.novideo:
 
             if args.rpicam:
-                             
-                                      
-                                   
-                                          
-                              
-                                      
-                        
-                          
-                                       
-                        
-                                 
                 needed += ['rpicamsrc']
-                     
-                                                                
-
             elif args.nvidia:
                 needed += ['omx', 'nvvidconv']
                 if not args.raw:
                     needed += ['nvjpeg']
             elif args.rpi and not args.rpicam:
                 needed += ['video4linux2']
-                             
-                                      
-                                   
-                                          
-                              
-                                     
-                          
-                                    
-                     
-                                                                
-
                 if not args.raw:
                     needed += ['jpeg']
 
-
-            # THE VIDEO INPUT
             if args.streamin:
                 pass
             elif args.video_pipeline:
@@ -1823,8 +1650,6 @@ async def main():
             elif args.pipein:
                 if args.pipein=="auto":
                     pipeline_video_input = f'fdsrc ! decodebin name=ts ts.'
-#                elif args.z1: ## theta z1
- #                   pipeline_video_input = f'appsrc emit-signals=True name="appsrc" block=true format=time caps="video/x-h264,stream-format=(string)byte-stream,framerate=(fraction)30000/1001,profile=constrained-baseline" ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! h264parse! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
                 elif args.pipein=="raw":
                     pipeline_video_input = f'fdsrc ! video/x-raw'
                 elif args.pipein=="vp9":
@@ -1848,7 +1673,7 @@ async def main():
             elif args.rpicam:
                 needed += ['rpicamsrc']
                 args.rpi = True
-                
+
                 rotate = ""
                 if args.rotate:
                     rotate = " rotation="+str(int(args.rotate))
@@ -1889,7 +1714,7 @@ async def main():
                             args.format = "UYVY"
 
                     print(f"\n >> Default video device selected : {videodevices[0]} /w  {args.format}")
-                    
+
                     needed += ['libcamera']
                     pipeline_video_input = f'libcamerasrc'
 
@@ -1901,11 +1726,11 @@ async def main():
                             pipeline_video_input += ' ! jpegparse ! v4l2jpegdec '
                         else:
                             pipeline_video_input += ' ! jpegdec'
-        
+
                     elif args.format == "H264": # Not going to try to support this right now
                         print("Not support h264 at the moment as an input")
                         pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string)YUY2,framerate=(fraction){args.framerate}/1'
-                    else:                        
+                    else:
                         pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string){args.format},framerate=(fraction){args.framerate}/1'
 
                 elif len(videodevices) == 0:
@@ -1943,12 +1768,11 @@ async def main():
 
             if args.filesrc2:
                 pass
-            elif args.z1passthru: 
+            elif args.z1passthru:
                 pass
             elif args.pipein and args.pipein != "auto" and args.pipein != "raw": # We are doing a pass-thru with this pip # We are doing a pass-thru with this pipee
                 pass
             elif args.h264:
-                # H264
                 print("h264 preferred codec is ",h264)
                 if h264 == "vtenc_h264_hw":
                     pipeline_video_input += f' ! autovideoconvert ! vtenc_h264_hw name="encoder" qos=true bitrate={args.bitrate}realtime=true allow-frame-reordering=false ! video/x-h264'
@@ -1958,47 +1782,44 @@ async def main():
                     pass
                 elif args.rpi:
                     if h264 == "omxh264enc":
-                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc name="encoder" target-bitrate={args.bitrate}000 qos=true control-rate="constant" ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
+                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420{timestampOverlay} ! omxh264enc name="encoder" target-bitrate={args.bitrate}000 qos=true control-rate="constant" ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                     elif h264 == "x264enc":
-                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! queue max-size-buffers=10 ! x264enc  name="encoder1" bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
+                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420{timestampOverlay} ! queue max-size-buffers=10 ! x264enc  name="encoder1" bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
                     elif h264 == "openh264enc":
-                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! queue max-size-buffers=10 ! openh264enc  name="encoder" bitrate={args.bitrate}000 complexity=0 ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
-                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+                        pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420{timestampOverlay} ! queue max-size-buffers=10 ! openh264enc  name="encoder" bitrate={args.bitrate}000 complexity=0 ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
+
                     elif args.format in ["I420", "YV12", "NV12" "NV21", "RGB16", "RGB", "BGR", "RGBA", "BGRx", "BGRA", "YUY2", "YVYU", "UYVY"]:
-                        pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4'
+                        pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw{timestampOverlay} ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4'
                     else:
-                        pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw,format=I420 ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4' ## v4l2h264enc only supports 30fps max @ 1080p on most rpis, and there might be a spike or skipped frame causing the encode to fail; videorating it seems to fix it though
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
-                        ## pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
+                        pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw,format=I420{timestampOverlay} ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4' ## v4l2h264enc only supports 30fps max @ 1080p on most rpis, and there might be a spike or skipped frame causing the encode to fail; videorating it seems to fix it though
+
                 elif h264=="x264enc":
-                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=10 ! x264enc bitrate={args.bitrate} name="encoder1" speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline'
+                    pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=10 ! x264enc bitrate={args.bitrate} name="encoder1" speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline'
                 elif h264=="avenc_h264_omx":
-                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=10 ! avenc_h264_omx bitrate={args.bitrate}000 name="encoder" complexity=0 ! video/x-h264,profile=constrained-baseline'
+                    pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=10 ! avenc_h264_omx bitrate={args.bitrate}000 name="encoder" complexity=0 ! video/x-h264,profile=constrained-baseline'
                 else:
-                    pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! omxh264enc name="encoder" target-bitrate={args.bitrate}000 qos=true control-rate=1 ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
-                    
+                    pipeline_video_input += f' ! v4l2convert{timestampOverlay} ! video/x-raw,format=I420 ! omxh264enc name="encoder" target-bitrate={args.bitrate}000 qos=true control-rate=1 ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
+
                 if args.rtmp:
                     pipeline_video_input += f' ! queue ! h264parse {saveVideo}'
                 else:
                     pipeline_video_input += f' ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! h264parse {saveVideo} ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
 
-            elif args.aom: 
-                pipeline_video_input += f' ! videoconvert ! av1enc cpu-used=8 target-bitrate={args.bitrate} name="encoder" usage-profile=realtime qos=true ! av1parse ! rtpav1pay'
+            elif args.aom:
+                pipeline_video_input += f' ! videoconvert{timestampOverlay} ! av1enc cpu-used=8 target-bitrate={args.bitrate} name="encoder" usage-profile=realtime qos=true ! av1parse ! rtpav1pay'
             elif args.rav1e:
-                pipeline_video_input += f' ! videoconvert ! rav1enc bitrate={args.bitrate}000 name="encoder" low-latency=true error-resilient=true speed-preset=10 qos=true ! av1parse ! rtpav1pay'
+                pipeline_video_input += f' ! videoconvert{timestampOverlay} ! rav1enc bitrate={args.bitrate}000 name="encoder" low-latency=true error-resilient=true speed-preset=10 qos=true ! av1parse ! rtpav1pay'
             elif args.qsv:
-                pipeline_video_input += f' ! videoconvert ! qsvav1enc gop-size=60 bitrate={args.bitrate} name="encoder1" ! av1parse ! rtpav1pay'
+                pipeline_video_input += f' ! videoconvert{timestampOverlay} ! qsvav1enc gop-size=60 bitrate={args.bitrate} name="encoder1" ! av1parse ! rtpav1pay'
 
             else:
-                # VP8
                 if args.nvidia:
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxvp8enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                 elif args.rpi:
-                    pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420 ! queue max-size-buffers=10 ! vp8enc deadline=1 name="encoder" target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
-                # need to add an nvidia vp8 hardware encoder option.
+                    pipeline_video_input += f' ! v4l2convert{timestampOverlay} ! video/x-raw,format=I420 ! queue max-size-buffers=10 ! vp8enc deadline=1 name="encoder" target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                 else:
-                    pipeline_video_input += f' ! videoconvert ! queue max-size-buffers=10 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 name="encoder" {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
-                    
+                    pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=10 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 name="encoder" {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
+
             if args.multiviewer:
                 pipeline_video_input += ' ! tee name=videotee '
             else:
@@ -2020,14 +1841,14 @@ async def main():
             else:
                 needed += ['alsa']
                 pipeline_audio_input += f'alsasrc device={args.alsa} use-driver-timestamps=TRUE'
-               
+
 
             if args.rtmp:
                pipeline_audio_input += f' ! queue ! audioconvert dithering=0 ! audio/x-raw,rate=48000,channel=1 ! fdkaacenc bitrate=65536 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
             elif args.zerolatency:
                pipeline_audio_input += f' ! queue max-size-buffers=2 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=0 bitrate=16000 inband-fec=false audio-type=2051 frame-size=20 {saveAudio} ! rtpopuspay pt=100 ssrc=-1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
             elif args.vorbis:
-               pipeline_audio_input += f' ! queue max-size-buffers=3 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! vorbisenc bitrate={args.audiobitrate}000 {saveAudio} ! rtpvorbispay pt=100 ssrc=-1 ! application/x-rtp,media=audio,encoding-name=VORBIS,payload=100' 
+               pipeline_audio_input += f' ! queue max-size-buffers=3 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! vorbisenc bitrate={args.audiobitrate}000 {saveAudio} ! rtpvorbispay pt=100 ssrc=-1 ! application/x-rtp,media=audio,encoding-name=VORBIS,payload=100'
             else:
                pipeline_audio_input += f' ! queue ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=1 bitrate={args.audiobitrate}000 inband-fec=true {saveAudio} ! rtpopuspay pt=100 ssrc=-1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
 
@@ -2035,10 +1856,10 @@ async def main():
                 pipeline_audio_input += ' ! tee name=audiotee '
             else:
                 pipeline_audio_input += ' ! queue ! sendrecv. '
-                
+
         pipeline_save = ""
         if args.save:
-           pipeline_save = " matroskamux name=mux ! queue ! filesink sync=true location="+str(int(time.time()))+".mkv "   
+           pipeline_save = " matroskamux name=mux ! queue ! filesink sync=true location="+str(int(time.time()))+".mkv "
 
         pipeline_rtmp = ""
         if args.rtmp:
@@ -2059,11 +1880,11 @@ async def main():
                 loop = GObject.MainLoop()
 
             bus.connect("message", on_message, loop)
-            try: 
+            try:
                 loop.run()
-            except: 
+            except:
                 loop.quit()
-            
+
             pipe.set_state(Gst.State.NULL)
             sys.exit(1)
         elif args.whip:
@@ -2083,7 +1904,6 @@ async def main():
             except:
                 loop = GObject.MainLoop()
 
-            #bus.connect("message", on_message, loop)
             try:
                 loop.run()
             except Exception as E:
@@ -2106,8 +1926,8 @@ async def main():
         else:
             PIPELINE_DESC = f'{pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
             printc('\ngst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'), "FFF")
-            
-        
+
+
         if not check_plugins(needed) or error:
             sys.exit(1)
 
@@ -2117,11 +1937,11 @@ async def main():
     else:
         args.server = WSS
         server = ""
-        
-   
+
+
     if not args.hostname.endswith("/"):
         args.hostname = args.hostname+"/"
-    
+
     watchURL = args.hostname
     if args.password:
         if args.password == "someEncryptionKey123":
@@ -2130,12 +1950,10 @@ async def main():
             watchURL += "?password="+args.password+"&"
     else:
         watchURL += "?password=false&"
-        
-    
-    
-    # reset_color = "\033[0m"
+
+
     bold_color = hex_to_ansi("FAF")
-    
+
     if args.streamin:
         if not args.room:
             printc(f"\n-> You can publish a stream to capture at: {bold_color}{watchURL}push={args.streamin}{server}", "77F")
