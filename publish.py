@@ -1117,7 +1117,7 @@ class WebRTCClient:
                                     printwout(msg)
                                     await self.conn.send(msg)
                                 else:
-                                    msg = jsoin.dumps({"request":"seed","streamID":self.stream_id+self.hashcode}) ## we're just going to publish a stream
+                                    msg = json.dumps({"request":"seed","streamID":self.stream_id+self.hashcode}) ## we're just going to publish a stream
                                     printwout("seed start")
                                     await self.conn.send(msg)
                     continue
