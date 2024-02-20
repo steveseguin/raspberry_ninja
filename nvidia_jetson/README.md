@@ -47,6 +47,7 @@ The username and password to sign in to the image is:
 username: ninja
 password: vdo
 ```
+(if the password doesn't work, try `vdo` for the username and `ninja` for the password, instead)
 
 If the Jetson fails to boot after installing it, try an older image, provided below, or considering updating the firmware on your Jetson to something newer.  If nothing else works, you can build Raspberry_ninja from scratch using the installer.sh file, located in the `nvidia_jetson` folder.  
 
