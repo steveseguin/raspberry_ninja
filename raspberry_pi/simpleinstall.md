@@ -32,14 +32,13 @@ pip3 install PyGObject
 
 ```sudo apt-get install git vim -y```
 
-```
-git clone https://github.com/steveseguin/raspberry_ninja
-
-cd raspberry_ninja
-```
+```git clone https://github.com/steveseguin/raspberry_ninja```
 
 ## Running things
 
 After all, run the command to test
 
-```python3 publish.py --rpi --test```
+```
+cd raspberry_ninja
+python3 publish.py --rpi --test
+```
