@@ -1,6 +1,6 @@
 ## Installation on a Raspberry Pi /w Bullseye 32bit
 
-This is the `simple approach` to installing Raspberry.Ninja onto a vanilla Raspberry Pi image.
+This is the `'simple approach'` to installing Raspberry.Ninja onto a vanilla Raspberry Pi image.
 
 At the moment this may lead to the installation of Gstreamer 1.18, which works for publishing video to VDO.Ninja, but doesn't quite work well with playing back video. A newer version may be needed if intending to restream from VDO.Ninja to RTSP, NDI, file, etc.
 
