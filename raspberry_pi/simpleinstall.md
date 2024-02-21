@@ -4,7 +4,7 @@ This is the `simple approach` to installing Raspberry.Ninja onto a vanilla Raspb
 
 At the moment this may lead to the installation of Gstreamer 1.18, which works for publishing video to VDO.Ninja, but doesn't quite work well with playing back video. A newer version may be needed if intending to restream from VDO.Ninja to RTSP, NDI, file, etc.
 
-Please note, Linux in general is designed to torment users, and so this install script may fail to work in the future as the world changes. I will try to keep it updated as best I can, but I can only say it last worked for me on February 21, 2024, using a fresh install of Raspberry Pi OS - Bookworm Lite 64-bit edition.
+(Please note, Linux in general is designed to torment users, and so this install script may fail to work in the future as the world changes. I will try to keep it updated as best I can, but I can only say it last worked for me on February 21, 2024, using a fresh install of Raspberry Pi OS - Bookworm Lite 64-bit edition.)
 
 #### Setting up and connecting
 
