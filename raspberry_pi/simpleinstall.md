@@ -32,7 +32,11 @@ pip3 install PyGObject
 
 ```sudo apt-get install git vim -y```
 
-```git clone https://github.com/steveseguin/raspberry_ninja```
+```
+git clone https://github.com/steveseguin/raspberry_ninja
+
+cd raspberry_ninja
+```
 
 ## Running things
 
