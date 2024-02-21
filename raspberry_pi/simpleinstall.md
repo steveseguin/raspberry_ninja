@@ -22,10 +22,14 @@ Install some required lib
 
 Install websocket and gi module
 
-``pip3 install websockets PyGObject``
+```
+pip3 install websockets 
+sudo apt-get install -y libcairo-dev libgirepository1.0-dev # may or may not be needed for the next step
+pip3 install PyGObject
+```
 
 #### Downloading Raspberry.Ninja
-
+Y
 ```sudo apt-get install git vim -y```
 
 ```git clone https://github.com/steveseguin/raspberry_ninja```
