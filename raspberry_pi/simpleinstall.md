@@ -12,9 +12,9 @@ Run command to update the board, be sure that python3 and pip are installed
 
 ``sudo apt update && sudo apt upgrade -y``
 
-If running a Debian 12-based system, including new Raspberry OS systems (eg; bookworm), you'll either want to deploy things as a virtual environment, or disable the flag that prevents self-managing depedencies. You can skip this step if you don't have issues otherwise, or if you prefer to manage your environment some other way.
+If running a Debian 12-based system, including new Raspberry OS systems (eg; bookworm), you'll either want to deploy things as a virtual environment (suggested), or disable the flag that prevents self-managing depedencies (easier). You can skip this step if you don't have issues otherwise, or if you prefer to manage your environment some other way. Pretty much though, this new install speedbump was added by others because the world doesn't like us having fun.
 
-```sudo rm /usr/lib/python3.11/EXTERNALLY-MANAGED  # Delete this file or use a venv```
+```sudo rm /usr/lib/python3.11/EXTERNALLY-MANAGED  # Delete this file to prefer fun over safety``
 
 Install some required lib
 
