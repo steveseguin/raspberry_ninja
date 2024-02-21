@@ -29,7 +29,7 @@ pip3 install PyGObject
 ```
 
 #### Downloading Raspberry.Ninja
-Y
+
 ```sudo apt-get install git vim -y```
 
 ```git clone https://github.com/steveseguin/raspberry_ninja```
