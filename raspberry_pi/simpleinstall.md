@@ -22,12 +22,6 @@ Install some required lib
 sudo apt-get install -y python3-pip libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools gstreamer1.0-x python3-pyqt5 python3-opengl gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-gtk3 gstreamer1.0-pulseaudio gstreamer1.0-nice gstreamer1.0-plugins-base-apps
 ``
 
-Since Linux in general is designed to cause endless grief to casual users, if using Bookworm with your Raspberry Pi, you'll now need to also install libcamerasrc manually. This may fail if using an older or future version of Linux however.
-
-``
-sudo apt-get install -y gstreamer1.0-libcamera
-``
-
 Install websocket and gi module. (Installing PyGObject often breaks due to changing dependencies, and it's near impossible to install on Windows, so consider it your lucky day if it installs without issues.)
 
 ```
@@ -35,6 +29,12 @@ pip3 install websockets
 sudo apt-get install -y libcairo-dev libgirepository1.0-dev # these dependencies may or may not be needed; it rather depends on the mood of the universe.
 pip3 install PyGObject
 ```
+
+Since Linux in general is designed to cause endless grief to casual users, if using Bookworm with your Raspberry Pi, you'll now need to also install libcamerasrc manually. This may fail if using an older or future version of Linux however.
+
+``
+sudo apt-get install -y gstreamer1.0-libcamera
+``
 
 #### Downloading Raspberry.Ninja
 
@@ -50,3 +50,5 @@ After all, run the command to test
 cd raspberry_ninja # change into the directory
 python3 publish.py --rpi --test
 ```
+
+`--test` should show a test video with static sounds.  You can remove it afterwards and configure Raspberry Ninja for your actual camera.
