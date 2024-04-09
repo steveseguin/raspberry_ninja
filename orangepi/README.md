@@ -18,9 +18,7 @@ Run command to update the board, be sure that python3 and pip are installed
 ``sudo apt update && sudo apt upgrade -y``
 
 For newer Debian bookworm (ie: newer) versions, either run this or use a virtual environment to ocontinue
-```
-sudo rm /usr/lib/python3.11/EXTERNALLY-MANAGED 
-```
+``sudo rm /usr/lib/python3.11/EXTERNALLY-MANAGED ``
 
 Install Python PIP
 
