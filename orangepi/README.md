@@ -34,6 +34,7 @@ You may also need to install PyGObject, such as if running Ubuntu
 
 ```
 sudo apt-get install -y libcairo-dev
+sudo rm /usr/lib/python3.11/EXTERNALLY-MANAGED # For newer Debian versions, either run this or use a virtual environment
 pip3 install PyGObject
 ```
 
