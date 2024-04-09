@@ -1,5 +1,5 @@
 
-![opi5-camera-rk](https://github.com/steveseguin/raspberry_ninja/assets/5319910/63a664aa-acab-4a7e-a836-524b9a4460fb)
+<img width="360" src="https://github.com/steveseguin/raspberry_ninja/assets/5319910/63a664aa-acab-4a7e-a836-524b9a4460fb">
 
 ## Installation on a Orange Pi
 
