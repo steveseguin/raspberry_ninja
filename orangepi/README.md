@@ -39,7 +39,6 @@ You may also need to install PyGObject, such as if running Ubuntu
 
 ```
 sudo apt-get install -y libcairo-dev
-
 pip3 install PyGObject
 ```
 
