@@ -38,6 +38,14 @@ sudo rm /usr/lib/python3.11/EXTERNALLY-MANAGED # For newer Debian versions, eith
 pip3 install PyGObject
 ```
 
+To download Raspberry.Ninja
+
+```
+cd ~
+git clone https://github.com/steveseguin/raspberry_ninja
+cd raspberry_ninja # change into the raspberry_ninja directory
+```
+
 ## Running things
 
 After all, run the command to test stream, which should show colored bars and play static noise.
