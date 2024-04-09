@@ -25,16 +25,21 @@ Install some required lib
 
 ``sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools gstreamer1.0-x gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-gtk3 gstreamer1.0-qt5 gstreamer1.0-pulseaudio gstreamer1.0-nice gstreamer1.0-plugins-base-apps``
 
+
+For newer Debian bookworm (ie: newer) versions, either run this or use a virtual environment
+```
+sudo rm /usr/lib/python3.11/EXTERNALLY-MANAGED 
+```
+
 Install websocket module
 
 ``pip3 install websockets``
 
 You may also need to install PyGObject, such as if running Ubuntu
 
-
 ```
 sudo apt-get install -y libcairo-dev
-sudo rm /usr/lib/python3.11/EXTERNALLY-MANAGED # For newer Debian versions, either run this or use a virtual environment
+
 pip3 install PyGObject
 ```
 
