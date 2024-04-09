@@ -69,3 +69,31 @@ I found out that /dev/video1 is the HDMI Input but you will need to enter orange
 
 Orange Pi 5 Plus with usb webcam
 ![opi5plus-webcam](https://github.com/steveseguin/raspberry_ninja/assets/5319910/25934ec7-da3a-4cff-96ac-5a723840caf4)
+
+
+### Setting up auto-boot
+There is a service file included in the raspberry_pi folder that sets the raspberry pi up to auto-boot. You will need to modify it a tiny bit with the settings to launch by default, such as specifying the stream ID and camera settings, such as --rpicam or --rpi or --hdmi, etc.
+
+To edit the file, you can use VIM.
+```
+cd ~
+cd raspberry_ninja
+cd orangepi
+sudo vi raspininja.service
+```
+To use VIM, press i to enter text edit mode. :wq will let you save and exit.
+
+Change the stream ID and anything else.
+
+Once done editing the file, you can set it up to auto launch on load and to start running immediately.
+```
+sudo cp raspininja.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable raspininja
+sudo systemctl restart raspininja
+```
+To check if there were any errors, you can run the status command:
+```
+sudo systemctl status raspininja
+```
+Things should now auto-boot on system boot, and restart if things crash.
