@@ -40,9 +40,11 @@ pip3 install PyGObject
 
 ## Running things
 
-After all, run the command to test
+After all, run the command to test stream, which should show colored bars and play static noise.
 
-``python3 publish.py --streamid orangepi5 --noaudio --raw``
+``python3 publish.py --test``
+
+If successful, configure command-line as needed, removing `--test`, and customizing as needed.
 
 ### Camera considerations
 
