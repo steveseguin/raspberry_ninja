@@ -1,0 +1,29 @@
+[Unit]
+Description=Orange Ninja as a system service
+After=network-online.target sound.target
+Wants=sound.target
+Requires=network-online.target
+
+[Service]
+# Run as 'orangepi' user and group, ensure this user has the necessary permissions
+User=orangepi
+Group=orangepi
+
+# Using 'simple' type for immediate start-up, consider if 'idle' is necessary
+Type=simple
+
+# Adjusting the environment for Orange Pi, ensure these variables are correctly set
+Environment="XDG_RUNTIME_DIR=/run/user/1000"
+
+# Sleep to ensure all dependencies are up, consider an alternative way to check camera availability if needed
+ExecStartPre=/bin/sleep 5
+
+# Main command to start the service, adjust path and options as necessary, such as change the streamID
+ExecStart=/usr/bin/python3 /home/orangepi/raspberry_ninja/publish.py --streamid orangepi123
+
+# Restart policy
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
