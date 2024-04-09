@@ -1,18 +1,31 @@
 [Unit]
 Description=Raspberry Ninja as a system service
-After=network-online.target
+After=network-online.target sound.target
+Wants=sound.target
 Requires=network-online.target
 
 [Service]
+# Run as 'vdo' user and group, ensure this user has the necessary permissions
 User=vdo
 Group=vdo
-Type=idle
+
+# Using 'simple' type for immediate start-up, consider if 'idle' is necessary
+Type=simple
+
+# Ensuring the environment has necessary variables for audio, adjust as needed
+Environment="XDG_RUNTIME_DIR=/run/user/1000"
+Environment="PULSE_SERVER=/run/user/1000/pulse/native"
+
+# Sleep to ensure all dependencies are up, and check camera availability
 ExecStartPre=/bin/sleep 5
+ExecStartPre=/usr/bin/vcgencmd get_camera
+
+# Main command to start the service, adjust path and options as necessary
+ExecStart=/usr/bin/python3 /home/vdo/raspberry_ninja/publish.py --test
+
+# Restart policy
 Restart=always
 RestartSec=5s
-Environment=XDG_RUNTIME_DIR=/run/user/1000
-ExecStartPre=vcgencmd get_camera
-ExecStart=/usr/bin/python3 /home/vdo/raspberry_ninja/publish.py --test
 
 [Install]
 WantedBy=multi-user.target
