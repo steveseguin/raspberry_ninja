@@ -72,7 +72,7 @@ Orange Pi 5 Plus with usb webcam
 
 
 ### Setting up auto-boot
-There is a service file included in the raspberry_pi folder that sets the raspberry pi up to auto-boot. You will need to modify it a tiny bit with the settings to launch by default, such as specifying the stream ID and camera settings, such as --rpicam or --rpi or --hdmi, etc.
+There is a service file included in the raspberry_pi folder that sets the raspberry pi up to auto-boot. You will need to modify it a tiny bit with the settings to launch by default, such as specifying the stream ID.
 
 To edit the file, you can use VIM.
 ```
