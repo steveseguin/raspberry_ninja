@@ -118,13 +118,13 @@ If you are using a Raspberry Pi 4, then you should be pretty good to go at this 
 
 If you are using a Raspberry Pi 2 or 3, you might want to limit the resolution to 720p, at least if using a USB camera source. I can get 1080p30 on a Raspberry Pi 2 at fairly high bitrates, when running a stable version of the operating system with Gstreamer v1.22; this wasn't the case with older versions or nightly-built versions.
 
-If using the CSI camera, the hardware encoder often works quite well, although it might still be best to limit the resolution to 720p30 or 360p30 if using an older raspberry pi zero w. The Raspberry Pi Zero 2 however works quite well at 1080p30 with the official Raspberry Pi cameras.
+If using the CSI camera, the hardware encoder often works quite well, although it might still be best to limit the resolution to 720p30 or 360p30 if using an older raspberry pi zero w. The Raspberry Pi Zero 2 however works quite well at 1080p30 with the official Raspberry Pi cameras. There is no hardware encoder on the RPi-5.
 
-To enable the CSI camera on older versions of Raspberry Pi OS (Raspbian), you may need to add `--rpicam` to the command-line, as the default is USB MPJEG. With newer versions of Raspberry Pi OS, you may instead need to use `--libcamera --rpi` instead.  If you don't have audio connected, you might also need to add `--noaudio`, as sometimes that can cause issues.
+To enable the CSI camera on older versions of Raspberry Pi OS (Raspbian), you may need to add `--rpicam` to the command-line, as the default is USB MPJEG. With newer versions of Raspberry Pi OS, you may instead need to use `--libcamera --rpi` instead (or just --libcamera).  If you don't have audio connected, you might also need to add `--noaudio`, as sometimes that can cause issues.
 
 If using a third-party CSI-based camera, it is strongly recommended you check compatilbility ahead of time. If you need to install a "driver" to have it work, I'd advise against using it. Drivers may not be compatible with the Gstreamer version used by Raspberry Ninja, or at the very least, can make setup and debugging a real nightmare.  Most Arducam cameras now seem to be driverless, with just a small change to the boot config file needed only, but this isn't the case for all Arducams or cameras from other providers.
 
-If using a Camlink, you may need to use `--camlink`, or `--raw --rpi`, or perhaps just `--raw`. 
+If using a Camlink, you may need to use `--camlink`, or `--raw --rpi`, or perhaps just `--raw`, (such as if using a Raspberry Pi 5)
 
 You may need to run `sudo raspi-config` ane enable the CSI camera inteface before the script will be able to use it. Some CSI cameras must be run with `--v4l2` instead, and some others require custom drivers to be installed first. Sticking with the official raspberry pi cameras is your best bet, but the $40 HDMI-to-CSI adapter and some knock off Raspberry Pi CSI cameras often will work pretty well too.
 
@@ -132,7 +132,7 @@ To enable RAW-mode (YUY2) via a USB Camera, instead of MJPEG, you'll need to add
 
 If using an HDMI adapter as a camera source, you may need to adjust things at a code level to account for the color-profiles of your camera source. `--bt601` is an option for one stanard profile, with the default profile set at `coloimetry=2:4:5:4` for a Raspberry Pi. 10-bit and interlaced video probably isn't a good idea to attempt to use, and if possible setting the HDMI output of your camera to 8-bit 1080p24,25 or 30 is the highest you should probably go.
 
-Raspberry Pis only support up to 1080p30 FPS with the hardware encoder. I have not tested a Raspberry Pi 5 yet to confirm this is still the case however. A raspberry Pi 5 might have enough CPu performance to do 1080p60 in software mode however, so it might still be managable.  I've not confirmed.
+Raspberry Pis only support up to 1080p30 FPS with the hardware encoder, and since the Raspberry Pi 5 doesn't have a hardware encoder, you will be using software encoders instead. A setting a faster preset, if using x264 for example, will allow a Raspberry 5 to output potentially even faster frame rates and resolutions, but at the cost of compression and video quality. 
 
 One user who had issues mentioned they had to disable "Legacy Camera" mode in the raspi-config settings app to have their Pi camera be detected; this should be already off by default, but if you enabled it, I suppose try turning it off.
 
