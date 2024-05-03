@@ -176,8 +176,8 @@ optional arguments:
   --aom                 Use AV1-AOM software encoding for publishing
   --av1                 Whatever AV1 encoder the script can find; more can be added on request
   --qsv                 Intel quicksync avi encoder
-  --nvidia              Creates a pipeline optimised for nvidia hardware.
-  --rpi                 Creates a pipeline optimised for raspberry pi hadware.
+  --nvidia              Creates a pipeline optimized for Nvidia (Jetson?) hardware encoders
+  --rpi                 Creates a pipeline optimized for Raspberry Pi (0,1,2,3,4) hardware encoders (⚠️RPi-5 doesn't have a hardware encoder)
   --novideo             Disables video input.
   --noaudio             Disables audio input.
   --omx                 An alternative hardware encoder for the RPi; glitches, but faster?
