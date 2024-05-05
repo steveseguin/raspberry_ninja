@@ -1287,7 +1287,7 @@ async def main():
     parser.add_argument('--omx', action='store_true', help='Try to use the OMX driver for encoding video; not recommended')
     parser.add_argument('--vorbis', action='store_true', help='Try to use the OMX driver for encoding video; not recommended')
     parser.add_argument('--nvidia', action='store_true', help='Creates a pipeline optimised for nvidia hardware.')
-    parser.add_argument('--rpi', action='store_true', help='Creates a pipeline optimised for raspberry pi hardware encoder. This won't work with the Raspberry Pi 5, as it has no hardware encoder..')
+    parser.add_argument('--rpi', action='store_true', help='Creates a pipeline optimised for raspberry pi hardware encoder. This wont work with the Raspberry Pi 5, as it has no hardware encoder..')
     parser.add_argument('--multiviewer', action='store_true', help='Allows for multiple viewers to watch a single encoded stream; will use more CPU and bandwidth.')
     parser.add_argument('--noqos', action='store_true', help='Do not try to automatically reduce video bitrate if packet loss gets too high. The default will reduce the bitrate if needed.')
     parser.add_argument('--nored', action='store_true', help='Disable error correction redundency for transmitted video. This may reduce the bandwidth used by half, but it will be more sensitive to packet loss')
