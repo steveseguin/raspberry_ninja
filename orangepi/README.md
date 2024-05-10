@@ -9,7 +9,7 @@ It is recommended to use Orange Pi 5 and Orange Pi 5 Plus, since other model i d
 
 There are no preinstalled image since I don't have time to create it. However, you can download the prebuilt OS from manufaturer website orangepi.org and start to use it
 
-*note: This guide I think was based on Debian, but it should also work with Ubuntu and maybe other Linux flavours
+*notes: This guide I think was based on Debian, but it should also work with Ubuntu and maybe other Linux flavours.  For the OP5+, the HDMI input works when using `--raw` as a publish.py parameter, but if not, check to see if the HDMI input is listed when running `gst-device-monitor-1.0`. I can confirm it is listed and works fine with `Armbian_24.2.3_Orangepi5-plus_bookworm_legacy_5.10.160_minimal.img.xz` as of May 10th 2024.  You can use the `--v4l2` parameter to change which video device ID to use, if there is more than one video device connected.
 
 #### Setting up and connecting
 
@@ -38,6 +38,7 @@ You may also need to install PyGObject, such as if running Ubuntu
 
 ```
 sudo apt-get install -y libcairo-dev
+sudo apt-get install python3-dev cmake meson libgirepository1.0-dev ## these may not be needed
 pip3 install PyGObject
 ```
 
