@@ -620,7 +620,7 @@ class WebRTCClient:
                 name = caps.to_string()
 
                 print(name)
-                filesink = False
+                
                 if "video" in name:
 
                     if self.ndiout:
@@ -642,29 +642,30 @@ class WebRTCClient:
                         elif "H264" in name:
                             out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! openh264dec ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=2 leaky=downstream ! appsink name=appsink", True)
                     else:
-                        if filesink:
-                            print("Video being added after audio")
+                        print("VIDEO setup")
+                        if self.pipe.get_by_name('filesink'):
+                            print("VIDEO setup")
                             if "VP8" in name:
                                 out = Gst.parse_bin_from_description("queue ! rtpvp8depay", True)
                             elif "H264" in name:
                                 out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse", True)
-
+                                
+                            self.pipe.add(out)
+                            out.sync_state_with_parent()
+                            sink = out.get_static_pad('sink')
+                            out.link(self.pipe.get_by_name('filesink'))
+                            pad.link(sink)
                         else:
-                            print("video being saved...")
                             if "VP8" in name:
-                                out = Gst.parse_bin_from_description("queue ! rtpvp8depay !  webmmux  name=mux1 ! filesink sync=false location="+self.streamin+"_"+str(int(time.time()))+"_video.webm", True)
+                                out = Gst.parse_bin_from_description("queue ! rtpvp8depay !  mpegtsmux  name=mux1 ! filesink name=filesinkvideo sync=false location="+self.streamin+"_"+str(int(time.time()))+"_video.ts", True)
                             elif "H264" in name:
-                                out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! mp4mux  name=mux1 ! queue ! filesink sync=true location="+self.streamin+"_"+str(int(time.time()))+"_video.mp4", True)
-
-                    self.pipe.add(out)
-                    out.sync_state_with_parent()
-                    sink = out.get_static_pad('sink')
-                    if filesink:
-                        out.link(filesink)
-
-                    pad.link(sink)
-                    print("success video?")
-
+                                out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! mpegtsmux   name=mux1 ! queue ! filesink  name=filesinkvideo sync=true location="+self.streamin+"_"+str(int(time.time()))+"_video.ts", True)
+                                
+                            self.pipe.add(out)
+                            out.sync_state_with_parent()
+                            sink = out.get_static_pad('sink')
+                            pad.link(sink)
+                        print("success video?")
 
                     if self.framebuffer:
                         frame_shape = (720, 1280, 3)
@@ -688,23 +689,28 @@ class WebRTCClient:
                         out = Gst.parse_bin_from_description("queue ! fakesink", True)
                         pass # WIP
                     else:
-                        if filesink:
+                    
+                        if self.pipe.get_by_name('filesink'):
                             print("Audio being added after video")
                             if "OPUS" in name:
                                 out = Gst.parse_bin_from_description("queue rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,channels=2,rate=48000", True)
+                                
+                            self.pipe.add(out)
+                            out.sync_state_with_parent()
+                            sink = out.get_static_pad('sink')
+                            out.link(self.pipe.get_by_name('filesink'))
+                            pad.link(sink)
+                            
                         else:
                             print("audio being saved...")
                             if "OPUS" in name:
-                                out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,channels=2,rate=48000 ! mp4mux name=mux2 ! queue ! filesink sync=true location="+self.streamin+"_"+str(int(time.time()))+"_audio.mp4", True)
+                                out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,rate=48000 ! mpegtsmux name=mux2 ! queue ! filesink name=filesinkaudio sync=true location="+self.streamin+"_"+str(int(time.time()))+"_audio.ts", True)
 
-                    self.pipe.add(out)
-                    out.sync_state_with_parent()
-
-                    sink = out.get_static_pad('sink')
-
-                    if filesink:
-                        out.link(filesink)
-                    pad.link(sink)
+                            self.pipe.add(out)
+                            out.sync_state_with_parent()
+                            sink = out.get_static_pad('sink')
+                            pad.link(sink)
+                            
                     print("success audio?")
 
             except Exception as E:
@@ -714,100 +720,7 @@ class WebRTCClient:
                 fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
                 print(exc_type, fname, exc_tb.tb_lineno)
 
-
-        def on_incoming_stream_2( _, pad):
-            print("ON INCOMING STREAM !! ************* ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ .......$$$$$$$")
-            try:
-                if Gst.PadDirection.SRC != pad.direction:
-                    print("pad direction wrong?")
-                    return
-            except Exception as E:
-                print(E)
-                return
-
-            caps = pad.get_current_caps()
-            name = caps.to_string()
-
-            print(name)
-
-            if "video" in name:
-                q = Gst.ElementFactory.make('queue')
-                q.set_property("max-size-bytes",0)
-                q.set_property("max-size-buffers",0)
-                q.set_property("max-size-time",0)
-                q.set_property("flush-on-eos",True)
-                sink = Gst.ElementFactory.make('filesink', "videosink")  # record inbound stream to file
-
-                if "H264" in name:
-                    sink.set_property("location", str(time.time())+'.h264')
-                    depay = Gst.ElementFactory.make('rtph264depay', "depay")
-                    depay.set_property("request-keyframe", True)
-                    p = Gst.ElementFactory.make('h264parse', "parse")
-                    caps = Gst.ElementFactory.make("capsfilter", "caps")
-                    caps.set_property("caps", Gst.Caps.from_string("video/x-h264,stream-format=byte-stream"))
-                elif "VP8" in name: ## doesn't work for some reason yet?  stalls on trying to save
-                    sink.set_property("location", str(time.time())+'.vp8')
-                    depay = Gst.ElementFactory.make('rtpvp8depay', "depay")
-                    depay.set_property("request-keyframe", True)
-                    p = None
-                    caps = Gst.ElementFactory.make("capsfilter", "caps")
-                    caps.set_property('caps', Gst.Caps.from_string("video/x-vp8"))
-                else:
-                    print("UNKNOWN FORMAT - saving as raw RTP stream")
-                    sink.set_property("location", str(time.time())+'.unknown')
-                    depay = Gst.ElementFactory.make('queue', "depay")
-                    p = None
-                    caps = Gst.ElementFactory.make("queue", "caps")
-
-
-                self.pipe.add(caps)
-                self.pipe.add(q)
-                self.pipe.add(depay)
-                if p:
-                    self.pipe.add(p)
-                self.pipe.add(sink)
-                self.pipe.sync_children_states()
-
-                pad.link(q.get_static_pad('sink'))
-                q.link(depay)
-                if p:
-                    depay.link(p)
-                    p.link(caps)
-                else:
-                    depay.link(caps)
-                caps.link(sink)
-            elif "audio" in name:
-                q = Gst.ElementFactory.make('queue')
-                q.set_property("max-size-bytes",0)
-                q.set_property("max-size-buffers",0)
-                q.set_property("max-size-time",0)
-                q.set_property("flush-on-eos",True)
-
-                caps = Gst.ElementFactory.make("capsfilter", "audiocaps")
-                caps.set_property('caps', Gst.Caps.from_string('audio/x-opus'))
-
-                decode = Gst.ElementFactory.make("opusdec", "opusdec")
-
-                sink = Gst.ElementFactory.make('filesink', "audiosink")  # record inbound stream to file
-                sink.set_property("location", str(time.time())+'.pcm')
-
-                depay = Gst.ElementFactory.make('rtpopusdepay', "audiodepay")
-
-                self.pipe.add(q)
-                self.pipe.add(depay)
-                self.pipe.add(decode)
-                self.pipe.add(sink)
-                self.pipe.add(caps)
-                self.pipe.sync_children_states()
-
-                pad.link(q.get_static_pad('sink'))
-                q.link(depay)
-                depay.link(caps)
-                caps.link(decode)
-                decode.link(sink)
-
         print("creating a new webrtc bin")
-
         started = True
         if not self.pipe:
             print("loading pipe")
