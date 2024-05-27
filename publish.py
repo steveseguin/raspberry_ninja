@@ -623,12 +623,28 @@ class WebRTCClient:
                 print(name)
                 
                 if "video" in name:
+                    if self.novideo:
+                        printc('Ignoring incoming video track', "F88")
+                        out = Gst.parse_bin_from_description("queue ! fakesink", True)
+                        
+                        self.pipe.add(out)
+                        out.sync_state_with_parent()
+                        sink = out.get_static_pad('sink')
+                        pad.link(sink)
+                        return;
+                        
                     if self.ndiout:
                         print("NDI OUT")
                         if "VP8" in name:
                             out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! decodebin ! videoconvert ! queue ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! ndisink ndi-name='" + self.streamin + "'", True)
                         elif "H264" in name:
                             out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! queue max-size-buffers=0 max-size-time=0 ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! queue ! ndisink ndi-name='" + self.streamin + "'", True)
+                            
+                        self.pipe.add(out)
+                        out.sync_state_with_parent()
+                        sink = out.get_static_pad('sink')
+                        pad.link(sink)      
+                        
                     elif self.fdsink:
                         print("FD SINK OUT")
                         if "VP8" in name:
@@ -637,13 +653,24 @@ class WebRTCClient:
                         elif "H264" in name:
                             out = Gst.parse_bin_from_description(
                                 "queue ! rtph264depay ! h264parse ! openh264dec ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=0 max-size-time=0 ! fdsink", True)
-                                
+                        
+                        self.pipe.add(out)
+                        out.sync_state_with_parent()
+                        sink = out.get_static_pad('sink')
+                        pad.link(sink)
+                        
                     elif self.framebuffer: ## send raw data to ffmpeg or something I guess, using the stdout?
                         print("APP SINK OUT")
                         if "VP8" in name:
                             out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=2 leaky=downstream ! appsink name=appsink", True)
                         elif "H264" in name:
                             out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! openh264dec ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=2 leaky=downstream ! appsink name=appsink", True)
+                        
+                        self.pipe.add(out)
+                        out.sync_state_with_parent()
+                        sink = out.get_static_pad('sink')
+                        pad.link(sink)
+                        
                     else:
                         print("VIDEO setup")
                         if self.pipe.get_by_name('filesink'):
@@ -682,15 +709,43 @@ class WebRTCClient:
                         appsink.connect("new-sample", new_sample)
 
                 elif "audio" in name:
+                    if self.noaudio:
+                        printc('Ignoring incoming audio track', "F88")
+                        
+                        out = Gst.parse_bin_from_description("queue ! fakesink", True)
+                        
+                        self.pipe.add(out)
+                        out.sync_state_with_parent()
+                        sink = out.get_static_pad('sink')
+                        pad.link(sink)
+                        return;
+                
                     if self.ndiout:
-                        if "OPUS" in name:
-                            out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,channels=2,rate=48000 ! ndisink name=ndi-audio ndi-name='" + self.streamin + "'", True)
+                       # if "OPUS" in name:
+                        out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,channels=2,rate=48000 ! ndisink name=ndi-audio ndi-name='" + self.streamin + "'", True)
+                        
+                        self.pipe.add(out)
+                        out.sync_state_with_parent()
+                        sink = out.get_static_pad('sink')
+                        pad.link(sink)
+                        
                     elif self.fdsink:
-                        if "OPUS" in name:
-                            out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,channels=2,rate=48000 ! fdsink", True)
+                        #if "OPUS" in name:
+                        out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,channels=2,rate=48000 ! fdsink", True)
+                        
+                        self.pipe.add(out)
+                        out.sync_state_with_parent()
+                        sink = out.get_static_pad('sink')
+                        pad.link(sink)
+                        
                     elif self.framebuffer:
                         out = Gst.parse_bin_from_description("queue ! fakesink", True)
-                        pass # WIP
+                        
+                        self.pipe.add(out)
+                        out.sync_state_with_parent()
+                        sink = out.get_static_pad('sink')
+                        pad.link(sink)
+                        
                     else:
                     
                         if self.pipe.get_by_name('filesink'):
