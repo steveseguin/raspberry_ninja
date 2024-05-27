@@ -159,6 +159,7 @@ class WebRTCClient:
         self.streamin = params.streamin
         self.ndiout = params.ndiout
         self.fdsink = params.fdsink
+        self.filesink = None
         self.framebuffer = params.framebuffer
         self.midi = params.midi
         self.nored = params.nored
@@ -622,19 +623,21 @@ class WebRTCClient:
                 print(name)
                 
                 if "video" in name:
-
                     if self.ndiout:
                         print("NDI OUT")
                         if "VP8" in name:
-                            out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! decodebin ! videoconvert ! queue ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! ndisink ndi-name='"+self.streamin+"'", True)
+                            out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! decodebin ! videoconvert ! queue ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! ndisink ndi-name='" + self.streamin + "'", True)
                         elif "H264" in name:
-                            out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! queue max-size-buffers=0 max-size-time=0 ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! queue ! ndisink ndi-name='"+self.streamin+"'", True)
-                    elif self.fdsink: ## send raw data to ffmpeg or something I guess, using the stdout?
+                            out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! queue max-size-buffers=0 max-size-time=0 ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! queue ! ndisink ndi-name='" + self.streamin + "'", True)
+                    elif self.fdsink:
                         print("FD SINK OUT")
                         if "VP8" in name:
-                            out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! queue max-size-buffers=0 max-size-time=0 ! video/x-raw,format=BGR ! fdsink", True)
+                            out = Gst.parse_bin_from_description(
+                                "queue ! rtpvp8depay ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! queue max-size-buffers=0 max-size-time=0 ! video/x-raw,format=BGR ! fdsink", True)
                         elif "H264" in name:
-                            out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! openh264dec ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=0 max-size-time=0 ! fdsink", True)
+                            out = Gst.parse_bin_from_description(
+                                "queue ! rtph264depay ! h264parse ! openh264dec ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=0 max-size-time=0 ! fdsink", True)
+                                
                     elif self.framebuffer: ## send raw data to ffmpeg or something I guess, using the stdout?
                         print("APP SINK OUT")
                         if "VP8" in name:
@@ -680,11 +683,11 @@ class WebRTCClient:
 
                 elif "audio" in name:
                     if self.ndiout:
-                        out = Gst.parse_bin_from_description("queue ! fakesink", True)
-                        pass  #WIP
+                        if "OPUS" in name:
+                            out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,channels=2,rate=48000 ! ndisink name=ndi-audio ndi-name='" + self.streamin + "'", True)
                     elif self.fdsink:
-                        out = Gst.parse_bin_from_description("queue ! fakesink", True)
-                        pass # WIP
+                        if "OPUS" in name:
+                            out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,channels=2,rate=48000 ! fdsink", True)
                     elif self.framebuffer:
                         out = Gst.parse_bin_from_description("queue ! fakesink", True)
                         pass # WIP
@@ -721,6 +724,7 @@ class WebRTCClient:
                 print(exc_type, fname, exc_tb.tb_lineno)
 
         print("creating a new webrtc bin")
+
         started = True
         if not self.pipe:
             print("loading pipe")
