@@ -1,80 +1,71 @@
+#!/usr/bin/env python3
+
 import argparse
 import asyncio
 import sys
+import signal
+import logging
 import traceback
+from gi.repository import Gst, GLib
 
-import gi
-gi.require_version('Gst', '1.0')
-from gi.repository import Gst
+# Initialize GStreamer
+Gst.init(None)
 
-def handle_unhandled_exception(exc_type, exc_value, exc_traceback):
-    if issubclass(exc_type, KeyboardInterrupt):
-        sys.__excepthook__(exc_type, exc_value, exc_traceback)
-        return
-    print("!!! Unhandled exception!!!")  
-    print("Type:", exc_type)
-    print("Value:", exc_value)
-    print("Traceback:", ''.join(traceback.format_tb(exc_traceback)))
-    tb = traceback.extract_tb(exc_traceback)
-    for frame in tb:
-        print(f"File \"{frame.filename}\", line {frame.lineno}, in {frame.name}")
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-sys.excepthook = handle_unhandled_exception
+def handle_sigint(signal, frame, loop):
+    logging.info("Ctrl+C detected. Exiting...")
+    loop.stop()
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--room', type=str, required=True, help='Specify the vdo.ninja room to record from')
-    parser.add_argument('--duration', type=int, default=0, help='Specify the recording duration in minutes (default: unlimited)')
-    parser.add_argument('--audio-only', action='store_true', help='Record audio only')
-    parser.add_argument('--format', type=str, default='mp4', choices=['mp3', 'wav', 'flv', 'mp4'], help='Specify the recording format (default: mp4)')
-    args = parser.parse_args()
+def handle_unhandled_exception(loop, context):
+    msg = context.get("exception", context["message"])
+    logging.error(f"Caught exception: {msg}")
+    loop.stop()
 
-    Gst.init(None)
-
-    room = args.room
-    duration = args.duration * 60 * Gst.SECOND if args.duration > 0 else -1
-    audio_only = args.audio_only
-    format = args.format
-
-    if format == 'mp3':
-        encoder = 'lamemp3enc'
-        muxer = 'id3v2mux'
-        extension = 'mp3'
-    elif format == 'wav': 
-        encoder = 'wavenc'
-        muxer = ''
-        extension = 'wav'
-    elif format == 'flv':
-        encoder = 'avenc_flv'
-        muxer = 'flvmux'
-        extension = 'flv'
-    else: # mp4
-        encoder = 'x264enc'
-        muxer = 'mp4mux'
-        extension = 'mp4'
-
-    if audio_only:
-        PIPELINE_DESC = f'webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle ! rtpopusdepay ! opusdec ! audioconvert ! {encoder} ! {muxer} ! filesink location={room}.{extension}'
+async def main(args):
+    if args.audio_only:
+        pipeline_desc = (
+            'webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 '
+            'bundle-policy=max-bundle ! queue ! opusenc ! filesink location={output}'
+        ).format(output=args.output)
     else:
-        PIPELINE_DESC = f'webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle ! rtph264depay ! avdec_h264 ! {encoder} ! {muxer} ! filesink location={room}.{extension}'
-    
-    print('gst-launch-1.0 '+ PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
-    pipe = Gst.parse_launch(PIPELINE_DESC)
-    pipe.set_state(Gst.State.PLAYING)
-    print(f"RECORDING STARTED from room: {room}")
-    
-    loop = asyncio.get_event_loop()
+        pipeline_desc = (
+            'webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 '
+            'bundle-policy=max-bundle ! matroskamux name=mux ! queue ! filesink location={output}'
+        ).format(output=args.output)
+
+    logging.info(f'Pipeline: {pipeline_desc}')
+    pipeline = Gst.parse_launch(pipeline_desc)
+    pipeline.set_state(Gst.State.PLAYING)
+    logging.info(f"Recording to {args.output} started")
+
+    loop = asyncio.get_running_loop()
+    loop.add_signal_handler(signal.SIGINT, handle_sigint, signal.SIGINT, None, loop)
+
     try:
-        if duration > 0:
-            print(f"Recording will stop after {args.duration} minutes")
-            loop.run_until_complete(asyncio.sleep(duration)) 
-        else:
-            loop.run_forever()
-    except KeyboardInterrupt:
-        print("Ctrl+C detected. Exiting...")
+        await asyncio.sleep(args.duration * 60)
+    except asyncio.CancelledError:
+        pass
     finally:
-        pipe.set_state(Gst.State.NULL)
-        print("RECORDING FINISHED")
+        pipeline.set_state(Gst.State.NULL)
+        logging.info(f"Recording to {args.output} finished")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Record video (or audio only) from a WebRTC stream room like vdo.ninja")
+    parser.add_argument('--room', type=str, required=True, help='Room name to join in vdo.ninja')
+    parser.add_argument('--duration', type=int, default=1, help='Duration in minutes to record')
+    parser.add_argument('--audio-only', action='store_true', help='Record audio only')
+    parser.add_argument('--output', type=str, default='/tmp/record.mp4', help='Output file path')
+    args = parser.parse_args()
+
+    # Set up the global exception handler
+    loop = asyncio.get_event_loop()
+    loop.set_exception_handler(handle_unhandled_exception)
+
+    try:
+        loop.run_until_complete(main(args))
+    except KeyboardInterrupt:
+        logging.info("Recording interrupted by user")
+    finally:
+        loop.close()
