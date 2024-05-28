@@ -1064,11 +1064,11 @@ class WebRTCClient:
         async for message in self.conn:
             try:
                 msg = json.loads(message)
-
                 if 'vector' in msg:
                     print("Try with --password false (here) and &password=false (sender side) instead, as encryption isn't supported it seems with your setup")
                     continue
-                elif 'from' in msg:
+                
+                if 'from' in msg:
                     if self.puuid==None:
                         self.puuid = str(random.randint(10000000,99999999))
                     if msg['from'] == self.puuid:
@@ -1078,6 +1078,7 @@ class WebRTCClient:
                         continue
                 elif 'UUID' in msg:
                     if (self.puuid != None) and (self.puuid != msg['UUID']):
+                        print("PUUID NOT  SAME")
                         continue
                     UUID = msg['UUID']
                 else:
@@ -1091,7 +1092,7 @@ class WebRTCClient:
                                 else:
                                     msg = json.dumps({"request":"seed","streamID":self.stream_id+self.hashcode}) ## we're just going to publish a stream
                                     printwout("seed start")
-                                    await self.conn.send(msg)
+                            
                     continue
 
                 if UUID not in self.clients:
@@ -1133,11 +1134,19 @@ class WebRTCClient:
                     if 'offerSDP' in  msg['request']:
                         await self.start_pipeline(UUID)
                     elif msg['request'] == "play":
-                        if self.puuid==None:
-                            self.puuid = str(random.randint(10000000,99999999))
+                        #if self.puuid==None:
+                        #    self.puuid = str(random.randint(10000000,99999999))
                         if 'streamID' in msg:
                             if msg['streamID'] == self.stream_id+self.hashcode:
                                 await self.start_pipeline(UUID)
+                    elif msg['request'] == "videoaddedtoroom":
+                        #if self.puuid==None:
+                        #    self.puuid = str(random.randint(10000000,99999999))
+                        if 'streamID' in msg:
+                            if self.streamin:
+                                msga = json.dumps({"request":"play","streamID":self.streamin+self.hashcode}) ## we're just going to view a stream
+                                await self.conn.send(msga)
+                                printwout(msga)
             except KeyboardInterrupt:
                 print("Ctrl+C detected. Exiting...")
                 break
