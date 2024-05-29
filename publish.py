@@ -1287,8 +1287,8 @@ async def main():
     parser.add_argument('--framebuffer', type=str, help='VDO.Ninja to local frame buffer; performant and Numpy/OpenCV friendly')
     parser.add_argument('--debug', action='store_true', help='Show added debug information from Gsteamer and other aspects of the app')
     parser.add_argument('--buffer',  type=int, default=200, help='The jitter buffer latency in milliseconds; default is 200ms. (gst +v1.18)')
-    parser.add_argument('--password', type=str, nargs='?', default=None, required=False, const='', help='Partial password support. If not used, passwords will be off. If a blank value is passed, it will use the default system password. If you pass a value, it will use that value for the pass. No added encryption support however. Works for publishing to vdo.ninja/alpha/ (v24) currently')
-    parser.add_argument('--hostname', type=str, default='https://vdo.ninja/alpha/', help='Your URL for vdo.ninja, if self-hosting the website code')
+    parser.add_argument('--password', type=str, nargs='?', default=None, required=False, const='', help='Partial password support. If not used, passwords will be off. If a blank value is passed, it will use the default system password. If you pass a value, it will use that value for the pass. No added encryption support however. Works for publishing to vdo.ninja/ (v24) currently')
+    parser.add_argument('--hostname', type=str, default='https://vdo.ninja/', help='Your URL for vdo.ninja, if self-hosting the website code')
     parser.add_argument('--video-pipeline', type=str, default=None, help='Custom GStreamer video source pipeline')
     parser.add_argument('--audio-pipeline', type=str, default=None, help='Custom GStreamer audio source pipeline')
     parser.add_argument('--timestamp', action='store_true',  help='Add a timestamp to the video output, if possible')
@@ -1341,14 +1341,31 @@ async def main():
         sys.exit(1)
     needed = []
 
+    if args.ndiout:
+        needed += ['ndi']
+        if not args.record:
+            args.streamin = args.ndiout
+        else:
+            args.streamin = args.record
+    elif args.fdsink:
+        args.streamin = args.fdsink
+    elif args.framebuffer:
+        if not np:
+            print("You must install Numpy for this to work.\npip3 install numpy");
+            sys.exit()
+        args.streamin = args.framebuffer
+    elif args.record:
+        args.streamin = args.record
+    else:
+        args.streamin = False
 
     audiodevices = []
-    if not (args.test or args.noaudio):
+    if not (args.test or args.noaudio or args.streamin):
         monitor = Gst.DeviceMonitor.new()
         monitor.add_filter("Audio/Source", None)
         audiodevices = monitor.get_devices()
 
-    if not args.alsa and not args.noaudio and not args.pulse and not args.test and not args.pipein:
+    if not args.alsa and not args.noaudio and not args.pulse and not args.test and not args.pipein and not args.streamin:
         default = [d for d in audiodevices if d.get_properties().get_value("is-default") is True]
         args.alsa = "default"
         aname = "default"
@@ -1361,25 +1378,28 @@ async def main():
             args.noaudio = True
             print("\nNo microphone or audio source found; disabling audio.")
         else:
-            print("\nDetected audio sources:")
-            for i, d in enumerate(audiodevices):
-                print("  - ",audiodevices[i].get_display_name(), audiodevices[i].get_property("internal-name"), audiodevices[i].get_properties().get_value("alsa.card"), audiodevices[i].get_properties().get_value("is-default"))
-                args.alsa = 'hw:'+str(audiodevices[i].get_properties().get_value("alsa.card"))+',0'
-            print()
-            default = None
-            for d in audiodevices:
-                props = d.get_properties()
-                for e in range(int(props.n_fields())):
-                    if (props.nth_field_name(e) == "device.api" and props.get_value(props.nth_field_name(e)) == "alsa"):
-                        default = d
+            try:
+                print("\nDetected audio sources:")
+                for i, d in enumerate(audiodevices):
+                    print("  - ",audiodevices[i].get_display_name(), audiodevices[i].get_property("internal-name"), audiodevices[i].get_properties().get_value("alsa.card"), audiodevices[i].get_properties().get_value("is-default"))
+                    args.alsa = 'hw:'+str(audiodevices[i].get_properties().get_value("alsa.card"))+',0'
+                print()
+                default = None
+                for d in audiodevices:
+                    props = d.get_properties()
+                    for e in range(int(props.n_fields())):
+                        if (props.nth_field_name(e) == "device.api" and props.get_value(props.nth_field_name(e)) == "alsa"):
+                            default = d
+                            break
+                    if default:
+                        print(" >> Selected the audio device: %s, via '%s'" % (default.get_display_name(), 'alsasrc device="hw:'+str(default.get_properties().get_value("alsa.card"))+',0"'))
+                        args.alsa = 'hw:'+str(default.get_properties().get_value("alsa.card"))+',0'
                         break
-                if default:
-                    print(" >> Selected the audio device: %s, via '%s'" % (default.get_display_name(), 'alsasrc device="hw:'+str(default.get_properties().get_value("alsa.card"))+',0"'))
-                    args.alsa = 'hw:'+str(default.get_properties().get_value("alsa.card"))+',0'
-                    break
-            if not default:
-                args.noaudio = True
-                print("\nNo audio source selected; disabling audio.")
+                if not default:
+                    args.noaudio = True
+                    print("\nNo audio source selected; disabling audio.")
+            except Exception as e:
+                print(f"Error accessing properties for audio device {i}: {e}")
         print()
 
 
@@ -1568,23 +1588,6 @@ async def main():
             saveAudio = ' ! tee name=saveaudiotee ! queue ! mux.audio_0 saveaudiotee.'
             saveVideo = ' ! tee name=savevideotee ! queue ! mux.video_0 savevideotee.'
 
-        if args.ndiout:
-            needed += ['ndi']
-            if not args.record:
-                args.streamin = args.ndiout
-            else:
-                args.streamin = args.record
-        elif args.fdsink:
-            args.streamin = args.fdsink
-        elif args.framebuffer:
-            if not np:
-                print("You must install Numpy for this to work.\npip3 install numpy");
-                sys.exit()
-            args.streamin = args.framebuffer
-        elif args.record:
-            args.streamin = args.record
-        else:
-            args.streamin = False
 
         if not args.novideo:
 
