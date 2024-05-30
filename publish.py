@@ -12,6 +12,7 @@ import threading
 import socket
 import re
 import traceback
+import subprocess
 try:
     import hashlib
     from urllib.parse import urlparse
@@ -24,6 +25,8 @@ try:
     from multiprocessing import shared_memory
 except Exception as e:
     pass
+    
+
 
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GObject
@@ -121,6 +124,27 @@ def printout(message):
     printc("=> "+message,"6F6")
 def printwarn(message):
     printc(message,"FF0")
+def check_drm_displays():
+    try:
+        result = subprocess.run(['drm_info'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode == 0:
+            output = result.stdout.strip()
+            drm_info = json.loads(output)
+            connected_displays = [connector for connector in drm_info['connectors'] if connector['status'] == 'connected']
+            if connected_displays:
+                print("Display(s) connected:")
+                for display in connected_displays:
+                    print(display)
+                return True
+            else:
+                print("No display connected.")
+                return False
+        else:
+            print(f"Error running drm_info: {result.stderr}")
+            return False
+    except Exception as e:
+        print(f"Exception occurred: {e}")
+        return False
 
 def replace_ssrc_and_cleanup_sdp(sdp): ## fix for audio-only gstreamer -> chrome
     def generate_ssrc():
@@ -153,6 +177,7 @@ class WebRTCClient:
         self.max_bitrate = params.bitrate
         self.server = params.server
         self.stream_id = params.streamid
+        self.view = params.view
         self.room_name = params.room
         self.multiviewer = params.multiviewer
         self.record = params.record
@@ -643,6 +668,27 @@ class WebRTCClient:
                         self.pipe.add(out)
                         out.sync_state_with_parent()
                         sink = out.get_static_pad('sink')
+                        pad.link(sink)
+                    elif self.view:
+                        print("DISPLAY OUTPUT MODE BEING SETUP")
+                        
+                        outsink = "autovideosink"
+                        if check_drm_displays():
+                            printc('\nThere is at least one connected display.',"00F")
+                        else:
+                            printc('\n ! No connected displays found. Will try to use glimagesink instead of autovideosink',"F60")
+                            outsink = "glimagesink sync=true"
+                        
+                        if "VP8" in name:
+                            out = Gst.parse_bin_from_description(
+                                "queue ! rtpvp8depay ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! video/x-raw,format=RGB ! queue max-size-buffers=0 max-size-time=0 ! "+outsink, True)
+                        elif "H264" in name:
+                            out = Gst.parse_bin_from_description(
+                                "queue ! rtph264depay ! h264parse ! openh264dec ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! video/x-raw,format=RGB ! queue max-size-buffers=0 max-size-time=0 ! "+outsink, True)
+                            
+                        self.pipe.add(out)
+                        out.sync_state_with_parent()
+                        sink = out.get_static_pad('sink')
                         pad.link(sink)      
                         
                     elif self.fdsink:
@@ -672,7 +718,7 @@ class WebRTCClient:
                         pad.link(sink)
                         
                     else:
-                        print("VIDEO setup")
+                        printc('VIDEO record setup', "88F")
                         if self.pipe.get_by_name('filesink'):
                             print("VIDEO setup")
                             if "VP8" in name:
@@ -722,16 +768,24 @@ class WebRTCClient:
                 
                     if self.ndiout:
                        # if "OPUS" in name:
-                        out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,channels=2,rate=48000 ! ndisink name=ndi-audio ndi-name='" + self.streamin + "'", True)
+                        out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! opusdec ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000 ! ndisink name=ndi-audio ndi-name='" + self.streamin + "'", True)
                         
                         self.pipe.add(out)
                         out.sync_state_with_parent()
                         sink = out.get_static_pad('sink')
                         pad.link(sink)
+                    elif self.view:
+                       # if "OPUS" in name:
+                        print("decode and play out the incoming audio")
+                        out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! opusdec ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000 ! autoaudiosink", True)
                         
+                        self.pipe.add(out)
+                        out.sync_state_with_parent()
+                        sink = out.get_static_pad('sink')
+                        pad.link(sink)
                     elif self.fdsink:
                         #if "OPUS" in name:
-                        out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,channels=2,rate=48000 ! fdsink", True)
+                        out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! opusdec ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000 ! fdsink", True)
                         
                         self.pipe.add(out)
                         out.sync_state_with_parent()
@@ -1276,7 +1330,8 @@ async def main():
     parser.add_argument('--noaudio', action='store_true', help='Disables audio input.')
     parser.add_argument('--led', action='store_true', help='Enable GPIO pin 12 as an LED indicator light; for Raspberry Pi.')
     parser.add_argument('--pipeline', type=str, help='A full custom pipeline')
-    parser.add_argument('--record',  type=str, help='Specify a stream ID to record to disk. System will not publish a stream when enabled.') ### Doens't work correctly yet. might be a gstreamer limitation.
+    parser.add_argument('--record',  type=str, help='Specify a stream ID to record to disk. System will not publish a stream when enabled.')
+    parser.add_argument('--view',  type=str, help='Specify a stream ID to play out to the local display/audio.')
     parser.add_argument('--save', action='store_true', help='Save a copy of the outbound stream to disk. Publish Live + Store the video.')
     parser.add_argument('--midi', action='store_true', help='Transparent MIDI bridge mode; no video or audio.')
     parser.add_argument('--filesrc', type=str, default=None,  help='Provide a media file (local file location) as a source instead of physical device; it can be a transparent webm or whatever. It will be transcoded, which offers the best results.')
@@ -1347,6 +1402,9 @@ async def main():
             args.streamin = args.ndiout
         else:
             args.streamin = args.record
+    elif args.view:
+        args.streamin = args.view
+         
     elif args.fdsink:
         args.streamin = args.fdsink
     elif args.framebuffer:
