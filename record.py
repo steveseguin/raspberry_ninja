@@ -14,7 +14,9 @@ app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 model = whisper.load_model("small")
 
-
+def generate_record_id():
+    # Generate and return a unique record ID
+    return str(random.randint(1000000, 9999999))
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, room: str = ""):
