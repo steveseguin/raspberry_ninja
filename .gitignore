@@ -129,3 +129,4 @@ dmypy.json
 .pyre/
 
 # record.py whisper trasncriptions output directory
+stt/
