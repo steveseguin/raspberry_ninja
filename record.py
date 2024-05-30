@@ -24,21 +24,32 @@ async def index(request: Request, room: str = ""):
 
 @app.post("/rec")
 async def start_recording(room: str = Form(...), record: str = Form(...)):
-    # Lancer l'enregistrement audio en arrière-plan
-    subprocess.Popen(["python3", "publish.py", "--room", room, "--record", record, "--novideo"])
+    # Créer un pipe pour rediriger les logs de publish.py
+    read_pipe, write_pipe = os.pipe()
+
+    # Lancer l'enregistrement audio en arrière-plan avec les logs redirigés vers le pipe
+    process = subprocess.Popen(["python3", "publish.py", "--room", room, "--record", record, "--novideo"], stdout=write_pipe, stderr=write_pipe)
+
+    # Fermer le côté écriture du pipe dans le processus parent
+    os.close(write_pipe)
+
+    # Lancer une tâche en arrière-plan pour surveiller les logs et arrêter l'enregistrement
+    asyncio.create_task(stop_recording(process, read_pipe, record))
 
     # Rediriger vers l'URL de visioconférence
     return RedirectResponse(url=f"https://vdo.ninja/?password=false&push={record}&room={room}")
 
-async def stop_recording(record: str):
-    # wait for "DATA CHANNEL: CLOSE" in publish.py's logs
-    while True:
-        line = await asyncio.get_event_loop().run_in_executor(None, sys.stdin.readline)
-        if "DATA CHANNEL: CLOSE" in line:
-            break
+async def stop_recording(process, read_pipe, record):
+    # Lire les logs de publish.py à partir du pipe
+    with os.fdopen(read_pipe) as pipe:
+        while True:
+            line = await asyncio.get_event_loop().run_in_executor(None, pipe.readline)
+            if "DATA CHANNEL: CLOSE" in line:
+                break
 
     # Arrêter le processus d'enregistrement
-    subprocess.run(["pkill", "-f", f"publish.py --room .* --record {record}"])
+    process.terminate()
+    process.wait()
 
     # Transcrire l'audio en texte avec Whisper
     audio_file = f"{record}_*_audio.ts"
@@ -50,13 +61,6 @@ async def stop_recording(record: str):
 
     # Supprimer le fichier audio
     os.remove(audio_file)
-
-
-@app.post("/stop")
-async def stop(record: str = Form(...)):
-    # Lancer l'arrêt de l'enregistrement en arrière-plan
-    asyncio.create_task(stop_recording(record))
-    return {"message": "Recording will stop in 1 minute if idle"}
 
 if __name__ == "__main__":
     import uvicorn
