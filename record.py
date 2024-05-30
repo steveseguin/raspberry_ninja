@@ -6,16 +6,15 @@ import whisper
 import subprocess
 import asyncio
 import time
-import os
 import random
+import sys
+import os
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 model = whisper.load_model("small")
 
-def generate_record_id():
-    # Generate and return a unique record ID
-    return str(random.randint(1000000, 9999999))
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, room: str = ""):
@@ -30,8 +29,11 @@ async def start_recording(room: str = Form(...), record: str = Form(...)):
     return RedirectResponse(url=f"https://vdo.ninja/?password=false&push={record}&room={room}")
 
 async def stop_recording(record: str):
-    # Attendre 1 minute d'inactivité avant d'arrêter l'enregistrement
-    await asyncio.sleep(60)
+    # wait for "DATA CHANNEL: CLOSE" in publish.py's logs
+    while True:
+        line = await asyncio.get_event_loop().run_in_executor(None, sys.stdin.readline)
+        if "DATA CHANNEL: CLOSE" in line:
+            break
 
     # Arrêter le processus d'enregistrement
     subprocess.run(["pkill", "-f", f"publish.py --room .* --record {record}"])
@@ -46,6 +48,7 @@ async def stop_recording(record: str):
 
     # Supprimer le fichier audio
     os.remove(audio_file)
+
 
 @app.post("/stop")
 async def stop(record: str = Form(...)):
