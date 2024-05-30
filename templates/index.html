@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>vdo.ninja REC & speech_to_txt </title>
+</head>
+<body>
+    <h1>REC</h1>
+    <form action="/rec" method="post">
+        <label for="room">Room:</label>
+        <input type="text" id="room" name="room" value="{{ room }}" required><br><br>
+
+        <label for="record">Record ID:</label>
+        <input type="text" id="record" name="record" value="{{ generate_record_id() }}" required><br><br>
+
+        <input type="submit" value="GO">
+    </form>
+</body>
+</html>
