@@ -39,18 +39,19 @@ async def start_recording(room: str = Form(...), record: str = Form(...)):
     # Rediriger vers l'URL de visioconférence
     return RedirectResponse(url=f"https://vdo.ninja/?password=false&push={record}&room={room}")
 
-async def stop_recording(record: str):
-    # wait for "DATA CHANNEL: CLOSE" in publish.py's logs
-    while True:
-        line = await asyncio.get_event_loop().run_in_executor(None, sys.stdin.readline)
-        print(f"Received log line: {line.strip()}")  # Log the received line
-        if "DATA CHANNEL: CLOSE" in line:
-            print("Detected 'DATA CHANNEL: CLOSE' in logs. Stopping recording.")  # Log when the condition is met
-            break
+async def stop_recording(process, read_pipe, record):
+    # Lire les logs de publish.py à partir du pipe
+    with os.fdopen(read_pipe) as pipe:
+        while True:
+            line = await asyncio.get_event_loop().run_in_executor(None, pipe.readline)
+            print(f"Received log line: {line.strip()}")  # Log the received line
+            if "DATA CHANNEL: CLOSE" in line:
+                print("Detected 'DATA CHANNEL: CLOSE' in logs. Stopping recording.")  # Log when the condition is met
+                break
 
     # Arrêter le processus d'enregistrement
-    subprocess.run(["pkill", "-f", f"publish.py --room .* --record {record}"])
-    print(f"Recording process for record ID {record} stopped.")  # Log when the recording process is stopped
+    process.terminate()
+    process.wait()
 
     # Transcrire l'audio en texte avec Whisper
     audio_file = f"{record}_*_audio.ts"
@@ -58,7 +59,7 @@ async def stop_recording(record: str):
     speech = model.transcribe(audio_file, language="fr")['text']
 
     # Écrire la transcription dans un fichier texte
-    transcript_file = f"{record}_speech.txt"
+    transcript_file = f"stt/{record}_speech.txt"
     with open(transcript_file, "w") as f:
         f.write(speech)
     print(f"Transcription saved to: {transcript_file}")  # Log the path of the saved transcription file
@@ -66,7 +67,6 @@ async def stop_recording(record: str):
     # Supprimer le fichier audio
     os.remove(audio_file)
     print(f"Audio file {audio_file} removed.")  # Log when the audio file is removed
-
 
 if __name__ == "__main__":
     import uvicorn
