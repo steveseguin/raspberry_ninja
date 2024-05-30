@@ -127,3 +127,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# record.py whisper trasncriptions output directory
+stt/

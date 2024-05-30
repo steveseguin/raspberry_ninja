@@ -56,7 +56,7 @@ async def stop_recording(process, read_pipe, record):
     speech = model.transcribe(audio_file, language="fr")['text']
 
     # Écrire la transcription dans un fichier texte
-    with open(f"{record}_speech.txt", "w") as f:
+    with open(f"stt/{record}_speech.txt", "w") as f:
         f.write(speech)
 
     # Supprimer le fichier audio
