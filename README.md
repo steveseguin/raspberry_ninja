@@ -165,6 +165,7 @@ optional arguments:
   --rtmp                Use RTMP instead of webRTC; pass "rtmp://xxxx.com/live/xxx-xxxx-xxx"
   --whip                Use WHIP output instead of VDO.Ninja; pass "https://some.whipdomain.com/streamtoken"
   --hdmi                Try to setup a HDMI dongle
+  --camlink             Try to use Elgato Camlink as source
   --v4l2 V4L2           Sets the V4L2 input device.
   --rpicam              Sets the RaspberryPi input device.
   --nvidiacsi           Sets the input to the nvidia csi port.
