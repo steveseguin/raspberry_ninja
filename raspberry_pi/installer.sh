@@ -42,6 +42,7 @@ sudo pip3 install scikit-build
 sudo pip3 install ninja 
 sudo pip3 install websockets
 sudo pip3 install python-rtmidi
+pip3 install cryptography
 
 sudo apt-get install apt-transport-https ca-certificates -y
 
