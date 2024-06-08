@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 from fastapi import FastAPI, Request, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 import whisper
 import subprocess
 import asyncio
-import time
 import random
-import sys
 import os
+import logging
+import glob
+
+# Configurer la journalisation
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
@@ -20,54 +24,64 @@ def generate_record_id():
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, room: str = ""):
+    logger.info("Serving index page with room: %s", room)
     return templates.TemplateResponse("index.html", {"request": request, "room": room, "generate_record_id": generate_record_id})
 
 @app.post("/rec")
-async def start_recording(room: str = Form(...), record: str = Form(...)):
+async def start_recording(request: Request, room: str = Form(...), record: str = Form(...)):
+    logger.info("Starting recording for room: %s with record ID: %s", room, record)
+    
     # Créer un pipe pour rediriger les logs de publish.py
     read_pipe, write_pipe = os.pipe()
 
     # Lancer l'enregistrement audio en arrière-plan avec les logs redirigés vers le pipe
     process = subprocess.Popen(["python3", "publish.py", "--room", room, "--record", record, "--novideo"], stdout=write_pipe, stderr=write_pipe)
+    logger.info("Started publish.py process with PID: %d", process.pid)
 
     # Fermer le côté écriture du pipe dans le processus parent
     os.close(write_pipe)
 
-    # Lancer une tâche en arrière-plan pour surveiller les logs et arrêter l'enregistrement
-    asyncio.create_task(stop_recording(process, read_pipe, record))
+    # Afficher un bouton pour ouvrir la nouvelle page de visioconférence
+    return templates.TemplateResponse("recording.html", {"request": request, "room": room, "record": record, "process_pid": process.pid})
 
-    # Rediriger vers l'URL de visioconférence
-    return RedirectResponse(url=f"https://vdo.ninja/?password=false&push={record}&room={room}")
-
-async def stop_recording(process, read_pipe, record):
-    # Lire les logs de publish.py à partir du pipe
-    with os.fdopen(read_pipe) as pipe:
-        while True:
-            line = await asyncio.get_event_loop().run_in_executor(None, pipe.readline)
-            print(f"Received log line: {line.strip()}")  # Log the received line
-            if "DATA CHANNEL: CLOSE" in line:
-                print("Detected 'DATA CHANNEL: CLOSE' in logs. Stopping recording.")  # Log when the condition is met
-                break
-
+@app.post("/stop")
+async def stop_recording(record: str = Form(...), process_pid: int = Form(...)):
+    logger.info("Stopping recording for record ID: %s with process PID: %d", record, process_pid)
+    
     # Arrêter le processus d'enregistrement
-    process.terminate()
+    process = subprocess.Popen(["kill", str(process_pid)])
     process.wait()
+    logger.info("Stopped publish.py process with PID: %d", process_pid)
 
-    # Transcrire l'audio en texte avec Whisper
-    audio_file = f"{record}_*_audio.ts"
-    print(f"Transcribing audio file: {audio_file}")  # Log the audio file being transcribed
-    speech = model.transcribe(audio_file, language="fr")['text']
+    # Trouver le fichier audio correspondant
+    audio_files = glob.glob(f"{record}_*_audio.ts")
+    if not audio_files:
+        logger.error("No audio file found for record ID: %s", record)
+        return {"error": f"No audio file found for record ID: {record}"}
+    
+    audio_file = audio_files[0]
+    logger.info("Transcribing audio file: %s", audio_file)
+    
+    try:
+        speech = model.transcribe(audio_file, language="fr")['text']
+        logger.info("Transcription completed for record ID: %s", record)
+    except Exception as e:
+        logger.error("Failed to transcribe audio file: %s", str(e))
+        return {"error": f"Failed to transcribe audio file: {str(e)}"}
 
     # Écrire la transcription dans un fichier texte
     transcript_file = f"stt/{record}_speech.txt"
     with open(transcript_file, "w") as f:
         f.write(speech)
-    print(f"Transcription saved to: {transcript_file}")  # Log the path of the saved transcription file
+    logger.info("Transcription saved to: %s", transcript_file)
 
     # Supprimer le fichier audio
     os.remove(audio_file)
-    print(f"Audio file {audio_file} removed.")  # Log when the audio file is removed
+    logger.info("Audio file %s removed.", audio_file)
+
+    return {"transcription": speech}
 
 if __name__ == "__main__":
     import uvicorn
+    logger.info("Starting FastAPI server")
     uvicorn.run(app, host="0.0.0.0", port=8000)

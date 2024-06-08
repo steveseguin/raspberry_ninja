@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Recording</title>
+</head>
+<body>
+    <h1>Recording in progress...</h1>
+    <p>Room: {{ room }}</p>
+    <p>Record ID: {{ record }}</p>
+    <button onclick="window.open('https://vdo.ninja/?password=false&push={{ record }}&room={{ room }}', '_blank')">Open Visioconference</button>
+    <button id="stopButton">Stop and Transcribe</button>
+    <div id="transcriptionResult"></div>
+
+    <script>
+        document.getElementById('stopButton').addEventListener('click', function() {
+            const record = "{{ record }}";
+            const processPid = "{{ process_pid }}";
+
+            fetch('/stop', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: new URLSearchParams({
+                    'record': record,
+                    'process_pid': processPid
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.transcription) {
+                    document.getElementById('transcriptionResult').innerText = data.transcription;
+                } else if (data.error) {
+                    document.getElementById('transcriptionResult').innerText = `Error: ${data.error}`;
+                }
+            })
+            .catch(error => {
+                document.getElementById('transcriptionResult').innerText = `Error: ${error}`;
+            });
+        });
+    </script>
+</body>
+</html>
