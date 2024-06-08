@@ -45,7 +45,7 @@ async def start_recording(request: Request, room: str = Form(...), record: str =
     return templates.TemplateResponse("recording.html", {"request": request, "room": room, "record": record, "process_pid": process.pid})
 
 @app.post("/stop")
-async def stop_recording(record: str = Form(...), process_pid: int = Form(...)):
+async def stop_recording(record: str = Form(...), process_pid: int = Form(...), language: str = Form(...)):
     logger.info("Stopping recording for record ID: %s with process PID: %d", record, process_pid)
     
     # Arrêter le processus d'enregistrement
@@ -63,7 +63,7 @@ async def stop_recording(record: str = Form(...), process_pid: int = Form(...)):
     logger.info("Transcribing audio file: %s", audio_file)
     
     try:
-        speech = model.transcribe(audio_file, language="fr")['text']
+        speech = model.transcribe(audio_file, language=language)['text']
         logger.info("Transcription completed for record ID: %s", record)
     except Exception as e:
         logger.error("Failed to transcribe audio file: %s", str(e))

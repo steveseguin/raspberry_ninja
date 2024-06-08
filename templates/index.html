@@ -1,18 +1,60 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>REC vdo.ninja & speech_to_txt </title>
+    <title>Record Vdo.Ninja Room</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f0f0f0;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        .container {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+        h1 {
+            color: #333;
+        }
+        p {
+            color: #666;
+        }
+        input[type="text"] {
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            width: 100%;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+    </style>
 </head>
 <body>
-    <h1>Record and speech to text...</h1>
-    <form action="/rec" method="post">
-        <label for="room">Room:</label>
-        <input type="text" id="room" name="room" value="{{ room }}" required><br><br>
-
-        <label for="record">Record ID:</label>
-        <input type="text" id="record" name="record" value="{{ generate_record_id() }}" required><br><br>
-
-        <input type="submit" value="REC">
-    </form>
+    <div class="container">
+        <h1>Welcome to Vdo.Ninja Room Recorder</h1>
+        <p>Enter the room name to create & start recording:</p>
+        <form action="/rec" method="post">
+            <input type="text" name="room" placeholder="Room Name"  value="{{ room }}" required>
+            <input type="text" name="record" placeholder="Record ID" value="{{ generate_record_id() }}" required>
+            <button type="submit">Start Recording</button>
+        </form>
+    </div>
 </body>
 </html>
