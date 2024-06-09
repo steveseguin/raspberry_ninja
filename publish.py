@@ -905,9 +905,24 @@ class WebRTCClient:
                             pad.link(sink)
                         else:
                             if "VP8" in name:
-                                out = Gst.parse_bin_from_description("queue ! rtpvp8depay !  mpegtsmux  name=mux1 ! filesink name=filesinkvideo sync=false location="+self.streamin+"_"+str(int(time.time()))+"_video.ts", True)
+                                out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! mpegtsmux  name=mux1 ! multifilesink name=filesinkvideo sync=true location="
+    + self.streamin
+    + "_"
+    + str(int(time.time()))
+    + "_video.%02d.ts next-file=key-frame max-file-size="
+    + str(1 * 1024 * 1024 * 1024)
+    + " min-keyframe-distance="
+    + str(10 * Gst.SECOND), True)
+
                             elif "H264" in name:
-                                out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! mpegtsmux   name=mux1 ! queue ! filesink  name=filesinkvideo sync=true location="+self.streamin+"_"+str(int(time.time()))+"_video.ts", True)
+                                out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! mpegtsmux name=mux1 ! queue ! multifilesink name=filesinkvideo sync=true location="
+    + self.streamin
+    + "_"
+    + str(int(time.time()))
+    + "_video.%02d.ts next-file=key-frame max-file-size="
+    + str(1 * 1024 * 1024 * 1024)
+    + " min-keyframe-distance="
+    + str(10 * Gst.SECOND), True)
                                 
                             self.pipe.add(out)
                             out.sync_state_with_parent()
@@ -988,7 +1003,7 @@ class WebRTCClient:
                         else:
                             print("audio being saved...")
                             if "OPUS" in name:
-                                out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,rate=48000 ! mpegtsmux name=mux2 ! queue ! filesink name=filesinkaudio sync=true location="+self.streamin+"_"+str(int(time.time()))+"_audio.ts", True)
+                                out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,rate=48000 ! mpegtsmux name=mux2 ! queue ! multifilesink name=filesinkaudio sync=true location="+self.streamin+"_"+str(int(time.time()))+"_audio.%02d.ts next-file=max-size max-file-size=200000", True)
 
                             self.pipe.add(out)
                             out.sync_state_with_parent()
