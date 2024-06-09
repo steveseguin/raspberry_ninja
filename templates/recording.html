@@ -48,15 +48,32 @@
             max-width: 480px;
             word-wrap: break-word;
         }
+        #loadingSpinner {
+            display: none;
+            margin-top: 20px;
+        }
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-left-color: #007bff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>(<a href="/">HOME</a>) Recording in progress...</h1>
+        <h1>Recording in progress...</h1>
         <p>Room: {{ room }}</p>
         <p>Record ID: {{ record }}</p>
-        <button onclick="window.open('https://vdo.ninja/?password=false&push={{ record }}&room={{ room }}', '_blank')">Open Visio</button>
-		<br><br>
+        <button id="joinRoomButton" onclick="joinRoom()">Join ROOM</button>
+        <br>
+        <p>processPid: {{ process_pid }}</p>
+        <br>
         <label for="language">Choose language:</label>
         <select id="language">
             <option value="fr">French</option>
@@ -64,16 +81,37 @@
             <option value="es">Spanish</option>
             <!-- Add more languages as needed -->
         </select>
-		<br>
-        <button id="stopButton">Stop and Transcribe</button>
+        <br>
+        <button id="stopButton" style="display: none;" onclick="stopAndTranscribe()">Stop and Transcribe</button>
+        <div id="loadingSpinner" class="spinner"></div>
         <div id="transcriptionResult"></div>
     </div>
 
     <script>
-        document.getElementById('stopButton').addEventListener('click', function() {
+        function joinRoom() {
+            const joinRoomButton = document.getElementById('joinRoomButton');
+            const stopButton = document.getElementById('stopButton');
+            const record = "{{ record }}";
+            const room = "{{ room }}";
+
+            // Open the room in a new tab
+            window.open(`https://vdo.ninja/?push=${record}&room=${room}&password=false`, '_blank');
+
+            // Hide the join room button and show the stop button
+            joinRoomButton.style.display = 'none';
+            stopButton.style.display = 'inline-block';
+        }
+
+        function stopAndTranscribe() {
             const record = "{{ record }}";
             const processPid = "{{ process_pid }}";
             const language = document.getElementById('language').value;
+            const stopButton = document.getElementById('stopButton');
+            const loadingSpinner = document.getElementById('loadingSpinner');
+
+            // Disable the button and show the spinner
+            stopButton.disabled = true;
+            loadingSpinner.style.display = 'block';
 
             fetch('/stop', {
                 method: 'POST',
@@ -88,16 +126,35 @@
             })
             .then(response => response.json())
             .then(data => {
+                // Hide the spinner
+                loadingSpinner.style.display = 'none';
+
                 if (data.transcription) {
                     document.getElementById('transcriptionResult').innerText = data.transcription;
                 } else if (data.error) {
                     document.getElementById('transcriptionResult').innerText = `Error: ${data.error}`;
                 }
+
+                // Change the stop button to restart button
+                stopButton.innerText = 'Restart';
+                stopButton.disabled = false;
+                stopButton.onclick = function() {
+                    window.location.href = '../';
+                };
             })
             .catch(error => {
+                // Hide the spinner
+                loadingSpinner.style.display = 'none';
                 document.getElementById('transcriptionResult').innerText = `Error: ${error}`;
+
+                // Change the stop button to restart button
+                stopButton.innerText = 'Restart';
+                stopButton.disabled = false;
+                stopButton.onclick = function() {
+                    window.location.href = '../';
+                };
             });
-        });
+        }
     </script>
 </body>
 </html>

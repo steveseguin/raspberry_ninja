@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-from fastapi import FastAPI, Request, Form
+from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 import whisper
 import subprocess
-import asyncio
 import random
 import os
 import logging
 import glob
+import argparse
 
 # Configurer la journalisation
 logging.basicConfig(level=logging.INFO)
@@ -18,17 +18,19 @@ app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 model = whisper.load_model("small")
 
-def generate_record_id():
-    # Generate and return a unique record ID
-    return str(random.randint(1000000, 9999999))
-
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request, room: str = ""):
-    logger.info("Serving index page with room: %s", room)
-    return templates.TemplateResponse("index.html", {"request": request, "room": room, "generate_record_id": generate_record_id})
+async def index(request: Request, room: str = "", record: str = ""):
+    logger.info("Serving index page with room: %s (%s)", room, record)
+    return templates.TemplateResponse("index.html", {"request": request, "room": room, "record": record})
 
-@app.post("/rec")
-async def start_recording(request: Request, room: str = Form(...), record: str = Form(...)):
+@app.api_route("/rec", methods=["GET", "POST"])
+async def start_recording(request: Request, room: str = Form(None), record: str = Form(None)):
+    room = room or request.query_params.get("room")
+    record = record or request.query_params.get("record")
+    
+    if not room or not record:
+        raise HTTPException(status_code=400, detail="Room and record parameters must not be empty")
+
     logger.info("Starting recording for room: %s with record ID: %s", room, record)
     
     # Créer un pipe pour rediriger les logs de publish.py
@@ -83,5 +85,12 @@ async def stop_recording(record: str = Form(...), process_pid: int = Form(...), 
 
 if __name__ == "__main__":
     import uvicorn
+
+    # Définir les arguments de la ligne de commande
+    parser = argparse.ArgumentParser(description="Démarrer le serveur FastAPI avec des paramètres personnalisés.")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="Adresse hôte pour le serveur FastAPI.")
+    parser.add_argument("--port", type=int, default=8000, help="Port pour le serveur FastAPI.")
+    args = parser.parse_args()
+
     logger.info("Starting FastAPI server")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=args.host, port=args.port)
