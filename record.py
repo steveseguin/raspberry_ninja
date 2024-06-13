@@ -9,6 +9,9 @@ import os
 import logging
 import glob
 import argparse
+# control sub process
+import threading
+import time
 
 # Configurer la journalisation
 logging.basicConfig(level=logging.INFO)
@@ -17,6 +20,25 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 model = whisper.load_model("small")
+
+# Liste pour suivre les processus
+processes = []
+
+# Fonction de surveillance des processus
+def monitor_processes():
+    while True:
+        current_time = time.time()
+        for process_info in processes:
+            process, start_time = process_info
+            if current_time - start_time > 3600:  # 3600 secondes = 1 heure
+                logger.info("Killing process with PID: %d due to timeout", process.pid)
+                process.kill()
+                processes.remove(process_info)
+        time.sleep(60)  # Vérifier toutes les minutes
+
+# Démarrer le thread de surveillance
+monitor_thread = threading.Thread(target=monitor_processes, daemon=True)
+monitor_thread.start()
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, room: str = "", record: str = ""):
@@ -43,8 +65,12 @@ async def start_recording(request: Request, room: str = Form(None), record: str 
     # Fermer le côté écriture du pipe dans le processus parent
     os.close(write_pipe)
 
+    # Ajouter le processus à la liste avec l'heure de début
+    processes.append((process, time.time()))
+
     # Afficher un bouton pour ouvrir la nouvelle page de visioconférence
     return templates.TemplateResponse("recording.html", {"request": request, "room": room, "record": record, "process_pid": process.pid})
+
 
 @app.post("/stop")
 async def stop_recording(record: str = Form(...), process_pid: int = Form(...), language: str = Form(...)):

@@ -67,10 +67,9 @@
 </head>
 <body>
     <div class="container">
-        <h1>Recording in progress...</h1>
+        <h1 id="elapsedTime">Recording in progress...</h1>
         <p>Room: {{ room }}</p>
         <p>Record ID: {{ record }}</p>
-        <button id="joinRoomButton" onclick="joinRoom()">Join ROOM</button>
         <br>
         <p>processPid: {{ process_pid }}</p>
         <br>
@@ -88,19 +87,39 @@
     </div>
 
     <script>
-        function joinRoom() {
-            const joinRoomButton = document.getElementById('joinRoomButton');
-            const stopButton = document.getElementById('stopButton');
+        document.addEventListener("DOMContentLoaded", function() {
             const record = "{{ record }}";
             const room = "{{ room }}";
+            const stopButton = document.getElementById('stopButton');
+            const elapsedTimeElement = document.getElementById('elapsedTime');
 
-            // Open the room in a new tab
-            window.open(`https://vdo.ninja/?push=${record}&room=${room}&password=false`, '_blank');
+            // Ouvrir automatiquement la salle dans une nouvelle fenêtre
+            const roomWindow = window.open(`https://vdo.ninja/?push=${record}&room=${room}&password=false&effects&record`, '_blank');
 
-            // Hide the join room button and show the stop button
-            joinRoomButton.style.display = 'none';
+            // Afficher le bouton "Stop and Transcribe"
             stopButton.style.display = 'inline-block';
-        }
+
+            // Initialiser le temps de départ
+            const startTime = new Date();
+
+            // Mettre à jour le temps écoulé toutes les secondes
+            const updateElapsedTime = setInterval(function() {
+                const now = new Date();
+                const elapsedTime = Math.floor((now - startTime) / 1000);
+                const minutes = Math.floor(elapsedTime / 60);
+                const seconds = elapsedTime % 60;
+                elapsedTimeElement.innerText = `Recording in progress... ${minutes}m ${seconds}s`;
+            }, 1000);
+
+            // Surveiller la fermeture de la fenêtre
+            const checkWindowClosed = setInterval(function() {
+                if (roomWindow.closed) {
+                    clearInterval(checkWindowClosed);
+                    clearInterval(updateElapsedTime);
+                    stopAndTranscribe();
+                }
+            }, 1000); // Vérifier toutes les secondes
+        });
 
         function stopAndTranscribe() {
             const record = "{{ record }}";
@@ -109,7 +128,7 @@
             const stopButton = document.getElementById('stopButton');
             const loadingSpinner = document.getElementById('loadingSpinner');
 
-            // Disable the button and show the spinner
+            // Désactiver le bouton et afficher le spinner
             stopButton.disabled = true;
             loadingSpinner.style.display = 'block';
 
@@ -126,7 +145,7 @@
             })
             .then(response => response.json())
             .then(data => {
-                // Hide the spinner
+                // Masquer le spinner
                 loadingSpinner.style.display = 'none';
 
                 if (data.transcription) {
@@ -135,7 +154,7 @@
                     document.getElementById('transcriptionResult').innerText = `Error: ${data.error}`;
                 }
 
-                // Change the stop button to restart button
+                // Changer le bouton "Stop" en bouton "Restart"
                 stopButton.innerText = 'Restart';
                 stopButton.disabled = false;
                 stopButton.onclick = function() {
@@ -143,11 +162,11 @@
                 };
             })
             .catch(error => {
-                // Hide the spinner
+                // Masquer le spinner
                 loadingSpinner.style.display = 'none';
                 document.getElementById('transcriptionResult').innerText = `Error: ${error}`;
 
-                // Change the stop button to restart button
+                // Changer le bouton "Stop" en bouton "Restart"
                 stopButton.innerText = 'Restart';
                 stopButton.disabled = false;
                 stopButton.onclick = function() {
