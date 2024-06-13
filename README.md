@@ -390,6 +390,116 @@ If using a virtual MIDI device on the remote viewer's computer, such as `loopMID
 Please note, the raspberry_ninja publish.py script can both send and recieve MIDI commands over a single peer connection, which is a bit different than how video/audio work currently. It's also different than how browser to browser currently is setup, where a sender won't ever request MIDI data, yet the raspberry_ninja code does allow the sender to both send and receive MIDI data.
 
 midi demo video: https://youtu.be/Gry9UFtOTmQ
+Based on the provided information, here is a section for the README that details the `record.py` microservice, focusing on its audio recording and Whisper transcription capabilities, as well as process monitoring.
+
+---
+
+## `record.py`
+
+The `record.py` microservice is designed to handle audio recording and transcription tasks using Whisper AI. It provides a streamlined way to capture audio streams, transcribe them, and manage recording processes efficiently.
+
+### Features
+
+- **Automatic Transcription**: Transcribe audio recordings using Whisper AI.
+- **Process Monitoring**: Automatically monitor and manage recording processes to ensure they do not exceed a specified duration.
+
+### Prerequisites
+
+Ensure you have the following installed on your system:
+
+- Python 3.x
+- Whisper AI model
+- Required Python packages (install via `pip`)
+
+### Installation
+
+1. **Clone the Repository**:
+    ```bash
+    git clone https://github.com/steveseguin/raspberry_ninja
+    cd raspberry_ninja
+    ```
+
+2. **Install Dependencies**:
+    ```bash
+    sudo apt-get update
+    sudo apt-get install -y python3-pip
+    pip3 install whisper
+    ```
+
+### Usage
+
+#### Starting the FastAPI Server
+
+To start the FastAPI server, use the following command:
+
+```bash
+python3 record.py --host 0.0.0.0 --port 8000
+```
+
+This will start the server on the specified host and port.
+
+#### Starting an Audio Recording
+
+To start an audio recording via the FastAPI endpoint, use the following `curl` command:
+
+```bash
+curl -X POST -F "room=myRoom" -F "record=myRecord" http://localhost:8000/rec
+```
+
+Replace `myRoom` and `myRecord` with your desired room name and record ID.
+
+#### Stopping an Audio Recording
+
+To stop an audio recording and trigger transcription, use the following `curl` command:
+
+```bash
+curl -X POST -F "record=myRecord" -F "process_pid=<PROCESS_PID>" -F "language=en" http://localhost:8000/stop
+```
+
+Replace `myRecord` with your record ID and `<PROCESS_PID>` with the process ID of the recording process.
+
+#### Command-Line Usage
+
+You can also start and stop recordings directly from the command line.
+
+**Start Recording:**
+
+```bash
+python3 record.py --room myRoom --record myRecord
+```
+
+**Stop Recording:**
+
+```bash
+python3 record.py --stop --pid <PROCESS_PID> --record myRecord --language en
+```
+
+### Process Monitoring
+
+The `record.py` script includes a process monitoring feature that automatically kills any recording process that exceeds one hour of execution time. This ensures that long-running processes do not consume system resources indefinitely.
+
+### Transcription
+
+After stopping the recording, the audio file is automatically transcribed using Whisper AI. The transcription is saved to a text file in the `stt/` directory.
+
+### Example
+
+To start a recording session with specific parameters:
+
+```bash
+python3 record.py --room myRoom --record myRecord
+```
+
+To stop the recording and transcribe the audio:
+
+```bash
+python3 record.py --stop --pid <PROCESS_PID> --record myRecord --language en
+```
+
+### Auto-Starting on Boot
+
+To configure the `record.py` script to start automatically on boot, follow the instructions in the Raspberry Pi folder for setting up auto-start scripts.
+
 
 ### Note:
 
