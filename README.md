@@ -415,11 +415,11 @@ Ensure you have the following installed on your system:
 
 A. **Install Dependencies**:
 
-    ```bash
-    sudo apt-get update
-    sudo apt-get install -y python3-pip
-    pip3 install whisper
-    ```
+```bash
+sudo apt-get update
+sudo apt-get install -y python3-pip
+pip3 install whisper
+```
 
 ### Usage
 
