@@ -413,13 +413,7 @@ Ensure you have the following installed on your system:
 
 ### Installation
 
-1. **Clone the Repository**:
-    ```bash
-    git clone https://github.com/steveseguin/raspberry_ninja
-    cd raspberry_ninja
-    ```
-
-2. **Install Dependencies**:
+A. **Install Dependencies**:
     ```bash
     sudo apt-get update
     sudo apt-get install -y python3-pip
@@ -467,6 +461,8 @@ You can also start and stop recordings directly from the command line.
 ```bash
 python3 record.py --room myRoom --record myRecord
 ```
+
+Join room [https://vdo.ninja/?push=myRecord&room=myRoom&password=false&effects&record](https://vdo.ninja/?push=myRecord&room=myRoom&password=false&effects&record)
 
 **Stop Recording:**
 
