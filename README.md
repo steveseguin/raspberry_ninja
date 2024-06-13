@@ -414,6 +414,7 @@ Ensure you have the following installed on your system:
 ### Installation
 
 A. **Install Dependencies**:
+
     ```bash
     sudo apt-get update
     sudo apt-get install -y python3-pip
