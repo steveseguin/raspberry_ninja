@@ -34,6 +34,10 @@ Install websocket module
 
 ``pip3 install websockets``
 
+Install encryption dependency
+
+``pip3 install cryptography``
+
 You may also need to install PyGObject, such as if running Ubuntu
 
 ```
