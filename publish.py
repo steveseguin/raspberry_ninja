@@ -25,7 +25,7 @@ try:
     from multiprocessing import shared_memory
 except Exception as e:
     pass
-    
+  
 try:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -33,6 +33,7 @@ try:
     from cryptography.hazmat.backends import default_backend
 except ImportError as e:
     raise ImportError("Run `pip install cryptography` to install the dependencies needed for passwords") from e
+
 
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GObject
@@ -567,6 +568,10 @@ class WebRTCClient:
 
         def on_data_channel_close(channel):
             printc('DATA CHANNEL: CLOSE', "F44")
+            if self.save_file:
+                # Stop the pipeline and set it to NULL state
+                self.pipe.set_state(Gst.State.NULL)
+                print("RECORDING TO DISK STOPPED")
 
         def on_data_channel_message(channel, msg_raw): 
             try:
@@ -817,51 +822,51 @@ class WebRTCClient:
                 name = caps.to_string()
 
                 print(name)
-                
+
                 if "video" in name:
                     if self.novideo:
                         printc('Ignoring incoming video track', "F88")
                         out = Gst.parse_bin_from_description("queue ! fakesink", True)
-                        
+
                         self.pipe.add(out)
                         out.sync_state_with_parent()
                         sink = out.get_static_pad('sink')
                         pad.link(sink)
                         return;
-                        
+
                     if self.ndiout:
                         print("NDI OUT")
                         if "VP8" in name:
                             out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! decodebin ! videoconvert ! queue ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! ndisink ndi-name='" + self.streamin + "'", True)
                         elif "H264" in name:
                             out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! queue max-size-buffers=0 max-size-time=0 ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! queue ! ndisink ndi-name='" + self.streamin + "'", True)
-                            
+
                         self.pipe.add(out)
                         out.sync_state_with_parent()
                         sink = out.get_static_pad('sink')
                         pad.link(sink)
                     elif self.view:
                         print("DISPLAY OUTPUT MODE BEING SETUP")
-                        
+
                         outsink = "autovideosink"
                         if check_drm_displays():
                             printc('\nThere is at least one connected display.',"00F")
                         else:
                             printc('\n ! No connected displays found. Will try to use glimagesink instead of autovideosink',"F60")
                             outsink = "glimagesink sync=true"
-                        
+
                         if "VP8" in name:
                             out = Gst.parse_bin_from_description(
                                 "queue ! rtpvp8depay ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! video/x-raw,format=RGB ! queue max-size-buffers=0 max-size-time=0 ! "+outsink, True)
                         elif "H264" in name:
                             out = Gst.parse_bin_from_description(
                                 "queue ! rtph264depay ! h264parse ! openh264dec ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! video/x-raw,format=RGB ! queue max-size-buffers=0 max-size-time=0 ! "+outsink, True)
-                            
+
                         self.pipe.add(out)
                         out.sync_state_with_parent()
                         sink = out.get_static_pad('sink')
-                        pad.link(sink)      
-                        
+                        pad.link(sink)
+
                     elif self.fdsink:
                         print("FD SINK OUT")
                         if "VP8" in name:
@@ -870,24 +875,24 @@ class WebRTCClient:
                         elif "H264" in name:
                             out = Gst.parse_bin_from_description(
                                 "queue ! rtph264depay ! h264parse ! openh264dec ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=0 max-size-time=0 ! fdsink", True)
-                        
+
                         self.pipe.add(out)
                         out.sync_state_with_parent()
                         sink = out.get_static_pad('sink')
                         pad.link(sink)
-                        
+
                     elif self.framebuffer: ## send raw data to ffmpeg or something I guess, using the stdout?
                         print("APP SINK OUT")
                         if "VP8" in name:
                             out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=2 leaky=downstream ! appsink name=appsink", True)
                         elif "H264" in name:
                             out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! openh264dec ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=2 leaky=downstream ! appsink name=appsink", True)
-                        
+
                         self.pipe.add(out)
                         out.sync_state_with_parent()
                         sink = out.get_static_pad('sink')
                         pad.link(sink)
-                        
+
                     else:
                         printc('VIDEO record setup', "88F")
                         if self.pipe.get_by_name('filesink'):
@@ -896,7 +901,7 @@ class WebRTCClient:
                                 out = Gst.parse_bin_from_description("queue ! rtpvp8depay", True)
                             elif "H264" in name:
                                 out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse", True)
-                                
+
                             self.pipe.add(out)
                             out.sync_state_with_parent()
                             sink = out.get_static_pad('sink')
@@ -911,6 +916,7 @@ class WebRTCClient:
     + "playlist-location=" + "./" + self.streamin + "_"+str(int(time.time()))+".video.m3u8 " , True)
 
                             elif "H264" in name:
+
                                 out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! mpegtsmux name=mux1 ! queue ! "
     + "hlssink name=hlssink max-files=0 "
     + "target-duration=10 playlist-length=0 "
@@ -937,19 +943,19 @@ class WebRTCClient:
                 elif "audio" in name:
                     if self.noaudio:
                         printc('Ignoring incoming audio track', "F88")
-                        
+
                         out = Gst.parse_bin_from_description("queue ! fakesink", True)
-                        
+
                         self.pipe.add(out)
                         out.sync_state_with_parent()
                         sink = out.get_static_pad('sink')
                         pad.link(sink)
                         return;
-                
+
                     if self.ndiout:
                        # if "OPUS" in name:
                         out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! opusdec ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000 ! ndisink name=ndi-audio ndi-name='" + self.streamin + "'", True)
-                        
+
                         self.pipe.add(out)
                         out.sync_state_with_parent()
                         sink = out.get_static_pad('sink')
@@ -958,7 +964,7 @@ class WebRTCClient:
                        # if "OPUS" in name:
                         print("decode and play out the incoming audio")
                         out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! opusdec ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000 ! autoaudiosink", True)
-                        
+
                         self.pipe.add(out)
                         out.sync_state_with_parent()
                         sink = out.get_static_pad('sink')
@@ -966,33 +972,33 @@ class WebRTCClient:
                     elif self.fdsink:
                         #if "OPUS" in name:
                         out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! opusdec ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000 ! fdsink", True)
-                        
+
                         self.pipe.add(out)
                         out.sync_state_with_parent()
                         sink = out.get_static_pad('sink')
                         pad.link(sink)
-                        
+
                     elif self.framebuffer:
                         out = Gst.parse_bin_from_description("queue ! fakesink", True)
-                        
+
                         self.pipe.add(out)
                         out.sync_state_with_parent()
                         sink = out.get_static_pad('sink')
                         pad.link(sink)
-                        
+
                     else:
-                    
+
                         if self.pipe.get_by_name('filesink'):
                             print("Audio being added after video")
                             if "OPUS" in name:
                                 out = Gst.parse_bin_from_description("queue rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,channels=2,rate=48000", True)
-                                
+
                             self.pipe.add(out)
                             out.sync_state_with_parent()
                             sink = out.get_static_pad('sink')
                             out.link(self.pipe.get_by_name('filesink'))
                             pad.link(sink)
-                            
+
                         else:
                             print("audio being saved...")
                             if "OPUS" in name:
@@ -1002,7 +1008,7 @@ class WebRTCClient:
                             out.sync_state_with_parent()
                             sink = out.get_static_pad('sink')
                             pad.link(sink)
-                            
+
                     print("success audio?")
 
             except Exception as E:
@@ -1297,6 +1303,7 @@ class WebRTCClient:
         async for message in self.conn:
             try:
                 msg = json.loads(message)
+
                 if 'from' in msg:
                     if self.puuid==None:
                         self.puuid = str(random.randint(10000000,99999999999))
@@ -1319,7 +1326,9 @@ class WebRTCClient:
                                     await self.sendMessageAsync({"request":"play","streamID":self.streamin+self.hashcode})
                                 else:
                                     printwout("seed start")
+
                                     await self.sendMessageAsync({"request":"seed","streamID":self.stream_id+self.hashcode})
+
                     continue
 
                 if UUID not in self.clients:
@@ -1552,7 +1561,7 @@ async def main():
     parser.add_argument('--audio-pipeline', type=str, default=None, help='Custom GStreamer audio source pipeline')
     parser.add_argument('--timestamp', action='store_true',  help='Add a timestamp to the video output, if possible')
     parser.add_argument('--clockstamp', action='store_true',  help='Add a clock overlay to the video output, if possible')
-    
+
     args = parser.parse_args()
 
     Gst.init(None)
@@ -1607,7 +1616,7 @@ async def main():
             args.streamin = args.record
     elif args.view:
         args.streamin = args.view
-         
+
     elif args.fdsink:
         args.streamin = args.fdsink
     elif args.framebuffer:
