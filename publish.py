@@ -31,9 +31,8 @@ try:
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
     from cryptography.hazmat.primitives import hashes, padding
     from cryptography.hazmat.backends import default_backend
-except Exception as e:
-    print("Run `pip install cryptography` to install the dependencies needed for passwords")
-    pass
+except ImportError as e:
+    raise ImportError("Run `pip install cryptography` to install the dependencies needed for passwords") from e
 
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GObject
