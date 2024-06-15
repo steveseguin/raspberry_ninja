@@ -26,28 +26,35 @@ processes = {}
 
 # Fonction pour démarrer un enregistrement
 def start_recording(room, record):
+    logger.info("Starting recording process for room: %s with record ID: %s", room, record)
     process = subprocess.Popen(["python3", "publish.py", "--room", room, "--record", record, "--novideo"])
     processes[record] = process
+    logger.info("Recording process started with PID: %d", process.pid)
     return process
 
 # Fonction pour arrêter un enregistrement
 def stop_recording(record):
     process = processes.get(record)
     if process:
+        logger.info("Stopping recording process with PID: %d for record ID: %s", process.pid, record)
         process.terminate()
         process.wait()
         del processes[record]
+        logger.info("Recording process with PID: %d stopped", process.pid)
+    else:
+        logger.warning("No recording process found for record ID: %s", record)
 
 # Fonction pour transcrire un segment audio
 def transcribe_segment(temp_audio_file, record, language):
     try:
+        logger.info("Transcribing audio file: %s for record ID: %s", temp_audio_file, record)
         speech = model.transcribe(temp_audio_file, language=language)['text']
         transcript_file = f"stt/{record}_speech.txt"
         with open(transcript_file, "a") as f:  # Utiliser "a" pour ajouter au fichier existant
             f.write(speech)
         os.remove(temp_audio_file)
         logger.info("Transcription saved to: %s", transcript_file)
-        return speech
+        return transcript_file
     except Exception as e:
         logger.error("Failed to transcribe audio file: %s", str(e))
         return None
@@ -55,6 +62,7 @@ def transcribe_segment(temp_audio_file, record, language):
 # Fonction de gestion des enregistrements
 def manage_recording(room, record, language, interval=900):  # interval en secondes (900s = 15 minutes)
     while True:
+        logger.info("Managing recording for room: %s with record ID: %s", room, record)
         process = start_recording(room, record)
         time.sleep(interval)
         stop_recording(record)
@@ -65,12 +73,36 @@ def manage_recording(room, record, language, interval=900):  # interval en secon
             audio_file = audio_files[0]
             temp_audio_file = f"temp_{audio_file}"
             shutil.move(audio_file, temp_audio_file)
+            logger.info("Moved audio file to: %s", temp_audio_file)
             
+            # Lire le contenu actuel du fichier de transcription
+            transcript_file = f"stt/{record}_speech.txt"
+            if os.path.exists(transcript_file):
+                with open(transcript_file, "r") as f:
+                    old_text = f.read()
+            else:
+                old_text = ""
+
             # Transcrire le segment audio
-            new_text = transcribe_segment(temp_audio_file, record, language)
-            if not new_text.strip():  # Si aucun nouveau texte n'a été ajouté, arrêter la boucle
+            transcribe_segment(temp_audio_file, record, language)
+
+            # Lire le nouveau contenu du fichier de transcription
+            with open(transcript_file, "r") as f:
+                new_text = f.read()
+
+            # Si aucun nouveau texte n'a été ajouté, arrêter la boucle
+            if old_text == new_text:
                 logger.info("No new text added for record ID: %s. Stopping recording.", record)
                 break
+        else:
+            logger.warning("No audio file found for record ID: %s", record)
+            break
+
+# Fonction pour lister tous les processus en cours
+def list_processes():
+    logger.info("Listing all recording processes:")
+    for record, process in processes.items():
+        logger.info("Record ID: %s, PID: %d", record, process.pid)
 
 # Route pour la page d'index
 @app.get("/", response_class=HTMLResponse)
@@ -107,18 +139,26 @@ async def stop_recording_endpoint(record: str = Form(...), language: str = Form(
         audio_file = audio_files[0]
         temp_audio_file = f"temp_{audio_file}"
         shutil.move(audio_file, temp_audio_file)
+        logger.info("Moved audio file to: %s", temp_audio_file)
         
         # Transcrire le segment audio
         transcript_file = transcribe_segment(temp_audio_file, record, language)
         if transcript_file:
             with open(transcript_file, "r") as f:
                 transcription = f.read()
+            logger.info("Returning transcription for record ID: %s", record)
             return {"transcription": transcription}
         else:
             return {"error": "Failed to transcribe audio file"}
     else:
         logger.error("No audio file found for record ID: %s", record)
         return {"error": f"No audio file found for record ID: {record}"}
+
+# Route pour lister tous les processus en cours
+@app.get("/list_processes")
+async def list_processes_endpoint():
+    list_processes()
+    return {"message": "Listed all processes in the logs"}
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Démarrer le serveur FastAPI avec des paramètres personnalisés.")

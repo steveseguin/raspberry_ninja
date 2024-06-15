@@ -25,15 +25,7 @@ try:
     from multiprocessing import shared_memory
 except Exception as e:
     pass
-  
-try:
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-    from cryptography.hazmat.primitives import hashes, padding
-    from cryptography.hazmat.backends import default_backend
-except Exception as e:
-    print("Run `pip install cryptography` to install the dependencies needed for passwords")
-    pass
+
 
 
 gi.require_version('Gst', '1.0')
@@ -84,6 +76,15 @@ def disableLEDs():
     p_R.stop()
     GPIO.output(pin, GPIO.HIGH)    # Turn off all leds
     GPIO.cleanup()
+
+def generateHash(input_str, length=None):
+    input_bytes = input_str.encode('utf-8')
+    sha256_hash = hashlib.sha256(input_bytes).digest()
+    if length:
+        hash_hex = sha256_hash[:int(length // 2)].hex()
+    else:
+        hash_hex = sha256_hash.hex()
+    return hash_hex
 
 def hex_to_ansi(hex_color):
     hex_color = hex_color.lstrip('#')
@@ -164,72 +165,6 @@ def replace_ssrc_and_cleanup_sdp(sdp): ## fix for audio-only gstreamer -> chrome
 
     return '\r\n'.join(lines)
 
-def generateHash(input_str, length=None):
-    input_bytes = input_str.encode('utf-8')
-    sha256_hash = hashlib.sha256(input_bytes).digest()
-    if length:
-        hash_hex = sha256_hash[:int(length // 2)].hex()
-    else:
-        hash_hex = sha256_hash.hex()
-    return hash_hex
-
-def convert_string_to_bytes(input_str):
-    return input_str.encode('utf-8')
-
-def to_hex_string(byte_data):
-    return ''.join(f'{b:02x}' for b in byte_data)
-
-def to_byte_array(hex_str):
-    return bytes.fromhex(hex_str)
-
-def generate_key(phrase):
-    return hashlib.sha256(phrase.encode()).digest()
-
-def pad_message(message):
-    padder = padding.PKCS7(algorithms.AES.block_size).padder()
-    padded_data = padder.update(message.encode('utf-8')) + padder.finalize()
-    return padded_data
-
-def unpad_message(padded_message):
-    unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
-    try:
-        data = unpadder.update(padded_message) + unpadder.finalize()
-        return data
-    except ValueError as e:
-        print(f"Padding error: {e}")
-        return None
-
-def encrypt_message(message, phrase):
-    try:
-        message = json.dumps(message)
-    except Exception as E:
-        print(E)
-    key = generate_key(phrase)
-    iv = os.urandom(16)
-    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
-    encryptor = cipher.encryptor()
-    padded_message = pad_message(message)
-    encrypted_message = encryptor.update(padded_message) + encryptor.finalize()
-    return to_hex_string(encrypted_message), to_hex_string(iv)
-
-def decrypt_message(encrypted_data, iv, phrase):
-    key = generate_key(phrase)
-    encrypted_data_bytes = to_byte_array(encrypted_data)
-    iv_bytes = to_byte_array(iv)
-    cipher = Cipher(algorithms.AES(key), modes.CBC(iv_bytes), backend=default_backend())
-    decryptor = cipher.decryptor()
-    try:
-        decrypted_padded_message = decryptor.update(encrypted_data_bytes) + decryptor.finalize()
-        unpadded_message = unpad_message(decrypted_padded_message)
-        if unpadded_message is not None:
-            return unpadded_message.decode('utf-8')
-        else:
-            return None
-    except (UnicodeDecodeError, ValueError) as e:
-        print(f"Error decoding message: {e}")
-        return None
-
-
 class WebRTCClient:
     def __init__(self, params):
 
@@ -244,7 +179,6 @@ class WebRTCClient:
         self.stream_id = params.streamid
         self.view = params.view
         self.room_name = params.room
-        self.room_hashcode = None
         self.multiviewer = params.multiviewer
         self.record = params.record
         self.streamin = params.streamin
@@ -258,7 +192,7 @@ class WebRTCClient:
         self.midi_thread = None
         self.midiout = None
         self.midiout_ports = None
-        self.puuid = params.puuid
+        self.puuid = None
         self.clients = {}
         self.rotate = int(params.rotate)
         self.save_file = params.save
@@ -272,22 +206,18 @@ class WebRTCClient:
         self.password = params.password
         self.hostname = params.hostname
         self.hashcode = ""
-        self.salt = ""
         self.aom = params.aom
         self.av1 = params.av1
-        
+
         try:
             if self.password:
                 parsed_url = urlparse(self.hostname)
                 hostname_parts = parsed_url.hostname.split(".")
-                self.salt = ".".join(hostname_parts[-2:])
-                self.hashcode = generateHash(self.password+self.salt, 6)
-
-                if self.room_name:
-                    self.room_hashcode = generateHash(self.room_name+self.password+self.salt, 16)
+                result = ".".join(hostname_parts[-2:])
+                self.hashcode = generateHash(self.password+result, 6)
         except Exception as E:
             print(E)
-            
+
         if self.save_file:
             self.pipe = Gst.parse_launch(self.pipeline)
             self.pipe.set_state(Gst.State.PLAYING)
@@ -297,23 +227,17 @@ class WebRTCClient:
         print("Connecting to handshake server")
         sslctx = ssl.create_default_context()
         self.conn = await websockets.connect(self.server, ssl=sslctx)
-        if self.room_hashcode:
-            if self.streamin:
-                await self.sendMessageAsync({"request":"joinroom","roomid":self.room_hashcode})
-            else:
-                await self.sendMessageAsync({"request":"joinroom","roomid":self.room_hashcode,"streamID":self.stream_id+self.hashcode})
-            printwout("joining room (hashed)")
-        elif self.room_name:
-            if self.streamin:
-                await self.sendMessageAsync({"request":"joinroom","roomid":self.room_name})
-            else:
-                await self.sendMessageAsync({"request":"joinroom","roomid":self.room_name,"streamID":self.stream_id+self.hashcode})
+        if self.room_name:
+            msg = json.dumps({"request":"joinroom","roomid":self.room_name})
+            await self.conn.send(msg)
             printwout("joining room")
         elif self.streamin:
-            await self.sendMessageAsync({"request":"play","streamID":self.streamin+self.hashcode})
+            msg = json.dumps({"request":"play","streamID":self.streamin+self.hashcode})
+            await self.conn.send(msg)
             printwout("requesting stream")
         else:
-            await self.sendMessageAsync({"request":"seed","streamID":self.stream_id+self.hashcode})
+            msg = json.dumps({"request":"seed","streamID":self.stream_id+self.hashcode})
+            await self.conn.send(msg)
             printwout("seed start")
 
 
@@ -325,90 +249,21 @@ class WebRTCClient:
         if "UUID" in msg and msg['UUID'] in self.clients:
             client = self.clients[msg['UUID']]
 
-        if client and client['send_channel']:
-            try:
-                msgJSON = json.dumps(msg)
-                client['send_channel'].emit('send-string', msgJSON)
-                printout("a message was sent via datachannels: "+msgJSON[:60])
-            except Exception as e:
-                try:
-                    if self.password:
-                        #printc("Password","0F3")
-                        if "candidate" in msg:
-                            msg['candidate'], msg['vector'] = encrypt_message(msg['candidate'], self.password+self.salt)
-                        if "candidates" in msg:
-                            msg['candidates'], msg['vector'] = encrypt_message(msg['candidates'], self.password+self.salt)
-                        if "description" in msg:
-                            msg['description'], msg['vector'] = encrypt_message(msg['description'], self.password+self.salt)
-                
-                    msgJSON = json.dumps(msg)
-                    loop = asyncio.new_event_loop()
-                    loop.run_until_complete(self.conn.send(msgJSON))
-                    printwout("a message was sent via websockets 2: "+msgJSON[:60])
-                except Exception as e:
-                    printc(e,"F00")
-        else:
-            try:
-                if self.password:
-                   # printc("Password","0F3")
-                    if "candidate" in msg:
-                        msg['candidate'], msg['vector'] = encrypt_message(msg['candidate'], self.password+self.salt)
-                    if "candidates" in msg:
-                        msg['candidates'], msg['vector'] = encrypt_message(msg['candidates'], self.password+self.salt)
-                    if "description" in msg:
-                        msg['description'], msg['vector'] = encrypt_message(msg['description'], self.password+self.salt)
-                
-                msgJSON = json.dumps(msg)
-                loop = asyncio.new_event_loop()        
-                loop.run_until_complete(self.conn.send(msgJSON))
-                printwout("a message was sent via websockets 1: "+msgJSON[:60])
-            except Exception as e:
-                printc(e,"F01")
-                
-                
-    async def sendMessageAsync(self, msg): # send message to wss
-        if self.puuid:
-            msg['from'] = self.puuid
-
-        client = None
-        if "UUID" in msg and msg['UUID'] in self.clients:
-            client = self.clients[msg['UUID']]
+        msg = json.dumps(msg)
 
         if client and client['send_channel']:
             try:
-                msgJSON = json.dumps(msg)
-                client['send_channel'].emit('send-string', msgJSON)
-                printout("a message was sent via datachannels: "+msgJSON[:60])
+                client['send_channel'].emit('send-string', msg)
+                printout("a message was sent via datachannels: "+msg[:20])
             except Exception as e:
-                try:
-                    if self.password:
-                        if "candidate" in msg:
-                            msg['candidate'], msg['vector'] = encrypt_message(msg['candidate'], self.password+self.salt)
-                        if "candidates" in msg:
-                            msg['candidates'], msg['vector'] = encrypt_message(msg['candidates'], self.password+self.salt)
-                        if "description" in msg:
-                            msg['description'], msg['vector'] = encrypt_message(msg['description'], self.password+self.salt)
-                            
-                    msgJSON = json.dumps(msg)
-                    await self.conn.send(msgJSON)
-                    printwout("a message was sent via websockets 2: "+msgJSON[:60])
-                except Exception as E:
-                    print(E)
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(self.conn.send(msg))
+                printwout("a message was sent via websockets 2: "+msg[:20])
         else:
-            try:
-                if self.password:
-                    if "candidate" in msg:
-                        msg['candidate'], msg['vector'] = encrypt_message(msg['candidate'], self.password+self.salt)
-                    if "candidates" in msg:
-                        msg['candidates'], msg['vector'] = encrypt_message(msg['candidates'], self.password+self.salt)
-                    if "description" in msg:
-                        msg['description'], msg['vector'] = encrypt_message(msg['description'], self.password+self.salt)
-                        
-                msgJSON = json.dumps(msg)
-                await self.conn.send(msgJSON)
-                printwout("a message was sent via websockets 1: "+msgJSON[:60])
-            except Exception as e:
-                print(E)
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(self.conn.send(msg))
+            printwout("a message was sent via websockets 1: "+msg[:20])
+
 
     async def createPeer(self, UUID):
 
@@ -574,7 +429,7 @@ class WebRTCClient:
                 self.pipe.set_state(Gst.State.NULL)
                 print("RECORDING TO DISK STOPPED")
 
-        def on_data_channel_message(channel, msg_raw): 
+        def on_data_channel_message(channel, msg_raw):
             try:
                 msg = json.loads(msg_raw)
             except:
@@ -582,26 +437,10 @@ class WebRTCClient:
                 return
             if 'candidates' in msg:
                 printin("INBOUND ICE BUNDLE - DC")
-                
-                if 'vector' in msg:
-                    try:
-                        decryptedJson = decrypt_message(msg['candidates'], msg['vector'], self.password+self.salt)
-                        msg['candidates'] = json.loads(decryptedJson)
-                    except Exception as E:
-                        print(E)
-                
                 for ice in msg['candidates']:
                     self.handle_sdp_ice(ice, client["UUID"])
             elif 'candidate' in msg:
                 printin("INBOUND ICE SINGLE - DC")
-                
-                if 'vector' in msg:
-                    try:
-                        decryptedJson = decrypt_message(msg['candidate'], msg['vector'], self.password+self.salt)
-                        msg['candidate'] = json.loads(decryptedJson)
-                    except Exception as E:
-                        print(E)
-                
                 self.handle_sdp_ice(msg, client["UUID"])
             elif 'pong' in msg: # Supported in v19 of VDO.Ninja
                 printin('PONG')
@@ -611,32 +450,20 @@ class WebRTCClient:
                 printin("PEER INTENTIONALLY HUNG UP")
             elif 'description' in msg:
                 printin("INCOMING SDP - DC")
-                
-                if 'vector' in msg:
-                    try:
-                        decryptedJson = decrypt_message(msg['description'], msg['vector'], self.password+self.salt)
-                        msg['description'] = json.loads(decryptedJson)
-                    except Exception as E:
-                        print(E)
-                
                 if msg['description']['type'] == "offer":
                     self.handle_offer(msg['description'], client['UUID'])
             elif 'midi' in msg:
-                printin("midi msg")
+                printin(msg)
                 vdo2midi(msg['midi'])
             elif 'bitrate' in msg:
-                printin("bitrate msg")
+                printin(msg)
                 if client['encoder'] and msg['bitrate']:
                     print("Trying to change bitrate...")
                     if self.aom:
                         print("Aom doesn't support dynamic bitrates currently")
                         pass
                     else:
-                        try:
-                            client['encoder'].set_property('bitrate', int(msg['bitrate'])*1000)
-                        except Exception as E:
-                            print(E)
-                            pass
+                        client['encoder'].set_property('bitrate', int(msg['bitrate'])*1000)
             else:
                 printin("MISC DC DATA")
                 return
@@ -910,20 +737,10 @@ class WebRTCClient:
                             pad.link(sink)
                         else:
                             if "VP8" in name:
-                                out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! mpegtsmux name=mux1 ! queue !"
-    + "hlssink name=hlssink max-files=0 "
-    + "target-duration=10 playlist-length=0 "
-    + "location=" + "./" + self.streamin + "_"+str(int(time.time()))+"_segment_%05d.ts "
-    + "playlist-location=" + "./" + self.streamin + "_"+str(int(time.time()))+".video.m3u8 " , True)
-
+                                out = Gst.parse_bin_from_description("queue ! rtpvp8depay !  mpegtsmux  name=mux1 ! filesink name=filesinkvideo sync=false location="+self.streamin+"_"+str(int(time.time()))+"_video.ts", True)
                             elif "H264" in name:
+                                out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! mpegtsmux   name=mux1 ! queue ! filesink  name=filesinkvideo sync=true location="+self.streamin+"_"+str(int(time.time()))+"_video.ts", True)
 
-                                out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! mpegtsmux name=mux1 ! queue ! "
-    + "hlssink name=hlssink max-files=0 "
-    + "target-duration=10 playlist-length=0 "
-    + "location=" + "./" + self.streamin + "_"+str(int(time.time()))+"_segment_%05d.ts "
-    + "playlist-location=" + "./" + self.streamin + "_"+str(int(time.time()))+".video.m3u8 " , True)
-    
                             self.pipe.add(out)
                             out.sync_state_with_parent()
                             sink = out.get_static_pad('sink')
@@ -1003,7 +820,7 @@ class WebRTCClient:
                         else:
                             print("audio being saved...")
                             if "OPUS" in name:
-                                out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,rate=48000 ! mpegtsmux name=mux2 ! queue ! multifilesink name=filesinkaudio sync=true location="+self.streamin+"_"+str(int(time.time()))+"_audio.%02d.ts next-file=5 max-file-duration="+str(10*Gst.SECOND), True)
+                                out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,rate=48000 ! mpegtsmux name=mux2 ! queue ! filesink name=filesinkaudio sync=true location="+self.streamin+"_"+str(int(time.time()))+"_audio.ts", True)
 
                             self.pipe.add(out)
                             out.sync_state_with_parent()
@@ -1057,7 +874,7 @@ class WebRTCClient:
         if self.streamin:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             client['webrtc'].set_property('bundle-policy', "max-bundle")
-            client['webrtc'].set_property('stun-server', "stun://stun.cloudflare.com:3478") ## older versions of gstreamer might break with this
+            client['webrtc'].set_property('stun-server', "stun://stun4.l.google.com:19302") ## older versions of gstreamer might break with this
             client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
             try:
                 client['webrtc'].set_property('latency', self.buffer)
@@ -1079,7 +896,7 @@ class WebRTCClient:
         else:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             client['webrtc'].set_property('bundle-policy', 'max-bundle')
-            client['webrtc'].set_property('stun-server', "stun://stun.cloudflare.com:3478")  ## older versions of gstreamer might break with this
+            client['webrtc'].set_property('stun-server', "stun://stun4.l.google.com:19302")  ## older versions of gstreamer might break with this
             client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
             try:
                 client['webrtc'].set_property('latency', self.buffer)
@@ -1202,6 +1019,7 @@ class WebRTCClient:
         promise.interrupt()
         print("SEND SDP ANSWER")
         text = answer.sdp.as_text()
+        print(text)
         msg = {'description': {'type': 'answer', 'sdp': text}, 'UUID': client['UUID'], 'session': client['session']}
         self.sendMessage(msg)
 
@@ -1227,7 +1045,7 @@ class WebRTCClient:
             print("No SDP as expected")
 
     async def start_pipeline(self, UUID):
-        print("\nSTART PIPE\n----")
+        print("START PIPE")
         enableLEDs(100)
         if self.multiviewer:
             await self.createPeer(UUID)
@@ -1304,10 +1122,13 @@ class WebRTCClient:
         async for message in self.conn:
             try:
                 msg = json.loads(message)
+                if 'vector' in msg:
+                    print("Try with --password false (here) and &password=false (sender side) instead, as encryption isn't supported it seems with your setup")
+                    continue
 
                 if 'from' in msg:
                     if self.puuid==None:
-                        self.puuid = str(random.randint(10000000,99999999999))
+                        self.puuid = str(random.randint(10000000,99999999))
                     if msg['from'] == self.puuid:
                         continue
                     UUID = msg['from']
@@ -1323,12 +1144,12 @@ class WebRTCClient:
                         if 'request' in msg:
                             if msg['request'] == 'listing':
                                 if self.streamin:
-                                    printwout("play stream")
-                                    await self.sendMessageAsync({"request":"play","streamID":self.streamin+self.hashcode})
+                                    msg = json.dumps({"request":"play","streamID":self.streamin+self.hashcode}) ## we're just going to view a stream
+                                    printwout(msg)
+                                    await self.conn.send(msg)
                                 else:
+                                    msg = json.dumps({"request":"seed","streamID":self.stream_id+self.hashcode}) ## we're just going to publish a stream
                                     printwout("seed start")
-
-                                    await self.sendMessageAsync({"request":"seed","streamID":self.stream_id+self.hashcode})
 
                     continue
 
@@ -1349,71 +1170,41 @@ class WebRTCClient:
 
                 if 'description' in msg:
                     print("description via WSS")
-                    
-                    if 'vector' in msg:
-                        decryptedJson = decrypt_message(msg['description'], msg['vector'], self.password+self.salt)
-                        msg = json.loads(decryptedJson)
-                    else:
-                        msg = msg['description']
-                        
+                    msg = msg['description']
                     if 'type' in msg:
                         if msg['type'] == "offer":
-                            if self.streamin:
-                                printwin("incoming offer")
-                                await self.start_pipeline(UUID)
-                                self.handle_offer(msg, UUID)
-                            else:
-                                printc("We don't support two-way video calling yet. ignoring remote offer.", "399")
-                                continue
+                            await self.start_pipeline(UUID)
+                            self.handle_offer(msg, UUID)
                         elif msg['type'] == "answer":
-                            printwin("incoming answer")
                             self.handle_sdp_ice(msg, UUID)
                 elif 'candidates' in msg:
                     print("ice candidates BUNDLE via WSS")
-                    
-                    if 'vector' in msg:
-                        decryptedJson = decrypt_message(msg['candidates'], msg['vector'], self.password+self.salt)
-                        msg['candidates'] = json.loads(decryptedJson)
-                    
                     if type(msg['candidates']) is list:
                         for ice in msg['candidates']:
                             self.handle_sdp_ice(ice, UUID)
                     else:
-                        printc("Warning: Expected a list of candidates","F00")
+                        print("Try with &password=false / --password=false instead, as encryption isn't supported currently")
                 elif 'candidate' in msg:
                     print("ice candidate SINGLE via WSS")
-                    if 'vector' in msg:
-                        decryptedJson = decrypt_message(msg['candidate'], msg['vector'], self.password+self.salt)
-                        msg['candidate'] = json.loads(decryptedJson)
-                    
                     self.handle_sdp_ice(msg, UUID)
                 elif 'request' in msg:
                     print("REQUEST via WSS: ", msg['request'])
                     if 'offerSDP' in  msg['request']:
                         await self.start_pipeline(UUID)
                     elif msg['request'] == "play":
-                        printwin("play requested")
+                        #if self.puuid==None:
+                        #    self.puuid = str(random.randint(10000000,99999999))
                         if 'streamID' in msg:
                             if msg['streamID'] == self.stream_id+self.hashcode:
                                 await self.start_pipeline(UUID)
                     elif msg['request'] == "videoaddedtoroom":
+                        #if self.puuid==None:
+                        #    self.puuid = str(random.randint(10000000,99999999))
                         if 'streamID' in msg:
                             if self.streamin:
-                                printwout("play stream.")
-                                await self.sendMessageAsync({"request":"play","streamID":self.streamin+self.hashcode})
-                    elif msg['request'] == 'joinroom':
-                        if self.streamin and self.streamID and (self.streamin+self.hashcode == self.streamID):
-                            if self.room_hashcode:
-                                printwout("play stream..")
-                                await self.sendMessageAsync({"request":"play","streamID":self.streamin+self.hashcode,"roomid":self.room_hashcode, "UUID":UUID})
-                            elif self.room_name:
-                                printwout("play stream...")
-                                await self.sendMessageAsync({"request":"play","streamID":self.streamin+self.hashcode,"roomid":self.room_name, "UUID":UUID})
-                        else:
-                            printwout("seed start")
-                            await self.sendMessageAsync({"request":"seed", "streamID":self.stream_id+self.hashcode, "UUID":UUID})
-                            
-                            
+                                msga = json.dumps({"request":"play","streamID":self.streamin+self.hashcode}) ## we're just going to view a stream
+                                await self.conn.send(msga)
+                                printwout(msga)
             except KeyboardInterrupt:
                 print("Ctrl+C detected. Exiting...")
                 break
@@ -1500,13 +1291,12 @@ async def main():
     parser.add_argument('--room', type=str, default=None, help='optional - Room name of the peer to join')
     parser.add_argument('--rtmp', type=str, default=None, help='Use RTMP instead; pass the rtmp:// publishing address here to use')
     parser.add_argument('--whip', type=str, default=None, help='Use WHIP output instead; pass the https://whip.publishing/address here to use')
+    parser.add_argument('--server', type=str, default=None, help='Handshake server to use, eg: "wss://wss.vdo.ninja:443"')
     parser.add_argument('--bitrate', type=int, default=2500, help='Sets the video bitrate; kbps. If error correction (red) is on, the total bandwidth used may be up to 2X higher than the bitrate')
     parser.add_argument('--audiobitrate', type=int, default=64, help='Sets the audio bitrate; kbps.')
     parser.add_argument('--width', type=int, default=1920, help='Sets the video width. Make sure that your input supports it.')
     parser.add_argument('--height', type=int, default=1080, help='Sets the video height. Make sure that your input supports it.')
     parser.add_argument('--framerate', type=int, default=30, help='Sets the video framerate. Make sure that your input supports it.')
-    parser.add_argument('--server', type=str, default=None, help='Handshake server to use, eg: "wss://wss.vdo.ninja:443"')
-    parser.add_argument('--puuid',  type=str, default=None, help='Specify a custom publisher UUID value; not required')
     parser.add_argument('--test', action='store_true', help='Use test sources.')
     parser.add_argument('--hdmi', action='store_true', help='Try to setup a HDMI dongle')
     parser.add_argument('--camlink', action='store_true', help='Try to setup an Elgato Cam Link')
@@ -1556,7 +1346,7 @@ async def main():
     parser.add_argument('--framebuffer', type=str, help='VDO.Ninja to local frame buffer; performant and Numpy/OpenCV friendly')
     parser.add_argument('--debug', action='store_true', help='Show added debug information from Gsteamer and other aspects of the app')
     parser.add_argument('--buffer',  type=int, default=200, help='The jitter buffer latency in milliseconds; default is 200ms. (gst +v1.18)')
-    parser.add_argument('--password', type=str, nargs='?', default="someEncryptionKey123", required=False, const='', help='Specify a custom password. If setting to false, password/encryption will be disabled.')
+    parser.add_argument('--password', type=str, nargs='?', default=None, required=False, const='', help='Partial password support. If not used, passwords will be off. If a blank value is passed, it will use the default system password. If you pass a value, it will use that value for the pass. No added encryption support however. Works for publishing to vdo.ninja/ (v24) currently')
     parser.add_argument('--hostname', type=str, default='https://vdo.ninja/', help='Your URL for vdo.ninja, if self-hosting the website code')
     parser.add_argument('--video-pipeline', type=str, default=None, help='Custom GStreamer video source pipeline')
     parser.add_argument('--audio-pipeline', type=str, default=None, help='Custom GStreamer audio source pipeline')
@@ -1599,6 +1389,7 @@ async def main():
         args.password = "someEncryptionKey123"
     elif args.password.lower() in ["false", "0", "off"]:
         args.password = None
+
 
     PIPELINE_DESC = ""
 
@@ -2177,9 +1968,9 @@ async def main():
             pass
         elif not args.multiviewer:
             if Gst.version().minor >= 18:
-                PIPELINE_DESC = f'webrtcbin name=sendrecv latency={args.buffer} async-handling=true stun-server=stun://stun.cloudflare.com:3478 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
+                PIPELINE_DESC = f'webrtcbin name=sendrecv latency={args.buffer} async-handling=true stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
             else: ## oldvers v1.16 options  non-advanced options
-                PIPELINE_DESC = f'webrtcbin name=sendrecv stun-server=stun://stun.cloudflare.com:3478 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
+                PIPELINE_DESC = f'webrtcbin name=sendrecv stun-server=stun://stun4.l.google.com:19302 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
             printc('\ngst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'), "FFF")
         else:
             PIPELINE_DESC = f'{pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
@@ -2192,7 +1983,6 @@ async def main():
     if args.server:
         server = "&wss="+args.server.split("wss://")[-1];
         args.server = "wss://"+args.server.split("wss://")[-1]
-        args.puuid = str(random.randint(10000000,99999999999))
     else:
         args.server = WSS
         server = ""
