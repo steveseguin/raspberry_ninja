@@ -163,7 +163,7 @@ async def list_processes_endpoint():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Démarrer le serveur FastAPI avec des paramètres personnalisés.")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Adresse hôte pour le serveur FastAPI.")
-    parser.add_argument("--port", type=int, default=8000, help="Port pour le serveur FastAPI.")
+    parser.add_argument("--port", type=int, default=9000, help="Port pour le serveur FastAPI.")
     parser.add_argument("--room", type=str, help="Room name for the recording session.")
     parser.add_argument("--record", type=str, help="Record ID for the session.")
     parser.add_argument("--stop", action="store_true", help="Stop the recording.")
