@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from fastapi import FastAPI, Request, Form, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 import whisper
 import subprocess
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
-model = whisper.load_model("small")
+model = whisper.load_model("medium")
 
 # Liste pour suivre les processus
 processes = []
@@ -108,6 +108,29 @@ async def stop_recording(record: str = Form(...), process_pid: int = Form(...), 
 
     return {"transcription": speech}
 
+@app.get("/stt")
+async def get_transcription(id: str):
+    transcript_file = f"stt/{id}_speech.txt"
+    if not os.path.exists(transcript_file):
+        logger.error("No transcription file found for record ID: %s", id)
+        return JSONResponse(status_code=404, content={"error": f"No transcription file found for record ID: {id}"})
+    
+    with open(transcript_file, "r") as f:
+        transcription = f.read()
+    
+    # Ajouter le fichier à IPFS
+    try:
+        logger.info(f"Adding file to IPFS: {transcript_file}")
+        result = subprocess.run(["ipfs", "add", transcript_file], capture_output=True, text=True)
+        cid = result.stdout.split()[1]
+        logger.info("Added file to IPFS: %s with CID: %s", transcript_file, cid)
+    except Exception as e:
+        logger.error("Failed to add file to IPFS: %s", str(e))
+        return JSONResponse(status_code=500, content={"error": f"Failed to add file to IPFS: {str(e)}"})
+    
+    logger.info("Returning transcription and CID for record ID: %s", id)
+    return {"transcription": transcription, "cid": cid}
+
 def start_recording_cli(room, record):
     logger.info("Starting recording for room: %s with record ID: %s", room, record)
     
@@ -165,7 +188,7 @@ def stop_recording_cli(record, process_pid, language):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Démarrer le serveur FastAPI avec des paramètres personnalisés.")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Adresse hôte pour le serveur FastAPI.")
-    parser.add_argument("--port", type=int, default=8000, help="Port pour le serveur FastAPI.")
+    parser.add_argument("--port", type=int, default=9000, help="Port pour le serveur FastAPI.")
     parser.add_argument("--room", type=str, help="Room name for the recording session.")
     parser.add_argument("--record", type=str, help="Record ID for the session.")
     parser.add_argument("--stop", action="store_true", help="Stop the recording.")
