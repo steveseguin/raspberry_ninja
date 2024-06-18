@@ -86,6 +86,7 @@ sudo apt-get install python3-pip -y
 sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools gstreamer1.0-x python3-pyqt5 python3-opengl gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-qt5 gstreamer1.0-gtk3 gstreamer1.0-pulseaudio gstreamer1.0-nice gstreamer1.0-plugins-base-apps
 
 pip3 install websockets
+pip3 install cryptography
 
 sudo apt-get install -y libcairo-dev ## possibly optional
 pip3 install PyGObject ## possibly optional
@@ -164,6 +165,7 @@ optional arguments:
   --rtmp                Use RTMP instead of webRTC; pass "rtmp://xxxx.com/live/xxx-xxxx-xxx"
   --whip                Use WHIP output instead of VDO.Ninja; pass "https://some.whipdomain.com/streamtoken"
   --hdmi                Try to setup a HDMI dongle
+  --camlink             Try to use Elgato Camlink as source
   --v4l2 V4L2           Sets the V4L2 input device.
   --rpicam              Sets the RaspberryPi input device.
   --nvidiacsi           Sets the input to the nvidia csi port.

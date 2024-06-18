@@ -25,7 +25,8 @@ sudo apt-get install -y python3-pip libgstreamer1.0-dev libgstreamer-plugins-bas
 Install websocket and gi module. (Installing PyGObject often breaks due to changing dependencies, and it's near impossible to install on Windows, so consider it your lucky day if it installs without issues.)
 
 ```
-pip3 install websockets 
+pip3 install websockets
+pip3 install cryptography
 sudo apt-get install -y libcairo-dev libgirepository1.0-dev # these dependencies may or may not be needed; it rather depends on the mood of the universe.
 pip3 install PyGObject
 ```
