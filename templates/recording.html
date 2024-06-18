@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Recording</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f0f0f0;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        .container {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+        h1 {
+            color: #333;
+        }
+        p {
+            color: #666;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 10px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        #transcriptionResult {
+            margin-top: 20px;
+            padding: 10px;
+            background-color: #e9ecef;
+            border-radius: 4px;
+            text-align: left;
+            color: #333;
+            max-width: 480px;
+            word-wrap: break-word;
+        }
+        #loadingSpinner {
+            display: none;
+            margin-top: 20px;
+        }
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-left-color: #007bff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 id="elapsedTime">Recording in progress...</h1>
+        <p>Room: {{ room }}</p>
+        <p>Record ID: {{ record }}</p>
+        <br>
+        <p>processPid: {{ process_pid }}</p>
+        <br>
+        <label for="language">Choose language:</label>
+        <select id="language">
+            <option value="fr">French</option>
+            <option value="en">English</option>
+            <option value="es">Spanish</option>
+            <!-- Add more languages as needed -->
+        </select>
+        <br>
+        <button id="stopButton" style="display: none;" onclick="stopAndTranscribe()">Stop and Transcribe</button>
+        <div id="loadingSpinner" class="spinner"></div>
+        <div id="transcriptionResult"></div>
+    </div>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            const record = "{{ record }}";
+            const room = "{{ room }}";
+            const stopButton = document.getElementById('stopButton');
+            const elapsedTimeElement = document.getElementById('elapsedTime');
+
+            // Ouvrir automatiquement la salle dans une nouvelle fenêtre
+            const roomWindow = window.open(`https://vdo.ninja/?push=${record}&room=${room}&password=false&effects&record`, '_blank');
+
+            // Afficher le bouton "Stop and Transcribe"
+            stopButton.style.display = 'inline-block';
+
+            // Initialiser le temps de départ
+            const startTime = new Date();
+
+            // Mettre à jour le temps écoulé toutes les secondes
+            const updateElapsedTime = setInterval(function() {
+                const now = new Date();
+                const elapsedTime = Math.floor((now - startTime) / 1000);
+                const minutes = Math.floor(elapsedTime / 60);
+                const seconds = elapsedTime % 60;
+                elapsedTimeElement.innerText = `Recording in progress... ${minutes}m ${seconds}s`;
+            }, 1000);
+
+            // Surveiller la fermeture de la fenêtre
+            const checkWindowClosed = setInterval(function() {
+                if (roomWindow.closed) {
+                    clearInterval(checkWindowClosed);
+                    clearInterval(updateElapsedTime);
+                    stopAndTranscribe();
+                }
+            }, 1000); // Vérifier toutes les secondes
+        });
+
+        function stopAndTranscribe() {
+            const record = "{{ record }}";
+            const processPid = "{{ process_pid }}";
+            const language = document.getElementById('language').value;
+            const stopButton = document.getElementById('stopButton');
+            const loadingSpinner = document.getElementById('loadingSpinner');
+
+            // Désactiver le bouton et afficher le spinner
+            stopButton.disabled = true;
+            loadingSpinner.style.display = 'block';
+
+            fetch('/stop', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: new URLSearchParams({
+                    'record': record,
+                    'process_pid': processPid,
+                    'language': language
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                // Masquer le spinner
+                loadingSpinner.style.display = 'none';
+
+                if (data.transcription) {
+                    document.getElementById('transcriptionResult').innerText = data.transcription;
+                } else if (data.error) {
+                    document.getElementById('transcriptionResult').innerText = `Error: ${data.error}`;
+                }
+
+                // Changer le bouton "Stop" en bouton "Restart"
+                stopButton.innerText = 'Restart';
+                stopButton.disabled = false;
+                stopButton.onclick = function() {
+                    window.location.href = '../';
+                };
+            })
+            .catch(error => {
+                // Masquer le spinner
+                loadingSpinner.style.display = 'none';
+                document.getElementById('transcriptionResult').innerText = `Error: ${error}`;
+
+                // Changer le bouton "Stop" en bouton "Restart"
+                stopButton.innerText = 'Restart';
+                stopButton.disabled = false;
+                stopButton.onclick = function() {
+                    window.location.href = '../';
+                };
+            });
+        }
+    </script>
+</body>
+</html>
