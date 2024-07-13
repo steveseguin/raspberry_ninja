@@ -864,17 +864,50 @@ class WebRTCClient:
                         
                     elif self.fdsink:
                         print("FD SINK OUT")
-                        if "VP8" in name:
-                            out = Gst.parse_bin_from_description(
-                                "queue ! rtpvp8depay ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! queue max-size-buffers=0 max-size-time=0 ! video/x-raw,format=BGR ! fdsink", True)
-                        elif "H264" in name:
-                            out = Gst.parse_bin_from_description(
-                                "queue ! rtph264depay ! h264parse ! openh264dec ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=0 max-size-time=0 ! fdsink", True)
-                        
-                        self.pipe.add(out)
-                        out.sync_state_with_parent()
-                        sink = out.get_static_pad('sink')
-                        pad.link(sink)
+                        queue = Gst.ElementFactory.make("queue", None)
+                        depay = None
+                        decode = None
+                        convert = Gst.ElementFactory.make("videoconvert", None)
+                        sink = Gst.ElementFactory.make("fdsink", None)
+
+                        if "application/x-rtp" in name:
+                            if "VP8" in name:
+                                depay = Gst.ElementFactory.make("rtpvp8depay", None)
+                                decode = Gst.ElementFactory.make("vp8dec", None)
+                            elif "H264" in name:
+                                depay = Gst.ElementFactory.make("rtph264depay", None)
+                                decode = Gst.ElementFactory.make("avdec_h264", None)
+                            else:
+                                print("Unsupported RTP codec:", name)
+                                return
+                        else:
+                            print("Unsupported codec:", name)
+                            return
+
+                        if not queue or not depay or not decode or not convert or not sink:
+                            print("Failed to create elements")
+                            return
+
+                        self.pipe.add(queue)
+                        self.pipe.add(depay)
+                        self.pipe.add(decode)
+                        self.pipe.add(convert)
+                        self.pipe.add(sink)
+
+                        queue.link(depay)
+                        depay.link(decode)
+                        decode.link(convert)
+                        convert.link(sink)
+
+                        queue.sync_state_with_parent()
+                        depay.sync_state_with_parent()
+                        decode.sync_state_with_parent()
+                        convert.sync_state_with_parent()
+                        sink.sync_state_with_parent()
+
+                        sink_pad = queue.get_static_pad("sink")
+                        pad.link(sink_pad)
+                        return
                         
                     elif self.framebuffer: ## send raw data to ffmpeg or something I guess, using the stdout?
                         print("APP SINK OUT")
