@@ -45,7 +45,12 @@ try:
     from gi.repository import GLib
 except:
     pass
+    
+#os.environ['GST_DEBUG'] = '3,ndisink:7,videorate:5,videoscale:5,videoconvert:5'
 
+def generate_unique_ndi_name(base_name):
+    return f"{base_name}_{int(time.time())}"
+    
 def handle_unhandled_exception(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
@@ -227,7 +232,31 @@ def decrypt_message(encrypted_data, iv, phrase):
         print(f"Error decoding message: {e}")
         return None
 
+def setup_ice_servers(webrtc):
+    # STUN servers
+    webrtc.set_property('stun-server', "stun://stun.cloudflare.com:3478")
+    webrtc.set_property('stun-server', "stun://stun.l.google.com:19302")
 
+    # TURN server
+    turn_server = "turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478"
+    webrtc.emit('add-turn-server', turn_server)
+    
+def print_pipeline_structure(pipeline):
+        def print_element(element, depth=0):
+            print("  " * depth + element.get_name())
+            if isinstance(element, Gst.Bin):
+                for child in element.iterate_elements():
+                    print_element(child, depth + 1)
+
+        print("Pipeline structure:")
+        print_element(pipeline)
+        print("\nPad links:")
+        for element in pipeline.iterate_elements():
+            for pad in element.iterate_pads():
+                peer = pad.get_peer()
+                if peer:
+                    print(f"{element.get_name()}.{pad.get_name()} -> {peer.get_parent_element().get_name()}.{peer.get_name()}")
+                    
 class WebRTCClient:
     def __init__(self, params):
 
@@ -235,6 +264,7 @@ class WebRTCClient:
         self.conn = None
         self.pipe = None
         self.h264 = params.h264
+        self.vp8 = params.vp8
         self.pipein = params.pipein
         self.bitrate = params.bitrate
         self.max_bitrate = params.bitrate
@@ -288,6 +318,7 @@ class WebRTCClient:
             
         if self.save_file:
             self.pipe = Gst.parse_launch(self.pipeline)
+            setup_ice_servers(self.pipe.get_by_name('sendrecv'))
             self.pipe.set_state(Gst.State.PLAYING)
             print("RECORDING TO DISK STARTED")
 
@@ -407,7 +438,184 @@ class WebRTCClient:
                 printwout("a message was sent via websockets 1: "+msgJSON[:60])
             except Exception as e:
                 print(E)
+                
+   
+    def on_incoming_stream(self, _, pad):
+        try:
+            if Gst.PadDirection.SRC != pad.direction:
+                print("pad direction wrong?")
+                return
+            caps = pad.get_current_caps()
+            name = caps.to_string()
+            print(f"Incoming stream caps: {name}")
+            if self.ndiout:
+                print("NDI OUT")
+                ndi_combiner = self.pipe.get_by_name("ndi_combiner")
+                ndi_sink = self.pipe.get_by_name("ndi_sink")
+                
+                if not ndi_combiner:
+                    print("Creating new NDI sink combiner")
+                    ndi_combiner = Gst.ElementFactory.make("ndisinkcombiner", "ndi_combiner")
+                    if not ndi_combiner:
+                        print("Failed to create ndisinkcombiner element")
+                        return
+                    
+                    # Set properties
+                    ndi_combiner.set_property("latency", 800_000_000)  # 800ms
+                    ndi_combiner.set_property("min-upstream-latency", 1_000_000_000)  # 1000ms
+                    ndi_combiner.set_property("start-time-selection", 1)  # 1 corresponds to "first"
 
+                    self.pipe.add(ndi_combiner)
+                    ndi_combiner.sync_state_with_parent()
+                    
+                    ret = ndi_combiner.set_state(Gst.State.PLAYING)
+                    if ret == Gst.StateChangeReturn.FAILURE:
+                        print("Failed to set ndi_combiner to PLAYING state")
+                        return
+                
+                    if not ndi_sink:
+                        print("Creating new NDI sink")
+                        ndi_sink = Gst.ElementFactory.make("ndisink", "ndi_sink")
+                        if not ndi_sink:
+                            print("Failed to create ndisink element")
+                            return
+                        unique_ndi_name = generate_unique_ndi_name(self.ndiout)
+                        ndi_sink.set_property("ndi-name", unique_ndi_name)
+                        self.pipe.add(ndi_sink)
+                        ndi_sink.sync_state_with_parent()
+                        print(f"NDI sink name: {ndi_sink.get_property('ndi-name')}")
+                    
+                    # Link ndi_combiner to ndi_sink
+                    if not ndi_combiner.link(ndi_sink):
+                        print("Failed to link ndi_combiner to ndi_sink")
+                        return
+
+                if "video" in name:
+                    print("NDI VIDEO OUT")
+                    pad_name = "video"
+                    rtp_caps_string = "application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)H264"
+                elif "audio" in name:
+                    print("NDI AUDIO OUT")
+                    pad_name = "audio"
+                    rtp_caps_string = "application/x-rtp,media=(string)audio,clock-rate=(int)48000,encoding-name=(string)OPUS"
+                else:
+                    print("Unsupported media type:", name)
+                    return
+
+                # Check if the pad already exists
+                target_pad = ndi_combiner.get_static_pad(pad_name)
+                if target_pad:
+                    print(f"{pad_name.capitalize()} pad already exists, using existing pad")
+                else:
+                    target_pad = ndi_combiner.request_pad(ndi_combiner.get_pad_template(pad_name), None, None)
+                    if target_pad is None:
+                        print(f"Failed to get {pad_name} pad from ndi_combiner")
+                        print("Available pad templates:")
+                        for template in ndi_combiner.get_pad_template_list():
+                            print(f"  {template.name_template}: {template.direction.value_name}")
+                        print("Current pads:")
+                        for pad in ndi_combiner.pads:
+                            print(f"  {pad.get_name()}: {pad.get_direction().value_name}")
+                        return
+
+                print(f"Got {pad_name} pad: {target_pad.get_name()}")
+
+                # Create elements based on media type
+                if pad_name == "video":
+                    elements = [
+                        Gst.ElementFactory.make("capsfilter", f"{pad_name}_rtp_caps"),
+                        Gst.ElementFactory.make("queue", f"{pad_name}_queue"),
+                        Gst.ElementFactory.make("rtph264depay", "h264_depay"),
+                        Gst.ElementFactory.make("h264parse", "h264_parse"),
+                        Gst.ElementFactory.make("avdec_h264", "h264_decode"),
+                        Gst.ElementFactory.make("videoconvert", "video_convert"),
+                        Gst.ElementFactory.make("videoscale", "video_scale"),
+                        Gst.ElementFactory.make("videorate", "video_rate"),
+                        Gst.ElementFactory.make("capsfilter", "video_caps"),
+                    ]
+                    elements[0].set_property("caps", Gst.Caps.from_string(rtp_caps_string))
+                    elements[-1].set_property("caps", Gst.Caps.from_string("video/x-raw,format=UYVY,width=1280,height=720,framerate=30/1"))
+                else:  # audio
+                    elements = [
+                        Gst.ElementFactory.make("capsfilter", f"{pad_name}_rtp_caps"),
+                        Gst.ElementFactory.make("queue", f"{pad_name}_queue"),
+                        Gst.ElementFactory.make("rtpopusdepay", "opus_depay"),
+                        Gst.ElementFactory.make("opusdec", "opus_decode"),
+                        Gst.ElementFactory.make("audioconvert", "audio_convert"),
+                        Gst.ElementFactory.make("audioresample", "audio_resample"),
+                        Gst.ElementFactory.make("capsfilter", "audio_caps"),
+                    ]
+                    elements[0].set_property("caps", Gst.Caps.from_string(rtp_caps_string))
+                    elements[-1].set_property("caps", Gst.Caps.from_string("audio/x-raw,format=F32LE,channels=2,rate=48000,layout=interleaved"))
+
+                if not all(elements):
+                    print("Couldn't create all elements")
+                    return
+
+                # Create a bin for the elements
+                bin_name = f"{pad_name}_bin"
+                element_bin = Gst.Bin.new(bin_name)
+                for element in elements:
+                    element_bin.add(element)
+
+                # Link elements within the bin
+                for i in range(len(elements) - 1):
+                    if not elements[i].link(elements[i+1]):
+                        print(f"Failed to link {elements[i].get_name()} to {elements[i+1].get_name()}")
+                        return
+
+                # Add ghost pads to the bin
+                sink_pad = elements[0].get_static_pad("sink")
+                ghost_sink = Gst.GhostPad.new("sink", sink_pad)
+                element_bin.add_pad(ghost_sink)
+
+                src_pad = elements[-1].get_static_pad("src")
+                ghost_src = Gst.GhostPad.new("src", src_pad)
+                element_bin.add_pad(ghost_src)
+
+                # Add the bin to the pipeline
+                self.pipe.add(element_bin)
+                element_bin.sync_state_with_parent()
+
+                # Link the bin to the ndi_combiner
+                if not element_bin.link_pads("src", ndi_combiner, target_pad.get_name()):
+                    print(f"Failed to link {bin_name} to ndi_combiner:{target_pad.get_name()}")
+                    print(f"Bin src caps: {ghost_src.query_caps().to_string()}")
+                    print(f"Target pad caps: {target_pad.query_caps().to_string()}")
+                    return
+
+                # Link the incoming pad to the bin
+                if not pad.link(ghost_sink):
+                    print(f"Failed to link incoming pad to {bin_name}")
+                    print(f"Incoming pad caps: {pad.query_caps().to_string()}")
+                    print(f"Ghost sink pad caps: {ghost_sink.query_caps().to_string()}")
+                    return
+
+                print(f"NDI {pad_name} pipeline set up successfully")
+
+                # Set the bin to PLAYING state
+                ret = element_bin.set_state(Gst.State.PLAYING)
+                if ret == Gst.StateChangeReturn.FAILURE:
+                    print(f"Failed to set {bin_name} to PLAYING state")
+                    return
+
+                print(f"All elements in {bin_name} set to PLAYING state")
+
+        except Exception as E:
+            print("============= ERROR =========")
+            print(E)
+            import traceback
+            traceback.print_exc()
+
+        # Add this debugging information at the end of the function
+        print("Pipeline state after setup:")
+        print(self.pipe.get_state(0))
+        print("Element states:")
+        for element in self.pipe.iterate_elements():
+            print(f"{element.get_name()}: {element.get_state(0)}")
+
+        print_pipeline_structure(self.pipe)
+            
     async def createPeer(self, UUID):
 
         if UUID in self.clients:
@@ -554,6 +762,8 @@ class WebRTCClient:
             if self.streamin:
                 if self.noaudio:
                     msg = {"audio":False, "video":True, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
+                elif self.novideo:
+                    msg = {"audio":True, "video":False, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
                 else:
                     msg = {"audio":True, "video":True, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
                 self.sendMessage(msg)
@@ -806,7 +1016,9 @@ class WebRTCClient:
             print(f'[{buf.pts / Gst.SECOND:6.2f}]')
             return Gst.PadProbeReturn.OK
 
-        def on_incoming_stream( _, pad):
+           
+            
+        def on_incoming_stream2( _, pad):
             print("ON INCOMING AUDIO OR VIDEO STREAM")
             try:
                 if Gst.PadDirection.SRC != pad.direction:
@@ -818,7 +1030,79 @@ class WebRTCClient:
 
                 print(name)
                 
-                if "video" in name:
+                if self.ndiout:
+                    print("NDI OUT")
+                    ndi_sink = self.pipe.get_by_name("ndi_sink")
+                    funnel = self.pipe.get_by_name("ndi_funnel")
+                    
+                    if not ndi_sink:
+                        ndi_sink = Gst.ElementFactory.make("ndisink", "ndi_sink")
+                        ndi_sink.set_property("ndi-name", self.ndiout)
+                        funnel = Gst.ElementFactory.make("funnel", "ndi_funnel")
+                        self.pipe.add(ndi_sink)
+                        self.pipe.add(funnel)
+                        funnel.link(ndi_sink)
+                        ndi_sink.sync_state_with_parent()
+                        funnel.sync_state_with_parent()
+
+                    if "video" in name:
+                        print("NDI VIDEO OUT")
+                        elements = [
+                            Gst.ElementFactory.make("queue", "video_queue"),
+                            Gst.ElementFactory.make("rtph264depay", "h264_depay") if "H264" in name else Gst.ElementFactory.make("rtpvp8depay", "vp8_depay"),
+                            Gst.ElementFactory.make("h264parse", "h264_parse") if "H264" in name else None,
+                            Gst.ElementFactory.make("avdec_h264", "h264_decode") if "H264" in name else Gst.ElementFactory.make("vp8dec", "vp8_decode"),
+                            Gst.ElementFactory.make("videoconvert", "video_convert"),
+                            Gst.ElementFactory.make("videoscale", "video_scale"),
+                            Gst.ElementFactory.make("capsfilter", "video_caps"),
+                        ]
+                        elements = [e for e in elements if e is not None]
+
+                        if not all(elements):
+                            print("Couldn't create all video elements")
+                            return
+
+                        elements[-1].set_property("caps", Gst.Caps.from_string("video/x-raw,format=UYVY"))
+
+                    elif "audio" in name:
+                        print("NDI AUDIO OUT")
+                        elements = [
+                            Gst.ElementFactory.make("queue", "audio_queue"),
+                            Gst.ElementFactory.make("rtpopusdepay", "rtp_opus_depay"),
+                            Gst.ElementFactory.make("opusdec", "opus_decode"),
+                            Gst.ElementFactory.make("audioconvert", "audio_convert"),
+                            Gst.ElementFactory.make("audioresample", "audio_resample"),
+                            Gst.ElementFactory.make("capsfilter", "audio_caps"),
+                        ]
+
+                        if not all(elements):
+                            print("Couldn't create all audio elements")
+                            return
+
+                        elements[-1].set_property("caps", Gst.Caps.from_string("audio/x-raw,format=F32LE,rate=48000,channels=2,layout=interleaved"))
+
+                    else:
+                        print("Unsupported media type:", name)
+                        return
+
+                    for element in elements:
+                        self.pipe.add(element)
+                        element.sync_state_with_parent()
+
+                    for i in range(len(elements) - 1):
+                        if not elements[i].link(elements[i+1]):
+                            print(f"Failed to link {elements[i].get_name()} to {elements[i+1].get_name()}")
+                            return
+
+                    if not elements[-1].link(funnel):
+                        print(f"Failed to link {elements[-1].get_name()} to funnel")
+                        return
+
+                    pad.link(elements[0].get_static_pad("sink"))
+
+                    print("NDI pipeline set up successfully")
+                    
+                elif "video" in name:
                     if self.novideo:
                         printc('Ignoring incoming video track', "F88")
                         out = Gst.parse_bin_from_description("queue ! fakesink", True)
@@ -828,18 +1112,10 @@ class WebRTCClient:
                         sink = out.get_static_pad('sink')
                         pad.link(sink)
                         return;
-                        
+
                     if self.ndiout:
-                        print("NDI OUT")
-                        if "VP8" in name:
-                            out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! decodebin ! videoconvert ! queue ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! ndisink ndi-name='" + self.streamin + "'", True)
-                        elif "H264" in name:
-                            out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! queue max-size-buffers=0 max-size-time=0 ! video/x-raw,format=UYVY ! ndisinkcombiner name=mux1 ! queue ! ndisink ndi-name='" + self.streamin + "'", True)
-                            
-                        self.pipe.add(out)
-                        out.sync_state_with_parent()
-                        sink = out.get_static_pad('sink')
-                        pad.link(sink)
+                       # I'm handling this on elsewhere now
+                       pass
                     elif self.view:
                         print("DISPLAY OUTPUT MODE BEING SETUP")
                         
@@ -864,50 +1140,83 @@ class WebRTCClient:
                         
                     elif self.fdsink:
                         print("FD SINK OUT")
-                        queue = Gst.ElementFactory.make("queue", None)
+                        queue = Gst.ElementFactory.make("queue", "fd_queue")
                         depay = None
+                        parse = None
                         decode = None
-                        convert = Gst.ElementFactory.make("videoconvert", None)
-                        sink = Gst.ElementFactory.make("fdsink", None)
+                        convert = Gst.ElementFactory.make("videoconvert", "fd_convert")
+                        scale = Gst.ElementFactory.make("videoscale", "fd_scale")
+                        caps_filter = Gst.ElementFactory.make("capsfilter", "fd_caps")
+                        sink = Gst.ElementFactory.make("fdsink", "fd_sink")
 
-                        if "application/x-rtp" in name:
-                            if "VP8" in name:
-                                depay = Gst.ElementFactory.make("rtpvp8depay", None)
-                                decode = Gst.ElementFactory.make("vp8dec", None)
-                            elif "H264" in name:
-                                depay = Gst.ElementFactory.make("rtph264depay", None)
-                                decode = Gst.ElementFactory.make("avdec_h264", None)
-                            else:
-                                print("Unsupported RTP codec:", name)
-                                return
+                        if "VP8" in name:
+                            depay = Gst.ElementFactory.make("rtpvp8depay", "vp8_depay")
+                            decode = Gst.ElementFactory.make("vp8dec", "vp8_decode")
+                        elif "H264" in name:
+                            depay = Gst.ElementFactory.make("rtph264depay", "h264_depay")
+                            parse = Gst.ElementFactory.make("h264parse", "h264_parse")
+                            decode = Gst.ElementFactory.make("avdec_h264", "h264_decode")
                         else:
-                            print("Unsupported codec:", name)
+                            print("Unsupported video codec:", name)
                             return
 
-                        if not queue or not depay or not decode or not convert or not sink:
-                            print("Failed to create elements")
+                        if not all([queue, depay, decode, convert, scale, caps_filter, sink]):
+                            print("Failed to create all elements")
                             return
 
+                        # Set to raw video format, you can adjust based on your needs
+                        caps_filter.set_property("caps", Gst.Caps.from_string("video/x-raw,format=RGB"))
+                        
                         self.pipe.add(queue)
                         self.pipe.add(depay)
+                        if parse:
+                            self.pipe.add(parse)
                         self.pipe.add(decode)
                         self.pipe.add(convert)
+                        self.pipe.add(scale)
+                        self.pipe.add(caps_filter)
                         self.pipe.add(sink)
 
-                        queue.link(depay)
-                        depay.link(decode)
-                        decode.link(convert)
-                        convert.link(sink)
+                        # Link elements
+                        if not queue.link(depay):
+                            print("Failed to link queue and depay")
+                            return
+                        if parse:
+                            if not depay.link(parse) or not parse.link(decode):
+                                print("Failed to link depay, parse, and decode")
+                                return
+                        else:
+                            if not depay.link(decode):
+                                print("Failed to link depay and decode")
+                                return
+                        if not decode.link(convert):
+                            print("Failed to link decode and convert")
+                            return
+                        if not convert.link(scale):
+                            print("Failed to link convert and scale")
+                            return
+                        if not scale.link(caps_filter):
+                            print("Failed to link scale and caps_filter")
+                            return
+                        if not caps_filter.link(sink):
+                            print("Failed to link caps_filter and sink")
+                            return
 
+                        # Link the incoming pad to our queue
+                        pad.link(queue.get_static_pad("sink"))
+
+                        # Sync states
                         queue.sync_state_with_parent()
                         depay.sync_state_with_parent()
+                        if parse:
+                            parse.sync_state_with_parent()
                         decode.sync_state_with_parent()
                         convert.sync_state_with_parent()
+                        scale.sync_state_with_parent()
+                        caps_filter.sync_state_with_parent()
                         sink.sync_state_with_parent()
 
-                        sink_pad = queue.get_static_pad("sink")
-                        pad.link(sink_pad)
-                        return
+                        print("FD sink video pipeline set up successfully")
                         
                     elif self.framebuffer: ## send raw data to ffmpeg or something I guess, using the stdout?
                         print("APP SINK OUT")
@@ -938,18 +1247,18 @@ class WebRTCClient:
                         else:
                             if "VP8" in name:
                                 out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! mpegtsmux name=mux1 ! queue !"
-    + "hlssink name=hlssink max-files=0 "
-    + "target-duration=10 playlist-length=0 "
-    + "location=" + "./" + self.streamin + "_"+str(int(time.time()))+"_segment_%05d.ts "
-    + "playlist-location=" + "./" + self.streamin + "_"+str(int(time.time()))+".video.m3u8 " , True)
+                + "hlssink name=hlssink max-files=0 "
+                + "target-duration=10 playlist-length=0 "
+                + "location=" + "./" + self.streamin + "_"+str(int(time.time()))+"_segment_%05d.ts "
+                + "playlist-location=" + "./" + self.streamin + "_"+str(int(time.time()))+".video.m3u8 " , True)
 
                             elif "H264" in name:
                                 out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! mpegtsmux name=mux1 ! queue ! "
-    + "hlssink name=hlssink max-files=0 "
-    + "target-duration=10 playlist-length=0 "
-    + "location=" + "./" + self.streamin + "_"+str(int(time.time()))+"_segment_%05d.ts "
-    + "playlist-location=" + "./" + self.streamin + "_"+str(int(time.time()))+".video.m3u8 " , True)
-    
+                + "hlssink name=hlssink max-files=0 "
+                + "target-duration=10 playlist-length=0 "
+                + "location=" + "./" + self.streamin + "_"+str(int(time.time()))+"_segment_%05d.ts "
+                + "playlist-location=" + "./" + self.streamin + "_"+str(int(time.time()))+".video.m3u8 " , True)
+
                             self.pipe.add(out)
                             out.sync_state_with_parent()
                             sink = out.get_static_pad('sink')
@@ -978,15 +1287,10 @@ class WebRTCClient:
                         sink = out.get_static_pad('sink')
                         pad.link(sink)
                         return;
-                
+
                     if self.ndiout:
-                       # if "OPUS" in name:
-                        out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! opusdec ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000 ! ndisink name=ndi-audio ndi-name='" + self.streamin + "'", True)
-                        
-                        self.pipe.add(out)
-                        out.sync_state_with_parent()
-                        sink = out.get_static_pad('sink')
-                        pad.link(sink)
+                        # I'm handling this on elsewhere now
+                        pass
                     elif self.view:
                        # if "OPUS" in name:
                         print("decode and play out the incoming audio")
@@ -1058,6 +1362,8 @@ class WebRTCClient:
             else:
                 print(self.pipeline)
                 self.pipe = Gst.parse_launch(self.pipeline)
+                setup_ice_servers(self.pipe.get_by_name('sendrecv'))
+                
             print(self.pipe)
             started = False
 
@@ -1068,6 +1374,7 @@ class WebRTCClient:
         client['encoder'] = False
         client['encoder1'] = False
         client['encoder2'] = False
+        
         try:
             client['encoder'] = self.pipe.get_by_name('encoder')
         except:
@@ -1083,16 +1390,18 @@ class WebRTCClient:
         if self.streamin:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             client['webrtc'].set_property('bundle-policy', "max-bundle")
-            client['webrtc'].set_property('stun-server', "stun://stun.cloudflare.com:3478") ## older versions of gstreamer might break with this
-            client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
+            setup_ice_servers(client['webrtc'])
+            
             try:
                 client['webrtc'].set_property('latency', self.buffer)
                 client['webrtc'].set_property('async-handling', True)
             except:
                 pass
             self.pipe.add(client['webrtc'])
-
-            if self.h264:
+           
+            if self.vp8:     
+                pass
+            elif self.h264:
                 direction = GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY
                 caps = Gst.caps_from_string("application/x-rtp,media=video,encoding-name=H264,payload=102,clock-rate=90000,packetization-mode=(string)1");
                 tcvr = client['webrtc'].emit('add-transceiver', direction, caps)
@@ -1105,8 +1414,9 @@ class WebRTCClient:
         else:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             client['webrtc'].set_property('bundle-policy', 'max-bundle')
-            client['webrtc'].set_property('stun-server', "stun://stun.cloudflare.com:3478")  ## older versions of gstreamer might break with this
-            client['webrtc'].set_property('turn-server', 'turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478') # temporarily hard-coded
+            
+            setup_ice_servers(client['webrtc'])
+            
             try:
                 client['webrtc'].set_property('latency', self.buffer)
                 client['webrtc'].set_property('async-handling', True)
@@ -1153,7 +1463,7 @@ class WebRTCClient:
             pass
 
         if self.streamin:
-            client['webrtc'].connect('pad-added', on_incoming_stream)
+            client['webrtc'].connect('pad-added', self.on_incoming_stream)
             client['webrtc'].connect('on-ice-candidate', send_ice_remote_candidate_message)
             client['webrtc'].connect('on-data-channel', on_data_channel)
         else:
@@ -1180,16 +1490,15 @@ class WebRTCClient:
 
         if not started and self.pipe.get_state(0)[1] is not Gst.State.PLAYING:
             self.pipe.set_state(Gst.State.PLAYING)
-
+            
         client['webrtc'].sync_state_with_parent()
 
         if not self.streamin and not client['send_channel']:
             channel = client['webrtc'].emit('create-data-channel', 'sendChannel', None)
             on_data_channel(client['webrtc'], channel)
-
-
+            
         self.clients[client["UUID"]] = client
-
+        
 
     def handle_sdp_ice(self, msg, UUID):
         client = self.clients[UUID]
@@ -2200,6 +2509,7 @@ async def main():
             pass
         elif not args.multiviewer:
             if Gst.version().minor >= 18:
+                PIPELINE_DESC = f'webrtcbin name=sendrecv latency={args.buffer} async-handling=true bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
                 PIPELINE_DESC = f'webrtcbin name=sendrecv latency={args.buffer} async-handling=true stun-server=stun://stun.cloudflare.com:3478 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
             else: ## oldvers v1.16 options  non-advanced options
                 PIPELINE_DESC = f'webrtcbin name=sendrecv stun-server=stun://stun.cloudflare.com:3478 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
@@ -2252,6 +2562,7 @@ async def main():
             printc(f"\n-> You can view this stream at: {bold_color}{watchURL}view={args.streamid}{server}\n", "7FF")
 
     args.pipeline = PIPELINE_DESC
+    
     c = WebRTCClient(args)
     while True:
         try:
