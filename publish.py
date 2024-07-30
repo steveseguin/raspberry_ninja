@@ -601,6 +601,246 @@ class WebRTCClient:
 
                 print(f"All elements in {bin_name} set to PLAYING state")
 
+            elif "video" in name:
+                if self.novideo:
+                    printc('Ignoring incoming video track', "F88")
+                    out = Gst.parse_bin_from_description("queue ! fakesink", True)
+                    
+                    self.pipe.add(out)
+                    out.sync_state_with_parent()
+                    sink = out.get_static_pad('sink')
+                    pad.link(sink)
+                    return;
+
+                if self.ndiout:
+                   # I'm handling this on elsewhere now
+                   pass
+                elif self.view:
+                    print("DISPLAY OUTPUT MODE BEING SETUP")
+                    
+                    outsink = "autovideosink"
+                    if check_drm_displays():
+                        printc('\nThere is at least one connected display.',"00F")
+                    else:
+                        printc('\n ! No connected displays found. Will try to use glimagesink instead of autovideosink',"F60")
+                        outsink = "glimagesink sync=true"
+                    
+                    if "VP8" in name:
+                        out = Gst.parse_bin_from_description(
+                            "queue ! rtpvp8depay ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! video/x-raw,format=RGB ! queue max-size-buffers=0 max-size-time=0 ! "+outsink, True)
+                    elif "H264" in name:
+                        out = Gst.parse_bin_from_description(
+                            "queue ! rtph264depay ! h264parse ! openh264dec ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! video/x-raw,format=RGB ! queue max-size-buffers=0 max-size-time=0 ! "+outsink, True)
+                        
+                    self.pipe.add(out)
+                    out.sync_state_with_parent()
+                    sink = out.get_static_pad('sink')
+                    pad.link(sink)      
+                    
+                elif self.fdsink:
+                    print("FD SINK OUT")
+                    queue = Gst.ElementFactory.make("queue", "fd_queue")
+                    depay = None
+                    parse = None
+                    decode = None
+                    convert = Gst.ElementFactory.make("videoconvert", "fd_convert")
+                    scale = Gst.ElementFactory.make("videoscale", "fd_scale")
+                    caps_filter = Gst.ElementFactory.make("capsfilter", "fd_caps")
+                    sink = Gst.ElementFactory.make("fdsink", "fd_sink")
+
+                    if "VP8" in name:
+                        depay = Gst.ElementFactory.make("rtpvp8depay", "vp8_depay")
+                        decode = Gst.ElementFactory.make("vp8dec", "vp8_decode")
+                    elif "H264" in name:
+                        depay = Gst.ElementFactory.make("rtph264depay", "h264_depay")
+                        parse = Gst.ElementFactory.make("h264parse", "h264_parse")
+                        decode = Gst.ElementFactory.make("avdec_h264", "h264_decode")
+                    else:
+                        print("Unsupported video codec:", name)
+                        return
+
+                    if not all([queue, depay, decode, convert, scale, caps_filter, sink]):
+                        print("Failed to create all elements")
+                        return
+
+                    # Set to raw video format, you can adjust based on your needs
+                    caps_filter.set_property("caps", Gst.Caps.from_string("video/x-raw,format=RGB"))
+                    
+                    self.pipe.add(queue)
+                    self.pipe.add(depay)
+                    if parse:
+                        self.pipe.add(parse)
+                    self.pipe.add(decode)
+                    self.pipe.add(convert)
+                    self.pipe.add(scale)
+                    self.pipe.add(caps_filter)
+                    self.pipe.add(sink)
+
+                    # Link elements
+                    if not queue.link(depay):
+                        print("Failed to link queue and depay")
+                        return
+                    if parse:
+                        if not depay.link(parse) or not parse.link(decode):
+                            print("Failed to link depay, parse, and decode")
+                            return
+                    else:
+                        if not depay.link(decode):
+                            print("Failed to link depay and decode")
+                            return
+                    if not decode.link(convert):
+                        print("Failed to link decode and convert")
+                        return
+                    if not convert.link(scale):
+                        print("Failed to link convert and scale")
+                        return
+                    if not scale.link(caps_filter):
+                        print("Failed to link scale and caps_filter")
+                        return
+                    if not caps_filter.link(sink):
+                        print("Failed to link caps_filter and sink")
+                        return
+
+                    # Link the incoming pad to our queue
+                    pad.link(queue.get_static_pad("sink"))
+
+                    # Sync states
+                    queue.sync_state_with_parent()
+                    depay.sync_state_with_parent()
+                    if parse:
+                        parse.sync_state_with_parent()
+                    decode.sync_state_with_parent()
+                    convert.sync_state_with_parent()
+                    scale.sync_state_with_parent()
+                    caps_filter.sync_state_with_parent()
+                    sink.sync_state_with_parent()
+
+                    print("FD sink video pipeline set up successfully")
+                    
+                elif self.framebuffer: ## send raw data to ffmpeg or something I guess, using the stdout?
+                    print("APP SINK OUT")
+                    if "VP8" in name:
+                        out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=2 leaky=downstream ! appsink name=appsink", True)
+                    elif "H264" in name:
+                        out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! openh264dec ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=2 leaky=downstream ! appsink name=appsink", True)
+                    
+                    self.pipe.add(out)
+                    out.sync_state_with_parent()
+                    sink = out.get_static_pad('sink')
+                    pad.link(sink)
+                    
+                else:
+                    printc('VIDEO record setup', "88F")
+                    if self.pipe.get_by_name('filesink'):
+                        print("VIDEO setup")
+                        if "VP8" in name:
+                            out = Gst.parse_bin_from_description("queue ! rtpvp8depay", True)
+                        elif "H264" in name:
+                            out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse", True)
+                            
+                        self.pipe.add(out)
+                        out.sync_state_with_parent()
+                        sink = out.get_static_pad('sink')
+                        out.link(self.pipe.get_by_name('filesink'))
+                        pad.link(sink)
+                    else:
+                        if "VP8" in name:
+                            out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! mpegtsmux name=mux1 ! queue !"
+            + "hlssink name=hlssink max-files=0 "
+            + "target-duration=10 playlist-length=0 "
+            + "location=" + "./" + self.streamin + "_"+str(int(time.time()))+"_segment_%05d.ts "
+            + "playlist-location=" + "./" + self.streamin + "_"+str(int(time.time()))+".video.m3u8 " , True)
+
+                        elif "H264" in name:
+                            out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! mpegtsmux name=mux1 ! queue ! "
+            + "hlssink name=hlssink max-files=0 "
+            + "target-duration=10 playlist-length=0 "
+            + "location=" + "./" + self.streamin + "_"+str(int(time.time()))+"_segment_%05d.ts "
+            + "playlist-location=" + "./" + self.streamin + "_"+str(int(time.time()))+".video.m3u8 " , True)
+
+                        self.pipe.add(out)
+                        out.sync_state_with_parent()
+                        sink = out.get_static_pad('sink')
+                        pad.link(sink)
+                    print("success video?")
+
+                if self.framebuffer:
+                    frame_shape = (720, 1280, 3)
+                    size = np.prod(frame_shape) * 3  # Total size in bytes
+                    self.shared_memory = shared_memory.SharedMemory(create=True, size=size, name='psm_raspininja_streamid')
+                    self.trigger_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # we don't bind, as the reader will be binding
+                    print("*************")
+                    print(self.shared_memory)
+                    appsink = self.pipe.get_by_name('appsink')
+                    appsink.set_property("emit-signals", True)
+                    appsink.connect("new-sample", new_sample)
+
+            elif "audio" in name:
+                if self.noaudio:
+                    printc('Ignoring incoming audio track', "F88")
+                    
+                    out = Gst.parse_bin_from_description("queue ! fakesink", True)
+                    
+                    self.pipe.add(out)
+                    out.sync_state_with_parent()
+                    sink = out.get_static_pad('sink')
+                    pad.link(sink)
+                    return;
+
+                if self.ndiout:
+                    # I'm handling this on elsewhere now
+                    pass
+                elif self.view:
+                   # if "OPUS" in name:
+                    print("decode and play out the incoming audio")
+                    out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! opusdec ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000 ! autoaudiosink", True)
+                    
+                    self.pipe.add(out)
+                    out.sync_state_with_parent()
+                    sink = out.get_static_pad('sink')
+                    pad.link(sink)
+                elif self.fdsink:
+                    #if "OPUS" in name:
+                    out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! opusdec ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000 ! fdsink", True)
+                    
+                    self.pipe.add(out)
+                    out.sync_state_with_parent()
+                    sink = out.get_static_pad('sink')
+                    pad.link(sink)
+                    
+                elif self.framebuffer:
+                    out = Gst.parse_bin_from_description("queue ! fakesink", True)
+                    
+                    self.pipe.add(out)
+                    out.sync_state_with_parent()
+                    sink = out.get_static_pad('sink')
+                    pad.link(sink)
+                    
+                else:
+                
+                    if self.pipe.get_by_name('filesink'):
+                        print("Audio being added after video")
+                        if "OPUS" in name:
+                            out = Gst.parse_bin_from_description("queue rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,channels=2,rate=48000", True)
+                            
+                        self.pipe.add(out)
+                        out.sync_state_with_parent()
+                        sink = out.get_static_pad('sink')
+                        out.link(self.pipe.get_by_name('filesink'))
+                        pad.link(sink)
+                        
+                    else:
+                        print("audio being saved...")
+                        if "OPUS" in name:
+                            out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,rate=48000 ! mpegtsmux name=mux2 ! queue ! multifilesink name=filesinkaudio sync=true location="+self.streamin+"_"+str(int(time.time()))+"_audio.%02d.ts next-file=5 max-file-duration="+str(10*Gst.SECOND), True)
+
+                        self.pipe.add(out)
+                        out.sync_state_with_parent()
+                        sink = out.get_static_pad('sink')
+                        pad.link(sink)
+                        
+                print("success audio?")
+
         except Exception as E:
             print("============= ERROR =========")
             print(E)
@@ -1016,338 +1256,6 @@ class WebRTCClient:
             print(f'[{buf.pts / Gst.SECOND:6.2f}]')
             return Gst.PadProbeReturn.OK
 
-           
-            
-        def on_incoming_stream2( _, pad):
-            print("ON INCOMING AUDIO OR VIDEO STREAM")
-            try:
-                if Gst.PadDirection.SRC != pad.direction:
-                    print("pad direction wrong?")
-                    return
-
-                caps = pad.get_current_caps()
-                name = caps.to_string()
-
-                print(name)
-                
-                if self.ndiout:
-                    print("NDI OUT")
-                    ndi_sink = self.pipe.get_by_name("ndi_sink")
-                    funnel = self.pipe.get_by_name("ndi_funnel")
-                    
-                    if not ndi_sink:
-                        ndi_sink = Gst.ElementFactory.make("ndisink", "ndi_sink")
-                        ndi_sink.set_property("ndi-name", self.ndiout)
-                        funnel = Gst.ElementFactory.make("funnel", "ndi_funnel")
-                        self.pipe.add(ndi_sink)
-                        self.pipe.add(funnel)
-                        funnel.link(ndi_sink)
-                        ndi_sink.sync_state_with_parent()
-                        funnel.sync_state_with_parent()
-
-                    if "video" in name:
-                        print("NDI VIDEO OUT")
-                        elements = [
-                            Gst.ElementFactory.make("queue", "video_queue"),
-                            Gst.ElementFactory.make("rtph264depay", "h264_depay") if "H264" in name else Gst.ElementFactory.make("rtpvp8depay", "vp8_depay"),
-                            Gst.ElementFactory.make("h264parse", "h264_parse") if "H264" in name else None,
-                            Gst.ElementFactory.make("avdec_h264", "h264_decode") if "H264" in name else Gst.ElementFactory.make("vp8dec", "vp8_decode"),
-                            Gst.ElementFactory.make("videoconvert", "video_convert"),
-                            Gst.ElementFactory.make("videoscale", "video_scale"),
-                            Gst.ElementFactory.make("capsfilter", "video_caps"),
-                        ]
-                        elements = [e for e in elements if e is not None]
-
-                        if not all(elements):
-                            print("Couldn't create all video elements")
-                            return
-
-                        elements[-1].set_property("caps", Gst.Caps.from_string("video/x-raw,format=UYVY"))
-
-                    elif "audio" in name:
-                        print("NDI AUDIO OUT")
-                        elements = [
-                            Gst.ElementFactory.make("queue", "audio_queue"),
-                            Gst.ElementFactory.make("rtpopusdepay", "rtp_opus_depay"),
-                            Gst.ElementFactory.make("opusdec", "opus_decode"),
-                            Gst.ElementFactory.make("audioconvert", "audio_convert"),
-                            Gst.ElementFactory.make("audioresample", "audio_resample"),
-                            Gst.ElementFactory.make("capsfilter", "audio_caps"),
-                        ]
-
-                        if not all(elements):
-                            print("Couldn't create all audio elements")
-                            return
-
-                        elements[-1].set_property("caps", Gst.Caps.from_string("audio/x-raw,format=F32LE,rate=48000,channels=2,layout=interleaved"))
-
-                    else:
-                        print("Unsupported media type:", name)
-                        return
-
-                    for element in elements:
-                        self.pipe.add(element)
-                        element.sync_state_with_parent()
-
-                    for i in range(len(elements) - 1):
-                        if not elements[i].link(elements[i+1]):
-                            print(f"Failed to link {elements[i].get_name()} to {elements[i+1].get_name()}")
-                            return
-
-                    if not elements[-1].link(funnel):
-                        print(f"Failed to link {elements[-1].get_name()} to funnel")
-                        return
-
-                    pad.link(elements[0].get_static_pad("sink"))
-
-                    print("NDI pipeline set up successfully")
-                    
-                elif "video" in name:
-                    if self.novideo:
-                        printc('Ignoring incoming video track', "F88")
-                        out = Gst.parse_bin_from_description("queue ! fakesink", True)
-                        
-                        self.pipe.add(out)
-                        out.sync_state_with_parent()
-                        sink = out.get_static_pad('sink')
-                        pad.link(sink)
-                        return;
-
-                    if self.ndiout:
-                       # I'm handling this on elsewhere now
-                       pass
-                    elif self.view:
-                        print("DISPLAY OUTPUT MODE BEING SETUP")
-                        
-                        outsink = "autovideosink"
-                        if check_drm_displays():
-                            printc('\nThere is at least one connected display.',"00F")
-                        else:
-                            printc('\n ! No connected displays found. Will try to use glimagesink instead of autovideosink',"F60")
-                            outsink = "glimagesink sync=true"
-                        
-                        if "VP8" in name:
-                            out = Gst.parse_bin_from_description(
-                                "queue ! rtpvp8depay ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! video/x-raw,format=RGB ! queue max-size-buffers=0 max-size-time=0 ! "+outsink, True)
-                        elif "H264" in name:
-                            out = Gst.parse_bin_from_description(
-                                "queue ! rtph264depay ! h264parse ! openh264dec ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! video/x-raw,format=RGB ! queue max-size-buffers=0 max-size-time=0 ! "+outsink, True)
-                            
-                        self.pipe.add(out)
-                        out.sync_state_with_parent()
-                        sink = out.get_static_pad('sink')
-                        pad.link(sink)      
-                        
-                    elif self.fdsink:
-                        print("FD SINK OUT")
-                        queue = Gst.ElementFactory.make("queue", "fd_queue")
-                        depay = None
-                        parse = None
-                        decode = None
-                        convert = Gst.ElementFactory.make("videoconvert", "fd_convert")
-                        scale = Gst.ElementFactory.make("videoscale", "fd_scale")
-                        caps_filter = Gst.ElementFactory.make("capsfilter", "fd_caps")
-                        sink = Gst.ElementFactory.make("fdsink", "fd_sink")
-
-                        if "VP8" in name:
-                            depay = Gst.ElementFactory.make("rtpvp8depay", "vp8_depay")
-                            decode = Gst.ElementFactory.make("vp8dec", "vp8_decode")
-                        elif "H264" in name:
-                            depay = Gst.ElementFactory.make("rtph264depay", "h264_depay")
-                            parse = Gst.ElementFactory.make("h264parse", "h264_parse")
-                            decode = Gst.ElementFactory.make("avdec_h264", "h264_decode")
-                        else:
-                            print("Unsupported video codec:", name)
-                            return
-
-                        if not all([queue, depay, decode, convert, scale, caps_filter, sink]):
-                            print("Failed to create all elements")
-                            return
-
-                        # Set to raw video format, you can adjust based on your needs
-                        caps_filter.set_property("caps", Gst.Caps.from_string("video/x-raw,format=RGB"))
-                        
-                        self.pipe.add(queue)
-                        self.pipe.add(depay)
-                        if parse:
-                            self.pipe.add(parse)
-                        self.pipe.add(decode)
-                        self.pipe.add(convert)
-                        self.pipe.add(scale)
-                        self.pipe.add(caps_filter)
-                        self.pipe.add(sink)
-
-                        # Link elements
-                        if not queue.link(depay):
-                            print("Failed to link queue and depay")
-                            return
-                        if parse:
-                            if not depay.link(parse) or not parse.link(decode):
-                                print("Failed to link depay, parse, and decode")
-                                return
-                        else:
-                            if not depay.link(decode):
-                                print("Failed to link depay and decode")
-                                return
-                        if not decode.link(convert):
-                            print("Failed to link decode and convert")
-                            return
-                        if not convert.link(scale):
-                            print("Failed to link convert and scale")
-                            return
-                        if not scale.link(caps_filter):
-                            print("Failed to link scale and caps_filter")
-                            return
-                        if not caps_filter.link(sink):
-                            print("Failed to link caps_filter and sink")
-                            return
-
-                        # Link the incoming pad to our queue
-                        pad.link(queue.get_static_pad("sink"))
-
-                        # Sync states
-                        queue.sync_state_with_parent()
-                        depay.sync_state_with_parent()
-                        if parse:
-                            parse.sync_state_with_parent()
-                        decode.sync_state_with_parent()
-                        convert.sync_state_with_parent()
-                        scale.sync_state_with_parent()
-                        caps_filter.sync_state_with_parent()
-                        sink.sync_state_with_parent()
-
-                        print("FD sink video pipeline set up successfully")
-                        
-                    elif self.framebuffer: ## send raw data to ffmpeg or something I guess, using the stdout?
-                        print("APP SINK OUT")
-                        if "VP8" in name:
-                            out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! queue max-size-buffers=0 max-size-time=0 ! decodebin ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=2 leaky=downstream ! appsink name=appsink", True)
-                        elif "H264" in name:
-                            out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! queue max-size-buffers=0 max-size-time=0 ! openh264dec ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=2 leaky=downstream ! appsink name=appsink", True)
-                        
-                        self.pipe.add(out)
-                        out.sync_state_with_parent()
-                        sink = out.get_static_pad('sink')
-                        pad.link(sink)
-                        
-                    else:
-                        printc('VIDEO record setup', "88F")
-                        if self.pipe.get_by_name('filesink'):
-                            print("VIDEO setup")
-                            if "VP8" in name:
-                                out = Gst.parse_bin_from_description("queue ! rtpvp8depay", True)
-                            elif "H264" in name:
-                                out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse", True)
-                                
-                            self.pipe.add(out)
-                            out.sync_state_with_parent()
-                            sink = out.get_static_pad('sink')
-                            out.link(self.pipe.get_by_name('filesink'))
-                            pad.link(sink)
-                        else:
-                            if "VP8" in name:
-                                out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! mpegtsmux name=mux1 ! queue !"
-                + "hlssink name=hlssink max-files=0 "
-                + "target-duration=10 playlist-length=0 "
-                + "location=" + "./" + self.streamin + "_"+str(int(time.time()))+"_segment_%05d.ts "
-                + "playlist-location=" + "./" + self.streamin + "_"+str(int(time.time()))+".video.m3u8 " , True)
-
-                            elif "H264" in name:
-                                out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! mpegtsmux name=mux1 ! queue ! "
-                + "hlssink name=hlssink max-files=0 "
-                + "target-duration=10 playlist-length=0 "
-                + "location=" + "./" + self.streamin + "_"+str(int(time.time()))+"_segment_%05d.ts "
-                + "playlist-location=" + "./" + self.streamin + "_"+str(int(time.time()))+".video.m3u8 " , True)
-
-                            self.pipe.add(out)
-                            out.sync_state_with_parent()
-                            sink = out.get_static_pad('sink')
-                            pad.link(sink)
-                        print("success video?")
-
-                    if self.framebuffer:
-                        frame_shape = (720, 1280, 3)
-                        size = np.prod(frame_shape) * 3  # Total size in bytes
-                        self.shared_memory = shared_memory.SharedMemory(create=True, size=size, name='psm_raspininja_streamid')
-                        self.trigger_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # we don't bind, as the reader will be binding
-                        print("*************")
-                        print(self.shared_memory)
-                        appsink = self.pipe.get_by_name('appsink')
-                        appsink.set_property("emit-signals", True)
-                        appsink.connect("new-sample", new_sample)
-
-                elif "audio" in name:
-                    if self.noaudio:
-                        printc('Ignoring incoming audio track', "F88")
-                        
-                        out = Gst.parse_bin_from_description("queue ! fakesink", True)
-                        
-                        self.pipe.add(out)
-                        out.sync_state_with_parent()
-                        sink = out.get_static_pad('sink')
-                        pad.link(sink)
-                        return;
-
-                    if self.ndiout:
-                        # I'm handling this on elsewhere now
-                        pass
-                    elif self.view:
-                       # if "OPUS" in name:
-                        print("decode and play out the incoming audio")
-                        out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! opusdec ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000 ! autoaudiosink", True)
-                        
-                        self.pipe.add(out)
-                        out.sync_state_with_parent()
-                        sink = out.get_static_pad('sink')
-                        pad.link(sink)
-                    elif self.fdsink:
-                        #if "OPUS" in name:
-                        out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! opusdec ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000 ! fdsink", True)
-                        
-                        self.pipe.add(out)
-                        out.sync_state_with_parent()
-                        sink = out.get_static_pad('sink')
-                        pad.link(sink)
-                        
-                    elif self.framebuffer:
-                        out = Gst.parse_bin_from_description("queue ! fakesink", True)
-                        
-                        self.pipe.add(out)
-                        out.sync_state_with_parent()
-                        sink = out.get_static_pad('sink')
-                        pad.link(sink)
-                        
-                    else:
-                    
-                        if self.pipe.get_by_name('filesink'):
-                            print("Audio being added after video")
-                            if "OPUS" in name:
-                                out = Gst.parse_bin_from_description("queue rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,channels=2,rate=48000", True)
-                                
-                            self.pipe.add(out)
-                            out.sync_state_with_parent()
-                            sink = out.get_static_pad('sink')
-                            out.link(self.pipe.get_by_name('filesink'))
-                            pad.link(sink)
-                            
-                        else:
-                            print("audio being saved...")
-                            if "OPUS" in name:
-                                out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,rate=48000 ! mpegtsmux name=mux2 ! queue ! multifilesink name=filesinkaudio sync=true location="+self.streamin+"_"+str(int(time.time()))+"_audio.%02d.ts next-file=5 max-file-duration="+str(10*Gst.SECOND), True)
-
-                            self.pipe.add(out)
-                            out.sync_state_with_parent()
-                            sink = out.get_static_pad('sink')
-                            pad.link(sink)
-                            
-                    print("success audio?")
-
-            except Exception as E:
-                print("============= ERROR =========")
-                print(E)
-                exc_type, exc_obj, exc_tb = sys.exc_info()
-                fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                print(exc_type, fname, exc_tb.tb_lineno)
 
         print("creating a new webrtc bin")
 
