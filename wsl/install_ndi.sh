@@ -39,7 +39,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.bashrc
 
 echo "Building Gstreamer NDI Plugin..."
-git clone https://github.com/teltek/gst-plugin-ndi.git
+git clone https://github.com/steveseguin/gst-plugin-ndi.git
 cd gst-plugin-ndi
 cargo build --release
 sudo install target/release/libgstndi.so /usr/lib/x86_64-linux-gnu/gstreamer-1.0/
