@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "Installs NDIfor  Raspberry.Ninja support for Windows WSL2"
+echo "Installs NDI support for Raspberry.Ninja running on Windows WSL2"
 
 NDI_VERSION="6"
 NDI_INSTALLER="Install_NDI_SDK_v${NDI_VERSION}_Linux.tar.gz"
