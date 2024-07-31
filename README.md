@@ -320,7 +320,7 @@ For Windows WSL, there's an install script here: https://github.com/steveseguin/
 
 You can access WSL on Window by typing `wsl` into the Windows command prompt. Once you install Raspberry.Ninja, as per the WSL install instructions, you can install the NDI support, with the following:
 ```
-wget  https://github.com/steveseguin/raspberry_ninja/blob/main/wsl/install_ndi.sh
+wget https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/wsl/install_ndi.sh
 chmod +x install_ndi.sh
 ./install_ndi.sh
 ```
