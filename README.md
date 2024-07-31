@@ -1,4 +1,4 @@
-<img src='https://github.com/user-attachments/assets/db676147-1888-44fe-a5a0-5c04921d2c06' width="50">   Raspberry Ninja  -  not just for Raspberry Pis!
+# <img src='https://github.com/user-attachments/assets/db676147-1888-44fe-a5a0-5c04921d2c06' width="50"> Raspberry Ninja  -  not just for Raspberry Pis!
 Turn your Raspberry Pi, Nvidia Jetson, Orange Pi, Windows PC, Mac, Linux box, or nearly any Python-compatible system into a ninja-cam with hardware-acceleration enabled! This lets you publish live streaming video and audio directly to your web browser or OBS instance using VDO.Ninja.  Achieve very low streaming latency over the Internet or a LAN; all for free.
 
 <img src='https://github.com/steveseguin/raspberry_ninja/assets/2575698/0b3c7140-5aed-4b21-babb-3c842e2bc010' width="400">    <img src='https://github.com/steveseguin/raspberry_ninja/assets/2575698/cf301391-0375-45c9-bb1c-d665dd0fe1bb' width="400">
