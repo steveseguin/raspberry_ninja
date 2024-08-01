@@ -330,13 +330,11 @@ You'll also need NDI tools installed for Windows.
 
 Once you have all that setup, you can run `python3 publish.py --ndiout STREAMIDHERE`, and the remote VDO.Ninja media stream should be available via NDI afterwards.  You may need to refresh your NDI viewer to get it working.  As well, sometimes after you stop the NDI feed, and restart the stream, you'll need to wait one or two minutes, else it won't work. I don't know why yet, but there is a short cool down period needed before it will work again.
 
-The NDI support should be something you can get working on vanilla Ubuntu and MacOS as well, but I don't have an install script for that yet.
+If nothing happens when you run `python3 publish.py --ndiout someTestStream123`, check that Rust is actually installed, and then confirm `gst-inspect-1.0 | grep "ndi"` lists NDISink.
 
-NDI support for publishing is yet to be added.  H264/OPUS is tested mainly.
+NDI support should be something you can get working on vanilla Ubuntu and MacOS as well, but I don't have an install script for that yet.
 
-To use, run: `python3 publish.py --ndiout someTestStream123`
-
-If nothing happens, check that Rust installed and then confirm `gst-inspect-1.0 | grep "ndi"` lists NDISink.
+Note: NDI support for publishing is yet to be added.  H264/OPUS is tested mainly.
 
 ### OpenCV / Tensorflow / FFMPEG / FDSink / Framebuffer support
 
