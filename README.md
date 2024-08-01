@@ -1,3 +1,39 @@
+<!-- START doctoc generated TOC please keep comment here to allow auto update -->
+<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+**Table of Contents**
+
+- [<img src='https://github.com/user-attachments/assets/db676147-1888-44fe-a5a0-5c04921d2c06' height="50"> Raspberry Ninja  -  not just for Raspberry Pis!](#img-srchttpsgithubcomuser-attachmentsassetsdb676147-1888-44fe-a5a0-5c04921d2c06-height50-raspberry-ninja-----not-just-for-raspberry-pis)
+  - [Preface](#preface)
+  - [Install options](#install-options)
+    - [Setup for a Raspberry Pi](#setup-for-a-raspberry-pi)
+    - [Setup for an Nvidia Jetson](#setup-for-an-nvidia-jetson)
+    - [Setup for Linux Desktops](#setup-for-linux-desktops)
+      - [Requirements for linux systems in general:](#requirements-for-linux-systems-in-general)
+    - [Setup for Windows (WSL)](#setup-for-windows-wsl)
+    - [Setup for Mac OS X](#setup-for-mac-os-x)
+    - [Generic quick-install method](#generic-quick-install-method)
+  - [Updating](#updating)
+  - [Usage](#usage)
+      - [Adding an audio source](#adding-an-audio-source)
+  - [How to Run:](#how-to-run)
+    - [Auto-starting the script on boot](#auto-starting-the-script-on-boot)
+    - [RTMP output](#rtmp-output)
+    - [SRT support](#srt-support)
+    - [WHIP / Meshcast support](#whip--meshcast-support)
+    - [Custom Gstreamer audio/video source pipeline](#custom-gstreamer-audiovideo-source-pipeline)
+    - [NDI support](#ndi-support)
+    - [OpenCV / Tensorflow / FFMPEG / FDSink / Framebuffer support](#opencv--tensorflow--ffmpeg--fdsink--framebuffer-support)
+  - [Hardware options](#hardware-options)
+    - [Camera options](#camera-options)
+    - [360-degree cameras](#360-degree-cameras)
+    - [HDMI Input options](#hdmi-input-options)
+    - [MIDI options](#midi-options)
+    - [Note:](#note)
+    - [TODO:](#todo)
+    - [Discord Support](#discord-support)
+
+<!-- END doctoc generated TOC please keep comment here to allow auto update -->
+
 # <img src='https://github.com/user-attachments/assets/db676147-1888-44fe-a5a0-5c04921d2c06' height="50"> Raspberry Ninja  -  not just for Raspberry Pis!
 Turn your Raspberry Pi, Nvidia Jetson, Orange Pi, Windows PC, Mac, Linux box, or nearly any Python-compatible system into a ninja-cam with hardware-acceleration enabled! This lets you publish live streaming video and audio directly to your web browser or OBS instance using VDO.Ninja.  Achieve very low streaming latency over the Internet or a LAN; all for free.
 
