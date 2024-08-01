@@ -316,10 +316,12 @@ Avoid apostrophes in your pipelines, as that can cause a syntax issue, and you s
 
 I've added support to send VDO.Ninja streams to an NDI playout sink.
 
-For Windows WSL, there's an install script here: https://github.com/steveseguin/raspberry_ninja/blob/main/wsl/install_ndi.sh
+For Windows WSL, there's an install script here: https://github.com/steveseguin/raspberry_ninja/blob/main/wsl/install_ndi.sh, however please make sure Rust (cargo) is installed first.
 
 You can access WSL on Window by typing `wsl` into the Windows command prompt. Once you install Raspberry.Ninja, as per the WSL install instructions, you can install the NDI support, with the following:
 ```
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.bashrc
 wget https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/wsl/install_ndi.sh
 chmod +x install_ndi.sh
 ./install_ndi.sh
@@ -328,10 +330,13 @@ You'll also need NDI tools installed for Windows.
 
 Once you have all that setup, you can run `python3 publish.py --ndiout STREAMIDHERE`, and the remote VDO.Ninja media stream should be available via NDI afterwards.  You may need to refresh your NDI viewer to get it working.  As well, sometimes after you stop the NDI feed, and restart the stream, you'll need to wait one or two minutes, else it won't work. I don't know why yet, but there is a short cool down period needed before it will work again.
 
-The NDI support should be something you can get working on vanilla Ubuntu and MacOS as well, but I don't have an install script for it yet.
+The NDI support should be something you can get working on vanilla Ubuntu and MacOS as well, but I don't have an install script for that yet.
 
 NDI support for publishing is yet to be added.  H264/OPUS is tested mainly.
 
+To use, run: `python3 publish.py --ndiout someTestStream123`
+
+If nothing happens, check that Rust installed and then confirm `gst-inspect-1.0 | grep "ndi"` lists NDISink.
 
 ### OpenCV / Tensorflow / FFMPEG / FDSink / Framebuffer support
 
