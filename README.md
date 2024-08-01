@@ -5,9 +5,7 @@ Turn your Raspberry Pi, Nvidia Jetson, Orange Pi, Windows PC, Mac, Linux box, or
 
 <img src='https://github.com/steveseguin/raspberry_ninja/assets/2575698/0b3c7140-5aed-4b21-babb-3c842e2bc010' width="400">    <img src='https://github.com/steveseguin/raspberry_ninja/assets/2575698/cf301391-0375-45c9-bb1c-d665dd0fe1bb' width="400">
 
-It also has the ability to record remote VDO.Ninja streams to disk (no transcode step), it can broadcast a low-latency video stream to multiple viewers (with a built-in SFU) at  time, and because it works with VDO.Ninja, you get access to its ecosystem and related features.
-
-AV1 support is now available, however you will need a powerful system or one with an AV1 hardware encoder to make use of it.  WHIP-output support has also been added.
+It also has the ability to record remote VDO.Ninja streams to disk (no transcode step), it can broadcast a low-latency video stream to multiple viewers (with a built-in SFU) at time, and because it works with VDO.Ninja, you get access to its ecosystem and related features. There are other cool things available, such as AV1 support, NDI output, OpenCV output, WHIP, and fdsink output.
 
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
