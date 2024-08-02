@@ -172,61 +172,100 @@ To get the list of supported commands with your version of the code, run `python
 Sample help output: ( what's shown below may not be up-to-date)
 
 ```
-usage: publish.py [-h] [--streamid STREAMID] [--server SERVER]
-                  [--bitrate BITRATE] [--width WIDTH] [--height HEIGHT]
-                  [--framerate FRAMERATE] [--test] [--hdmi] [--v4l2 V4L2]
-                  [--rpicam] [--nvidiacsi] [--alsa ALSA] [--pulse PULSE]
-                  [--raw] [--h264] [--nvidia] [--rpi] [--novideo] [--noaudio]
-                  [--pipeline PIPELINE]
+usage: publish.py [-h] [--streamid STREAMID] [--room ROOM] [--rtmp RTMP] [--whip WHIP] [--bitrate BITRATE]
+                  [--audiobitrate AUDIOBITRATE] [--width WIDTH] [--height HEIGHT] [--framerate FRAMERATE]
+                  [--server SERVER] [--puuid PUUID] [--test] [--hdmi] [--camlink] [--z1] [--z1passthru]
+                  [--apple APPLE] [--v4l2 V4L2] [--libcamera] [--rpicam] [--format FORMAT] [--rotate ROTATE]
+                  [--nvidiacsi] [--alsa ALSA] [--pulse PULSE] [--zerolatency] [--raw] [--bt601] [--h264] [--x264]
+                  [--openh264] [--vp8] [--vp9] [--aom] [--av1] [--rav1e] [--qsv] [--omx] [--vorbis] [--nvidia] [--rpi]
+                  [--multiviewer] [--noqos] [--nored] [--novideo] [--noaudio] [--led] [--pipeline PIPELINE]
+                  [--record RECORD] [--view VIEW] [--save] [--midi] [--filesrc FILESRC] [--filesrc2 FILESRC2]
+                  [--pipein PIPEIN] [--ndiout NDIOUT] [--fdsink FDSINK] [--framebuffer FRAMEBUFFER] [--debug]
+                  [--buffer BUFFER] [--password [PASSWORD]] [--hostname HOSTNAME] [--video-pipeline VIDEO_PIPELINE]
+                  [--audio-pipeline AUDIO_PIPELINE] [--timestamp] [--clockstamp]
 
-optional arguments:
+options:
   -h, --help            show this help message and exit
   --streamid STREAMID   Stream ID of the peer to connect to
-  --server SERVER       Handshake server to use, eg:
-                        "wss://wss.vdo.ninja:443"
-  --bitrate BITRATE     Sets the video bitrate. This is not adaptive, so
-                        packet loss and insufficient bandwidth will cause
-                        frame loss
-  --width WIDTH         Sets the video width. Make sure that your input
-                        supports it.
-  --height HEIGHT       Sets the video height. Make sure that your input
-                        supports it.
+  --room ROOM           optional - Room name of the peer to join
+  --rtmp RTMP           Use RTMP instead; pass the rtmp:// publishing address here to use
+  --whip WHIP           Use WHIP output instead; pass the https://whip.publishing/address here to use
+  --bitrate BITRATE     Sets the video bitrate; kbps. If error correction (red) is on, the total bandwidth used may be
+                        up to 2X higher than the bitrate
+  --audiobitrate AUDIOBITRATE
+                        Sets the audio bitrate; kbps.
+  --width WIDTH         Sets the video width. Make sure that your input supports it.
+  --height HEIGHT       Sets the video height. Make sure that your input supports it.
   --framerate FRAMERATE
-                        Sets the video framerate. Make sure that your input
-                        supports it.
+                        Sets the video framerate. Make sure that your input supports it.
+  --server SERVER       Handshake server to use, eg: "wss://wss.vdo.ninja:443"
+  --puuid PUUID         Specify a custom publisher UUID value; not required
   --test                Use test sources.
-  --rtmp                Use RTMP instead of webRTC; pass "rtmp://xxxx.com/live/xxx-xxxx-xxx"
-  --whip                Use WHIP output instead of VDO.Ninja; pass "https://some.whipdomain.com/streamtoken"
   --hdmi                Try to setup a HDMI dongle
-  --camlink             Try to use Elgato Camlink as source
+  --camlink             Try to setup an Elgato Cam Link
+  --z1                  Try to setup a Theta Z1 360 camera
+  --z1passthru          Try to setup a Theta Z1 360 camera, but do not transcode
+  --apple APPLE         Sets Apple Video Foundation media device; takes a device index value (0,1,2,3,etc)
   --v4l2 V4L2           Sets the V4L2 input device.
-  --rpicam              Sets the RaspberryPi input device.
+  --libcamera           Use libcamera as the input source
+  --rpicam              Sets the RaspberryPi CSI input device. If this fails, try --rpi --raw or just --raw instead.
+  --format FORMAT       The capture format type: YUYV, I420, BGR, or even JPEG/H264
+  --rotate ROTATE       Rotates the camera in degrees; 0 (default), 90, 180, 270 are possible values.
   --nvidiacsi           Sets the input to the nvidia csi port.
   --alsa ALSA           Use alsa audio input.
   --pulse PULSE         Use pulse audio (or pipewire) input.
+  --zerolatency         A mode designed for the lowest audio output latency
   --raw                 Opens the V4L2 device with raw capabilities.
-  --bt601               Changes the input color profile when in raw mode to BT601
-  --h264                For PC, instead of VP8, use x264.
-  --vp8                 VP8 encoder instead of h264; likely software-based
-  --aom                 Use AV1-AOM software encoding for publishing
-  --av1                 Whatever AV1 encoder the script can find; more can be added on request
-  --qsv                 Intel quicksync avi encoder
-  --nvidia              Creates a pipeline optimized for Nvidia (Jetson?) hardware encoders
-  --rpi                 Creates a pipeline optimized for Raspberry Pi (0,1,2,3,4) hardware encoders (⚠️RPi-5 doesn't have a hardware encoder)
+  --bt601               Use colormetery bt601 mode; enables raw mode also
+  --h264                Prioritize h264 over vp8
+  --x264                Prioritizes x264 encoder over hardware encoder
+  --openh264            Prioritizes OpenH264 encoder over hardware encoder
+  --vp8                 Prioritizes vp8 codec over h264; software encoder
+  --vp9                 Prioritizes vp9 codec over h264; software encoder
+  --aom                 Prioritizes AV1-AOM codec; software encoder
+  --av1                 Auto selects an AV1 codec for encoding; hardware or software
+  --rav1e               rav1e AV1 encoder used
+  --qsv                 Intel quicksync AV1 encoder used
+  --omx                 Try to use the OMX driver for encoding video; not recommended
+  --vorbis              Try to use the OMX driver for encoding video; not recommended
+  --nvidia              Creates a pipeline optimised for nvidia hardware.
+  --rpi                 Creates a pipeline optimised for raspberry pi hardware encoder. This wont work with the
+                        Raspberry Pi 5, as it has no hardware encoder..
+  --multiviewer         Allows for multiple viewers to watch a single encoded stream; will use more CPU and bandwidth.
+  --noqos               Do not try to automatically reduce video bitrate if packet loss gets too high. The default
+                        will reduce the bitrate if needed.
+  --nored               Disable error correction redundency for transmitted video. This may reduce the bandwidth used
+                        by half, but it will be more sensitive to packet loss
   --novideo             Disables video input.
   --noaudio             Disables audio input.
-  --omx                 An alternative hardware encoder for the RPi; glitches, but faster?
+  --led                 Enable GPIO pin 12 as an LED indicator light; for Raspberry Pi.
   --pipeline PIPELINE   A full custom pipeline
-  --record STREAMID     Specify a remote stream ID to record; this will disable publishing mode
-  --midi                MIDI transport; can forward/recieve MIDI to remote browser/device
-  --save                Will save a local copy of the outbound stream to disk (MKV format)
-  --rotate DEGREES      Will rotate the video by 90, 180 , or 270 degrees
-  --multiviewer         Allows for multiple viewers at a time; this can increase bandwidth usage of course
-  --nored               Disable error correction. If you don't disable it, the bandwidth may be up to 2x higher than the target video bitrate.  I do not recommend removing, unless you're on a pristine connection.
-  --noqos               This will disable the qos feature. The QOS feature will lower the bitrate of the video encoder if heavy packet loss is detected. It won't lower it more than 5x (20% of target), but I find this works well to combat times where the network bandwidth is insufficient. 
-  --pipein              Lets you pipe data in from a unix pipe, something like: `ffmpeg -i input.mp4 -o - | python3 publish.py --pipein auto`
-  --libcamera           Use libcamera as a source; this may be needed if using third party cameras like those from Arducam
-
+  --record RECORD       Specify a stream ID to record to disk. System will not publish a stream when enabled.
+  --view VIEW           Specify a stream ID to play out to the local display/audio.
+  --save                Save a copy of the outbound stream to disk. Publish Live + Store the video.
+  --midi                Transparent MIDI bridge mode; no video or audio.
+  --filesrc FILESRC     Provide a media file (local file location) as a source instead of physical device; it can be a
+                        transparent webm or whatever. It will be transcoded, which offers the best results.
+  --filesrc2 FILESRC2   Provide a media file (local file location) as a source instead of physical device; it can be a
+                        transparent webm or whatever. It will not be transcoded, so be sure its encoded correctly.
+                        Specify if --vp8 or --vp9, else --h264 is assumed.
+  --pipein PIPEIN       Pipe a media stream in as the input source. Pass `auto` for auto-decode,pass codec type for
+                        pass-thru (mpegts,h264,vp8,vp9), or use `raw`
+  --ndiout NDIOUT       VDO.Ninja to NDI output; requires the NDI Gstreamer plugin installed
+  --fdsink FDSINK       VDO.Ninja to the stdout pipe; common for piping data between command line processes
+  --framebuffer FRAMEBUFFER
+                        VDO.Ninja to local frame buffer; performant and Numpy/OpenCV friendly
+  --debug               Show added debug information from Gsteamer and other aspects of the app
+  --buffer BUFFER       The jitter buffer latency in milliseconds; default is 200ms. (gst +v1.18)
+  --password [PASSWORD]
+                        Specify a custom password. If setting to false, password/encryption will be disabled.
+  --hostname HOSTNAME   Your URL for vdo.ninja, if self-hosting the website code
+  --video-pipeline VIDEO_PIPELINE
+                        Custom GStreamer video source pipeline
+  --audio-pipeline AUDIO_PIPELINE
+                        Custom GStreamer audio source pipeline
+  --timestamp           Add a timestamp to the video output, if possible
+  --clockstamp          Add a clock overlay to the video output, if possible
 ```
 
 ##### Changing video input sources
