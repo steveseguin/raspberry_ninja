@@ -38,6 +38,7 @@ It also has the ability to record remote VDO.Ninja streams to disk (no transcode
   - [MIDI options](#midi-options)
   - [Note:](#note)
   - [TODO:](#todo)
+- [Contributors of this repo](#contributors-of-this-repo)
   - [Discord Support](#discord-support)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
