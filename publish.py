@@ -240,22 +240,6 @@ def setup_ice_servers(webrtc):
     # TURN server
     turn_server = "turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478"
     webrtc.emit('add-turn-server', turn_server)
-    
-def print_pipeline_structure(pipeline):
-        def print_element(element, depth=0):
-            print("  " * depth + element.get_name())
-            if isinstance(element, Gst.Bin):
-                for child in element.iterate_elements():
-                    print_element(child, depth + 1)
-
-        print("Pipeline structure:")
-        print_element(pipeline)
-        print("\nPad links:")
-        for element in pipeline.iterate_elements():
-            for pad in element.iterate_pads():
-                peer = pad.get_peer()
-                if peer:
-                    print(f"{element.get_name()}.{pad.get_name()} -> {peer.get_parent_element().get_name()}.{peer.get_name()}")
                     
 class WebRTCClient:
     def __init__(self, params):
@@ -850,11 +834,7 @@ class WebRTCClient:
         # Add this debugging information at the end of the function
         print("Pipeline state after setup:")
         print(self.pipe.get_state(0))
-        print("Element states:")
-        for element in self.pipe.iterate_elements():
-            print(f"{element.get_name()}: {element.get_state(0)}")
 
-        print_pipeline_structure(self.pipe)
             
     async def createPeer(self, UUID):
 
