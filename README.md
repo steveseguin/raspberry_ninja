@@ -519,6 +519,13 @@ midi demo video: https://youtu.be/Gry9UFtOTmQ
 
 - Have gstreamer/python automatically detect the input devices, settings, system, and configure things automatically.  Allowing for burn, plug, and boot, without needing to log in via SSH at all.
 
+
+## Contributors of this repo
+<a href="https://github.com/steveseguin/raspberry_ninja/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=steveseguin/raspberry_ninja" />
+</a>
+
+
 ### Discord Support
 
 Support is available on Discord at [https://discord.vdo.ninja](https://discord.vdo.ninja) in channel *#raspberry-ninja*
