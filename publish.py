@@ -66,6 +66,26 @@ def handle_unhandled_exception(exc_type, exc_value, exc_traceback):
         print(f"File \"{frame.filename}\", line {frame.lineno}, in {frame.name}")
 sys.excepthook = handle_unhandled_exception
 
+
+def get_exception_info(E):
+    tb = traceback.extract_tb(E.__traceback__)
+    error_line = tb[-1].lineno
+    error_file = tb[-1].filename
+    
+    if len(tb) >= 2:
+        caller = tb[-2]
+        caller_line = caller.lineno
+        caller_file = caller.filename
+    else:
+        caller_line = "unknown"
+        caller_file = "unknown"
+    
+    return (
+        f"{type(E).__name__} at line {error_line} in {error_file}: {E}\n"
+        f"Called from line {caller_line} in {caller_file}"
+    )
+
+    
 def enableLEDs(level=False):
     try:
         GPIO
@@ -206,7 +226,8 @@ def encrypt_message(message, phrase):
     try:
         message = json.dumps(message)
     except Exception as E:
-        print(E)
+        printwarn(get_exception_info(E))
+
     key = generate_key(phrase)
     iv = os.urandom(16)
     cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
@@ -233,13 +254,16 @@ def decrypt_message(encrypted_data, iv, phrase):
         return None
 
 def setup_ice_servers(webrtc):
-    # STUN servers
-    webrtc.set_property('stun-server', "stun://stun.cloudflare.com:3478")
-    webrtc.set_property('stun-server', "stun://stun.l.google.com:19302")
+    try:
+        # STUN servers
+        webrtc.set_property('stun-server', "stun://stun.cloudflare.com:3478")
+        webrtc.set_property('stun-server', "stun://stun.l.google.com:19302")
 
-    # TURN server
-    turn_server = "turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478"
-    webrtc.emit('add-turn-server', turn_server)
+        # TURN server
+        turn_server = "turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478"
+        webrtc.emit('add-turn-server', turn_server)
+    except Exception as E:
+        printwarn(get_exception_info(E))
                     
 class WebRTCClient:
     def __init__(self, params):
@@ -298,7 +322,8 @@ class WebRTCClient:
                 if self.room_name:
                     self.room_hashcode = generateHash(self.room_name+self.password+self.salt, 16)
         except Exception as E:
-            print(E)
+            printwarn(get_exception_info(E))
+
             
         if self.save_file:
             self.pipe = Gst.parse_launch(self.pipeline)
@@ -328,7 +353,6 @@ class WebRTCClient:
         else:
             await self.sendMessageAsync({"request":"seed","streamID":self.stream_id+self.hashcode})
             printwout("seed start")
-
 
     def sendMessage(self, msg): # send message to wss
         if self.puuid:
@@ -406,7 +430,8 @@ class WebRTCClient:
                     await self.conn.send(msgJSON)
                     printwout("a message was sent via websockets 2: "+msgJSON[:60])
                 except Exception as E:
-                    print(E)
+                    printwarn(get_exception_info(E))
+
         else:
             try:
                 if self.password:
@@ -421,7 +446,8 @@ class WebRTCClient:
                 await self.conn.send(msgJSON)
                 printwout("a message was sent via websockets 1: "+msgJSON[:60])
             except Exception as e:
-                print(E)
+                printwarn(get_exception_info(E))
+
                 
    
     def on_incoming_stream(self, _, pad):
@@ -594,7 +620,7 @@ class WebRTCClient:
                     out.sync_state_with_parent()
                     sink = out.get_static_pad('sink')
                     pad.link(sink)
-                    return;
+                    return
 
                 if self.ndiout:
                    # I'm handling this on elsewhere now
@@ -769,7 +795,7 @@ class WebRTCClient:
                     out.sync_state_with_parent()
                     sink = out.get_static_pad('sink')
                     pad.link(sink)
-                    return;
+                    return
 
                 if self.ndiout:
                     # I'm handling this on elsewhere now
@@ -827,8 +853,8 @@ class WebRTCClient:
 
         except Exception as E:
             print("============= ERROR =========")
-            print(E)
-            import traceback
+            printwarn(get_exception_info(E))
+
             traceback.print_exc()
 
         # Add this debugging information at the end of the function
@@ -948,7 +974,8 @@ class WebRTCClient:
                     client['send_channel'].emit('send-string', '{"ping":"'+str(time.time())+'"}')
                     printout("PINGED")
                 except Exception as E:
-                    print(E)
+                    printwarn(get_exception_info(E))
+
                     print("PING FAILED")
                 client['timer'] = threading.Timer(3, pingTimer)
                 client['timer'].start()
@@ -994,7 +1021,6 @@ class WebRTCClient:
                 msg = {"info":{"rotate_video":self.rotate}, "UUID": client["UUID"]}
                 self.sendMessage(msg)
 
-
         def on_data_channel_close(channel):
             printc('DATA CHANNEL: CLOSE', "F44")
 
@@ -1012,7 +1038,8 @@ class WebRTCClient:
                         decryptedJson = decrypt_message(msg['candidates'], msg['vector'], self.password+self.salt)
                         msg['candidates'] = json.loads(decryptedJson)
                     except Exception as E:
-                        print(E)
+                        printwarn(get_exception_info(E))
+
                 
                 for ice in msg['candidates']:
                     self.handle_sdp_ice(ice, client["UUID"])
@@ -1024,7 +1051,8 @@ class WebRTCClient:
                         decryptedJson = decrypt_message(msg['candidate'], msg['vector'], self.password+self.salt)
                         msg['candidate'] = json.loads(decryptedJson)
                     except Exception as E:
-                        print(E)
+                        printwarn(get_exception_info(E))
+
                 
                 self.handle_sdp_ice(msg, client["UUID"])
             elif 'pong' in msg: # Supported in v19 of VDO.Ninja
@@ -1041,7 +1069,8 @@ class WebRTCClient:
                         decryptedJson = decrypt_message(msg['description'], msg['vector'], self.password+self.salt)
                         msg['description'] = json.loads(decryptedJson)
                     except Exception as E:
-                        print(E)
+                        printwarn(get_exception_info(E))
+
                 
                 if msg['description']['type'] == "offer":
                     self.handle_offer(msg['description'], client['UUID'])
@@ -1059,7 +1088,8 @@ class WebRTCClient:
                         try:
                             client['encoder'].set_property('bitrate', int(msg['bitrate'])*1000)
                         except Exception as E:
-                            print(E)
+                            printwarn(get_exception_info(E))
+
                             pass
             else:
                 printin("MISC DC DATA")
@@ -1091,11 +1121,11 @@ class WebRTCClient:
 
                 self.midiout.send_message(midi['d'])
             except Exception as E:
-                print(E)
+                printwarn(get_exception_info(E))
 
         def sendMIDI(data, template):
             if data:
-                 template['midi']['d'] = data[0];
+                 template['midi']['d'] = data[0]
                  data = json.dumps(template)
                  for client in self.clients:
                       if self.clients[client]['send_channel']:
@@ -1131,7 +1161,6 @@ class WebRTCClient:
                             time.sleep(0.5)
                             in_ports = self.midiin.get_ports()
 
-
                     template = {}
                     template['midi'] = {}
                     template['midi']['d'] = []
@@ -1141,7 +1170,6 @@ class WebRTCClient:
                     self.midiin.set_callback(sendMIDI, template)
                 else:
                     time.sleep(4)
-
 
         def on_stats(promise, abin, data):
             promise.wait()
@@ -1177,7 +1205,8 @@ class WebRTCClient:
                             pass
 
                     except Exception as E:
-                        print(E)
+                        printwarn(get_exception_info(E))
+
                 elif (stats<0.003) and not self.noqos:
                     print("Trying to increase change bitrate...")
                     bitrate = self.bitrate*1.05
@@ -1197,8 +1226,7 @@ class WebRTCClient:
                         elif client['encoder2']:
                             pass
                     except Exception as E:
-                        print(E)
-
+                        printwarn(get_exception_info(E))
 
         def new_sample(sink):
             if self.processing:
@@ -1227,7 +1255,8 @@ class WebRTCClient:
                     self.trigger_socket.sendto(b"update", ("127.0.0.1", 12345))
 
             except Exception as E:
-                print(E)
+                printwarn(get_exception_info(E))
+
             self.processing = False
             return False
 
@@ -1235,7 +1264,6 @@ class WebRTCClient:
             buf = info.get_buffer()
             print(f'[{buf.pts / Gst.SECOND:6.2f}]')
             return Gst.PadProbeReturn.OK
-
 
         print("creating a new webrtc bin")
 
@@ -1250,13 +1278,10 @@ class WebRTCClient:
             else:
                 print(self.pipeline)
                 self.pipe = Gst.parse_launch(self.pipeline)
-                setup_ice_servers(self.pipe.get_by_name('sendrecv'))
                 
             print(self.pipe)
             started = False
 
-
-        client['webrtc'] = self.pipe.get_by_name('sendrecv')
         client['qv'] = None
         client['qa'] = None
         client['encoder'] = False
@@ -1274,7 +1299,6 @@ class WebRTCClient:
                 except:
                     pass
 
-
         if self.streamin:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             client['webrtc'].set_property('bundle-policy', "max-bundle")
@@ -1283,7 +1307,7 @@ class WebRTCClient:
             try:
                 client['webrtc'].set_property('latency', self.buffer)
                 client['webrtc'].set_property('async-handling', True)
-            except:
+            except Exception as E:
                 pass
             self.pipe.add(client['webrtc'])
            
@@ -1291,24 +1315,24 @@ class WebRTCClient:
                 pass
             elif self.h264:
                 direction = GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY
-                caps = Gst.caps_from_string("application/x-rtp,media=video,encoding-name=H264,payload=102,clock-rate=90000,packetization-mode=(string)1");
+                caps = Gst.caps_from_string("application/x-rtp,media=video,encoding-name=H264,payload=102,clock-rate=90000,packetization-mode=(string)1")
                 tcvr = client['webrtc'].emit('add-transceiver', direction, caps)
                 if Gst.version().minor > 18:
                     tcvr.set_property("codec-preferences",caps) ## supported as of around June 2021 in gstreamer for answer side?
 
-
         elif (not self.multiviewer) and client['webrtc']:
+            client['webrtc'] = self.pipe.get_by_name('sendrecv')
+            setup_ice_servers(client['webrtc'])
             pass
         else:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             client['webrtc'].set_property('bundle-policy', 'max-bundle')
-            
             setup_ice_servers(client['webrtc'])
             
             try:
                 client['webrtc'].set_property('latency', self.buffer)
                 client['webrtc'].set_property('async-handling', True)
-            except:
+            except Exception as E:
                 pass
             self.pipe.add(client['webrtc'])
 
@@ -1347,7 +1371,8 @@ class WebRTCClient:
             client['webrtc'].connect('notify::signaling-state', on_signaling_state)
 
         except Exception as e:
-            print(e)
+            printwarn(get_exception_info(E))
+
             pass
 
         if self.streamin:
@@ -1367,14 +1392,13 @@ class WebRTCClient:
                         if not self.nored:
                             trans.set_property("fec-type", GstWebRTC.WebRTCFECType.ULP_RED)
                             print("FEC ENABLED")
-                    except:
+                    except Exception as E:
                         pass
                     trans.set_property("do-nack", True)
                     print("SEND NACKS ENABLED")
 
         except Exception as E:
-            print(E)
-
+            printwarn(get_exception_info(E))
 
         if not started and self.pipe.get_state(0)[1] is not Gst.State.PLAYING:
             self.pipe.set_state(Gst.State.PLAYING)
@@ -1435,7 +1459,7 @@ class WebRTCClient:
         if not client or not client['webrtc']:
             return
         if 'sdp' in msg:
-            print("INCOMDING OFFER SDP TYPE: "+msg['type']);
+            print("INCOMDING OFFER SDP TYPE: "+msg['type'])
             assert(msg['type'] == 'offer')
             sdp = msg['sdp']
             res, sdpmsg = GstSdp.SDPMessage.new()
@@ -1468,7 +1492,7 @@ class WebRTCClient:
                 self.pipe = None
 
                 if UUID in self.clients:
-                    print("Resetting existing pipe and p2p connection.");
+                    print("Resetting existing pipe and p2p connection.")
                     session = self.clients[UUID]["session"]
 
                     if self.clients[UUID]['timer']:
@@ -1639,14 +1663,14 @@ class WebRTCClient:
                 break
 
             except websockets.ConnectionClosed:
-                print("WEB SOCKETS CLOSED; retrying in 5s");
+                print("WEB SOCKETS CLOSED; retrying in 5s")
                 await asyncio.sleep(5)
                 continue
             except Exception as E:
-                print(E);
+                printwarn(get_exception_info(E))
+
 
         return 0
-
 
 def check_plugins(needed, require=False):
     if type(needed)==type("str"):
@@ -1770,7 +1794,7 @@ async def main():
     parser.add_argument('--midi', action='store_true', help='Transparent MIDI bridge mode; no video or audio.')
     parser.add_argument('--filesrc', type=str, default=None,  help='Provide a media file (local file location) as a source instead of physical device; it can be a transparent webm or whatever. It will be transcoded, which offers the best results.')
     parser.add_argument('--filesrc2', type=str, default=None,  help='Provide a media file (local file location) as a source instead of physical device; it can be a transparent webm or whatever. It will not be transcoded, so be sure its encoded correctly. Specify if --vp8 or --vp9, else --h264 is assumed.')
-    parser.add_argument('--pipein', type=str, default=None, help='Pipe a media stream in as the input source. Pass `auto` for auto-decode,pass codec type for pass-thru (mpegts,h264,vp8,vp9), or use `raw`');
+    parser.add_argument('--pipein', type=str, default=None, help='Pipe a media stream in as the input source. Pass `auto` for auto-decode,pass codec type for pass-thru (mpegts,h264,vp8,vp9), or use `raw`')
     parser.add_argument('--ndiout',  type=str, help='VDO.Ninja to NDI output; requires the NDI Gstreamer plugin installed')
     parser.add_argument('--fdsink',  type=str, help='VDO.Ninja to the stdout pipe; common for piping data between command line processes')
     parser.add_argument('--framebuffer', type=str, help='VDO.Ninja to local frame buffer; performant and Numpy/OpenCV friendly')
@@ -1807,7 +1831,7 @@ async def main():
         except Exception as E:
             pass
 
-    timestampOverlay = '';
+    timestampOverlay = ''
     if args.timestamp:
         timestampOverlay = ' ! timeoverlay valignment=bottom halignment=right font-desc="Sans, 36"'
     elif args.clockstamp:
@@ -1824,7 +1848,7 @@ async def main():
 
     needed = ["rtp", "rtpmanager"]
     if not args.rtmp:
-        needed += ["webrtc","nice", "sctp", "dtls", "srtp"];
+        needed += ["webrtc","nice", "sctp", "dtls", "srtp"]
     if not check_plugins(needed, True):
         sys.exit(1)
     needed = []
@@ -1842,7 +1866,7 @@ async def main():
         args.streamin = args.fdsink
     elif args.framebuffer:
         if not np:
-            print("You must install Numpy for this to work.\npip3 install numpy");
+            print("You must install Numpy for this to work.\npip3 install numpy")
             sys.exit()
         args.streamin = args.framebuffer
     elif args.record:
@@ -1893,7 +1917,6 @@ async def main():
                 print(f"Error accessing properties for audio device {i}: {e}")
         print()
 
-
     if check_plugins("rpicamsrc"):
         args.rpi=True
     elif check_plugins("nvvidconv"):
@@ -1910,7 +1933,6 @@ async def main():
             args.raw = True
             args.rpi = True
             args.rpicam = False
-
 
     if args.aom:
         if not check_plugins(['aom','videoparsersbad','rsrtp'], True):
@@ -1940,7 +1962,6 @@ async def main():
         else:
             print("No AV1 encoder found")
             sys.exit()
-
 
     if args.apple:
         if not check_plugins(['applemedia'], True):
@@ -2058,7 +2079,6 @@ async def main():
         elif args.omx or args.x264 or args.openh264 or args.h264:
             print("Couldn't find the h264 encoder")
 
-
         if args.hdmi:
             args.v4l2 = '/dev/v4l/by-id/usb-MACROSILICON_*'
             args.alsa = 'hw:MS2109'
@@ -2078,7 +2098,6 @@ async def main():
         if args.save:
             saveAudio = ' ! tee name=saveaudiotee ! queue ! mux.audio_0 saveaudiotee.'
             saveVideo = ' ! tee name=savevideotee ! queue ! mux.video_0 savevideotee.'
-
 
         if not args.novideo:
 
@@ -2320,7 +2339,6 @@ async def main():
                 needed += ['alsa']
                 pipeline_audio_input += f'alsasrc device={args.alsa} use-driver-timestamps=TRUE'
 
-
             if args.rtmp:
                pipeline_audio_input += f' ! queue ! audioconvert dithering=0 ! audio/x-raw,rate=48000,channel=1 ! fdkaacenc bitrate=65536 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
             elif args.zerolatency:
@@ -2385,12 +2403,12 @@ async def main():
             try:
                 loop.run()
             except Exception as E:
-                print(E)
+                printwarn(get_exception_info(E))
+
                 loop.quit()
 
             pipe.set_state(Gst.State.NULL)
             sys.exit(1)
-
 
         elif args.streamin:
             args.h264 = True
@@ -2406,18 +2424,16 @@ async def main():
             PIPELINE_DESC = f'{pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
             printc('\ngst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'), "FFF")
 
-
         if not check_plugins(needed) or error:
             sys.exit(1)
 
     if args.server:
-        server = "&wss="+args.server.split("wss://")[-1];
+        server = "&wss="+args.server.split("wss://")[-1]
         args.server = "wss://"+args.server.split("wss://")[-1]
         args.puuid = str(random.randint(10000000,99999999999))
     else:
         args.server = WSS
         server = ""
-
 
     if not args.hostname.endswith("/"):
         args.hostname = args.hostname+"/"
@@ -2430,7 +2446,6 @@ async def main():
             watchURL += "?password="+args.password+"&"
     else:
         watchURL += "?password=false&"
-
 
     bold_color = hex_to_ansi("FAF")
 
