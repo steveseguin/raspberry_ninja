@@ -1281,7 +1281,8 @@ class WebRTCClient:
                 
             print(self.pipe)
             started = False
-
+            
+        client['webrtc'] = self.pipe.get_by_name('sendrecv')
         client['qv'] = None
         client['qa'] = None
         client['encoder'] = False
