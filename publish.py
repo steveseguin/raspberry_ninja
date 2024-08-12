@@ -1282,7 +1282,6 @@ class WebRTCClient:
             print(self.pipe)
             started = False
             
-        client['webrtc'] = self.pipe.get_by_name('sendrecv')
         client['qv'] = None
         client['qa'] = None
         client['encoder'] = False
@@ -1321,7 +1320,7 @@ class WebRTCClient:
                 if Gst.version().minor > 18:
                     tcvr.set_property("codec-preferences",caps) ## supported as of around June 2021 in gstreamer for answer side?
 
-        elif (not self.multiviewer) and client['webrtc']:
+        elif not self.multiviewer:
             client['webrtc'] = self.pipe.get_by_name('sendrecv')
             setup_ice_servers(client['webrtc'])
             pass
