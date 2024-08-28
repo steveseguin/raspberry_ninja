@@ -2294,11 +2294,15 @@ async def main():
                     pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=10 ! x264enc bitrate={args.bitrate} name="encoder1" speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline'
                 elif h264=="avenc_h264_omx":
                     pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=10 ! avenc_h264_omx bitrate={args.bitrate}000 name="encoder" ! video/x-h264,profile=constrained-baseline'
-                else:
+                elif check_plugins("v4l2convert") and check_plugins("omxh264enc"):
                     pipeline_video_input += f' ! v4l2convert{timestampOverlay} ! video/x-raw,format=I420 ! omxh264enc name="encoder" target-bitrate={args.bitrate}000 qos=true control-rate=1 ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
-
+                elif check_plugins("v4l2convert"):
+                    pipeline_video_input += f' ! v4l2convert{timestampOverlay} ! video/x-raw,format=I420 ! openh264enc name="encoder" bitrate={args.bitrate}000 ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
+                else:
+                    pipeline_video_input += f' ! videoconvert{timestampOverlay} ! video/x-raw,format=I420 ! openh264enc name="encoder" bitrate={args.bitrate}000 ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
+                    
                 if args.rtmp:
-                    pipeline_video_input += f' ! queue ! h264parse {saveVideo}'
+                    pipeline_video_input += f' ! queue ! h264parse'
                 else:
                     pipeline_video_input += f' ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! h264parse {saveVideo} ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
 
@@ -2340,7 +2344,15 @@ async def main():
                 pipeline_audio_input += f'alsasrc device={args.alsa} use-driver-timestamps=TRUE'
 
             if args.rtmp:
-               pipeline_audio_input += f' ! queue ! audioconvert dithering=0 ! audio/x-raw,rate=48000,channel=1 ! fdkaacenc bitrate=65536 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
+               if check_plugins('fdkaacenc'):
+                  pipeline_audio_input += f' ! queue ! audioconvert dithering=0 ! audio/x-raw,rate=48000,channel=1 ! fdkaacenc bitrate=65536 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
+               elif check_plugins('voaacenc'):
+                  pipeline_audio_input += f' ! queue ! audioconvert dithering=0 ! audio/x-raw,rate=48000,channel=1 ! voaacenc bitrate=65536 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
+               elif check_plugins('avenc_aac'):
+                  pipeline_audio_input += f' ! queue ! audioconvert dithering=0 ! audio/x-raw,rate=48000,channel=1 ! avenc_aac bitrate=65536 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
+               else:
+                  pipeline_audio_input = ""
+                  printwarn("No AAC encoder found. Will not be encoding audio")
             elif args.zerolatency:
                pipeline_audio_input += f' ! queue max-size-buffers=2 leaky=downstream ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=0 bitrate=16000 inband-fec=false audio-type=2051 frame-size=20 {saveAudio} ! rtpopuspay pt=100 ssrc=-1 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
             elif args.vorbis:
@@ -2359,6 +2371,15 @@ async def main():
 
         pipeline_rtmp = ""
         if args.rtmp:
+        
+            if args.save:
+                pipeline_video_input += 'tee name=videotee ! queue ! sendrecv. videotee. ! queue ! '
+                saveVideo = f'matroskamux name=mux ! filesink location=saved_video_{int(time.time())}.mkv '
+
+                if not args.noaudio:
+                    pipeline_audio_input += 'tee name=audiotee ! queue ! sendrecv. audiotee. ! queue ! mux. '
+
+                
             pipeline_rtmp = "flvmux name=sendrecv ! rtmpsink location='"+args.rtmp+" live=1'"
             PIPELINE_DESC = f'{pipeline_video_input} {pipeline_audio_input} {pipeline_rtmp}'
             print('gst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
