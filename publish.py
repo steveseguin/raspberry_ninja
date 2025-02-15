@@ -254,15 +254,20 @@ def decrypt_message(encrypted_data, iv, phrase):
         print(f"Error decoding message: {e}")
         return None
 
-def setup_ice_servers(webrtc):
+def setup_ice_servers(webrtc, params):
     try:
-        # STUN servers
-        webrtc.set_property('stun-server', "stun://stun.cloudflare.com:3478")
-        webrtc.set_property('stun-server', "stun://stun.l.google.com:19302")
+        if args.stun_server:
+            webrtc.set_property('stun-server', args.stun_server)
+        elif not params.no_stun:  # Fall back to defaults if not disabled
+            for server in ["stun://stun.cloudflare.com:3478", "stun://stun.l.google.com:19302"]:
+                webrtc.set_property('stun-server', server)
 
-        # TURN server
-        turn_server = "turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478"
-        webrtc.emit('add-turn-server', turn_server)
+        if args.turn_server:
+            webrtc.set_property('turn-server', args.turn_server)
+            
+        if args.ice_transport_policy:
+            webrtc.set_property('ice-transport-policy', args.ice_transport_policy)
+            
     except Exception as E:
         printwarn(get_exception_info(E))
                     
@@ -1770,6 +1775,96 @@ def supports_resolution_and_format(device, width, height, framerate=None):
     priority_order = ['JPEG', 'I420', 'YVYU','YUY2','NV12', 'NV21', 'UYVY', 'RGB', 'BGR', 'BGRx', 'RGBx']
     return sorted(supported_formats, key=lambda x: priority_order.index(x) if x in priority_order else len(priority_order))
 
+class WHIPClient:
+    def __init__(self, pipeline_desc, args):
+        self.pipeline_desc = pipeline_desc
+        self.args = args
+        self.pipe = None
+        self.loop = None
+        
+    def setup_pipeline(self):
+        # Configure WHIP elements
+        whip_props = [
+            'whipsink name=sendrecv',
+            f'whip-endpoint="{self.args.whip}"'
+        ]
+        
+        # Add STUN servers
+        if self.args.stun_server:
+            if self.args.stun_server not in ["0", "false", "null"]:
+                whip_props.append(f'stun-server="{self.args.stun_server}"')
+        else:
+            whip_props.append('stun-server="stun://stun.cloudflare.com:3478"')
+            whip_props.append('stun-server="stun://stun.l.google.com:19302"')
+        
+        # Add TURN servers    
+        if self.args.turn_server:
+            if self.args.turn_server not in ["0", "false", "null"]:
+                whip_props.append(f'turn-server="{self.args.turn_server}"')
+        else:
+            whip_props.append('turn-server="turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478"')
+        
+        whip_props.append(f'ice-transport-policy={self.args.ice_transport_policy}')
+        
+        # Build complete pipeline
+        pipeline_segments = [self.pipeline_desc]
+        pipeline_segments.append(' '.join(whip_props))
+        complete_pipeline = ' '.join(pipeline_segments)
+        
+        print('gst-launch-1.0 ' + complete_pipeline.replace('(', '\\(').replace(')', '\\)'))
+        
+        self.pipe = Gst.parse_launch(complete_pipeline)
+        return self.pipe
+
+    def on_state_changed(self, bus, message):
+        if message.type == Gst.MessageType.STATE_CHANGED:
+            if message.src == self.pipe:
+                old, new, pending = message.parse_state_changed()
+                print(f"Pipeline state changed from {old} to {new}")
+                if new == Gst.State.NULL:
+                    printwarn("Pipeline stopped unexpectedly")
+                    GLib.timeout_add_seconds(30, self.reconnect)
+
+    def reconnect(self):
+        if self.pipe:
+            self.pipe.set_state(Gst.State.NULL)
+        self.setup_pipeline()
+        self.pipe.set_state(Gst.State.PLAYING)
+        return False
+
+    def start(self):
+        if not check_plugins('whipsink'):
+            print("WHIP SINK not installed. Please install (build if needed) the gst-plugins-rs webrtchttp plugin for your specific version of Gstreamer; 1.22 or newer required")
+            return False
+            
+        self.setup_pipeline()
+        bus = self.pipe.get_bus()
+        bus.add_signal_watch()
+        bus.connect('message::state-changed', self.on_state_changed)
+        
+        self.pipe.set_state(Gst.State.PLAYING)
+        
+        try:
+            self.loop = GLib.MainLoop()
+        except:
+            self.loop = GObject.MainLoop()
+            
+        try:
+            self.loop.run()
+        except Exception as E:
+            printwarn(get_exception_info(E))
+            if self.loop:
+                self.loop.quit()
+            return False
+            
+        return True
+
+    def stop(self):
+        if self.pipe:
+            self.pipe.set_state(Gst.State.NULL)
+        if self.loop:
+            self.loop.quit()
+
 WSS="wss://wss.vdo.ninja:443"
 
 async def main():
@@ -1844,6 +1939,10 @@ async def main():
     parser.add_argument('--clockstamp', action='store_true',  help='Add a clock overlay to the video output, if possible')
     parser.add_argument('--socketport', type=str, default=12345, help='Output video frames to a socket; specify the port number')
     parser.add_argument('--socketout', type=str, help='Output video frames to a socket; specify the stream ID')
+    parser.add_argument('--stun-server', type=str, help='STUN server URL (stun://hostname:port)')
+    parser.add_argument('--turn-server', type=str, help='TURN server URL (turn(s)://username:password@host:port)')
+    parser.add_argument('--ice-transport-policy', type=str, choices=['all', 'relay'], default='all', help='ICE transport policy (all or relay)')
+
 
     args = parser.parse_args()
 
@@ -2451,30 +2550,18 @@ async def main():
             pipe.set_state(Gst.State.NULL)
             sys.exit(1)
         elif args.whip:
-            pipeline_whip = 'whipsink name=sendrecv whip-endpoint="'+args.whip+'"'
-            PIPELINE_DESC = f'{pipeline_video_input} {pipeline_audio_input} {pipeline_whip}'
-            print('gst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
-            pipe = Gst.parse_launch(PIPELINE_DESC)
-
-            bus = pipe.get_bus()
-
-            bus.add_signal_watch()
-
-            pipe.set_state(Gst.State.PLAYING)
-
-            try:
-                loop = GLib.MainLoop()
-            except:
-                loop = GObject.MainLoop()
-
-            try:
-                loop.run()
-            except Exception as E:
-                printwarn(get_exception_info(E))
-
-                loop.quit()
-
-            pipe.set_state(Gst.State.NULL)
+            # Build video and audio pipeline segments
+            pipeline_segments = []
+            if not args.novideo:
+                pipeline_segments.append(pipeline_video_input)
+            if not args.noaudio:
+                pipeline_segments.append(pipeline_audio_input)
+                
+            pipeline_desc = ' '.join(pipeline_segments)
+            
+            whip_client = WHIPClient(pipeline_desc, args)
+            if whip_client.start():
+                whip_client.stop()
             sys.exit(1)
 
         elif args.streamin:
