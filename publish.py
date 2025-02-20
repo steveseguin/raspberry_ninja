@@ -344,24 +344,26 @@ class WebRTCClient:
     async def connect(self):
         print("Connecting to handshake server")
         
-        # Try different SSL contexts based on what works
+        # Convert wss:// to ws:// for no-SSL attempt
+        ws_server = self.server.replace('wss://', 'ws://') if self.server.startswith('wss://') else self.server
+        
         connection_attempts = [
-            (lambda: ssl.create_default_context(), "standard SSL"),
-            (lambda: ssl._create_unverified_context(), "unverified SSL"),
-            (lambda: None, "no SSL")
+            (lambda: ssl.create_default_context(), "standard SSL", self.server),
+            (lambda: ssl._create_unverified_context(), "unverified SSL", self.server),
+            (lambda: None, "no SSL", ws_server)  # Use ws:// URL for no-SSL
         ]
         
         last_exception = None
-        for create_ssl_context, context_type in connection_attempts:
+        for create_ssl_context, context_type, server_url in connection_attempts:
             try:
-                print(f"Attempting connection with {context_type}")
+                print(f"Attempting connection with {context_type} to {server_url}")
                 ssl_context = create_ssl_context()
                 if ssl_context:
                     ssl_context.check_hostname = False
                     ssl_context.verify_mode = ssl.CERT_NONE
                 
                 self.conn = await websockets.connect(
-                    self.server,
+                    server_url,
                     ssl=ssl_context,
                     ping_interval=None
                 )
