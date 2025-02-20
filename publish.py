@@ -254,22 +254,6 @@ def decrypt_message(encrypted_data, iv, phrase):
         print(f"Error decoding message: {e}")
         return None
 
-def setup_ice_servers(webrtc, params):
-    try:
-        if args.stun_server:
-            webrtc.set_property('stun-server', args.stun_server)
-        elif not params.no_stun:  # Fall back to defaults if not disabled
-            for server in ["stun://stun.cloudflare.com:3478", "stun://stun.l.google.com:19302"]:
-                webrtc.set_property('stun-server', server)
-
-        if args.turn_server:
-            webrtc.set_property('turn-server', args.turn_server)
-            
-        if args.ice_transport_policy:
-            webrtc.set_property('ice-transport-policy', args.ice_transport_policy)
-            
-    except Exception as E:
-        printwarn(get_exception_info(E))
                     
 class WebRTCClient:
     def __init__(self, params):
@@ -336,9 +320,26 @@ class WebRTCClient:
             
         if self.save_file:
             self.pipe = Gst.parse_launch(self.pipeline)
-            setup_ice_servers(self.pipe.get_by_name('sendrecv'))
+            self.setup_ice_servers(self.pipe.get_by_name('sendrecv'))
             self.pipe.set_state(Gst.State.PLAYING)
             print("RECORDING TO DISK STARTED")
+            
+    def setup_ice_servers(self, webrtc):
+        try:
+            if hasattr(self, 'stun_server') and self.stun_server:
+                webrtc.set_property('stun-server', self.stun_server)
+            elif not hasattr(self, 'no_stun') or not self.no_stun:
+                for server in ["stun://stun.cloudflare.com:3478", "stun://stun.l.google.com:19302"]:
+                    webrtc.set_property('stun-server', server)
+                    
+            if hasattr(self, 'turn_server') and self.turn_server:
+                webrtc.set_property('turn-server', self.turn_server)
+                
+            if hasattr(self, 'ice_transport_policy') and self.ice_transport_policy:
+                webrtc.set_property('ice-transport-policy', self.ice_transport_policy)
+                
+        except Exception as E:
+            printwarn(get_exception_info(E))
 
     async def connect(self):
         print("Connecting to handshake server")
@@ -1373,7 +1374,7 @@ class WebRTCClient:
         if self.streamin:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             client['webrtc'].set_property('bundle-policy', "max-bundle")
-            setup_ice_servers(client['webrtc'])
+            ssetup_ice_servers(client['webrtc'], self)
             
             try:
                 client['webrtc'].set_property('latency', self.buffer)
@@ -1393,12 +1394,12 @@ class WebRTCClient:
 
         elif not self.multiviewer:
             client['webrtc'] = self.pipe.get_by_name('sendrecv')
-            setup_ice_servers(client['webrtc'])
+            self.setup_ice_servers(client['webrtc'])
             pass
         else:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             client['webrtc'].set_property('bundle-policy', 'max-bundle')
-            setup_ice_servers(client['webrtc'])
+            self.setup_ice_servers(client['webrtc'])
             
             try:
                 client['webrtc'].set_property('latency', self.buffer)
