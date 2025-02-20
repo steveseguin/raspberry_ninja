@@ -342,8 +342,38 @@ class WebRTCClient:
 
     async def connect(self):
         print("Connecting to handshake server")
-        sslctx = ssl.create_default_context()
-        self.conn = await websockets.connect(self.server, ssl=sslctx)
+        
+        # Try different SSL contexts based on what works
+        connection_attempts = [
+            (lambda: ssl.create_default_context(), "standard SSL"),
+            (lambda: ssl._create_unverified_context(), "unverified SSL"),
+            (lambda: None, "no SSL")
+        ]
+        
+        last_exception = None
+        for create_ssl_context, context_type in connection_attempts:
+            try:
+                print(f"Attempting connection with {context_type}")
+                ssl_context = create_ssl_context()
+                if ssl_context:
+                    ssl_context.check_hostname = False
+                    ssl_context.verify_mode = ssl.CERT_NONE
+                
+                self.conn = await websockets.connect(
+                    self.server,
+                    ssl=ssl_context,
+                    ping_interval=None
+                )
+                print(f"Connected successfully using {context_type}")
+                break
+            except Exception as e:
+                last_exception = e
+                print(f"Failed {context_type} connection: {str(e)}")
+                continue
+        
+        if not self.conn:
+            raise ConnectionError(f"Failed to connect with all SSL options. Last error: {last_exception}")
+
         if self.room_hashcode:
             if self.streamin:
                 await self.sendMessageAsync({"request":"joinroom","roomid":self.room_hashcode})
