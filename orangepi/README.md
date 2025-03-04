@@ -102,3 +102,25 @@ To check if there were any errors, you can run the status command:
 sudo systemctl status raspininja
 ```
 Things should now auto-boot on system boot, and restart if things crash.
+
+
+### Hardware encoder/decoder drivers
+
+If your distro for Orange Pi 5 lacks hardware encoder drivers, you might have luck using the following:
+
+- For 3d hw drivers:
+```
+sudo add-apt-repository ppa:liujianfeng1994/panfork-mesa            
+sudo add-apt-repository ppa:liujianfeng1994/rockchip-multimedia     
+sudo apt update
+sudo apt dist-upgrade
+sudo apt install mali-g610-firmware rockchip-multimedia-config
+ ```
+- Install gstreamer and some plugins:
+ 
+```
+sudo apt install gstreamer1.0-rockchip
+sudo apt install gstreamer1.0-plugins-base-apps
+sudo apt install gstreamer1.0-plugins-bad
+sudo apt install gstreamer1.0-plugins-good
+```
