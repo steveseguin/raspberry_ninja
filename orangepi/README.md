@@ -108,19 +108,38 @@ Things should now auto-boot on system boot, and restart if things crash.
 
 If your distro for Orange Pi 5 lacks hardware encoder drivers, you might have luck using the following:
 
-- For 3d hw drivers:
 ```
-sudo add-apt-repository ppa:liujianfeng1994/panfork-mesa            
-sudo add-apt-repository ppa:liujianfeng1994/rockchip-multimedia     
+#!/bin/bash
+
+# Update package lists
 sudo apt update
-sudo apt dist-upgrade
-sudo apt install mali-g610-firmware rockchip-multimedia-config
- ```
-- Install gstreamer and some plugins:
- 
-```
-sudo apt install gstreamer1.0-rockchip
-sudo apt install gstreamer1.0-plugins-base-apps
-sudo apt install gstreamer1.0-plugins-bad
-sudo apt install gstreamer1.0-plugins-good
+
+# Try installing from Joshua Riek's PPA first
+echo "Attempting to install from Joshua Riek's PPA..."
+sudo apt install -y mali-g610-firmware rockchip-media-libs
+
+# If packages are not available, build from source
+if [ $? -ne 0 ]; then
+    echo "Building media components from source..."
+    
+    # Install build dependencies
+    sudo apt install -y git build-essential
+    
+    # Clone and build media components
+    git clone https://github.com/JeffyCN/media_build.git
+    cd media_build
+    ./build.sh
+    sudo ./install.sh
+    cd ..
+    
+    # Download Mali GPU firmware
+    echo "Installing Mali GPU firmware..."
+    sudo wget -O /lib/firmware/mali_csffw.bin https://raw.githubusercontent.com/JeffyCN/rockchip_mirrors/libmali/firmware/g610/mali_csffw.bin
+fi
+
+# Install GStreamer plugins for hardware acceleration
+echo "Installing GStreamer plugins..."
+sudo apt install -y gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav
+
+echo "Installation completed!"
 ```
