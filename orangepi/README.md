@@ -41,8 +41,10 @@ pip3 install websockets cryptography
 
 # Install PyGObject dependencies (may be needed for Ubuntu)
 sudo apt-get install -y libcairo-dev
-sudo apt-get install -y python3-dev cmake meson libgirepository1.0-dev
-pip3 install PyGObject
+sudo apt-get install -y python3-dev cmake libgirepository1.0-dev
+
+# Use system-provided PyGObject instead of pip version
+sudo apt-get install -y python3-gi python3-gi-cairo
 
 # Clone Raspberry Ninja repository
 cd ~
