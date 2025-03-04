@@ -99,3 +99,41 @@ sudo systemctl status raspininja
 ```
 
 The service should now auto-start on system boot and restart if it crashes.
+
+## Hardware Encoder/Decoder Setup
+
+### Installing Rockchip Hardware H.265 Encoding Support
+
+To enable hardware-accelerated H.265 (HEVC) encoding on your Orange Pi 5/5+, follow these steps:
+
+```bash
+# 1. Install the Rockchip MPP (Media Process Platform) libraries
+cd ~
+git clone https://github.com/rockchip-linux/mpp.git
+cd mpp
+mkdir build
+cd build
+cmake -DRKPLATFORM=ON -DHAVE_DRM=ON ..
+make -j4
+sudo make install
+
+# 2. Install the Rockchip GStreamer plugins
+cd ~
+git clone https://github.com/Meonardo/gst-rockchip.git
+cd gst-rockchip
+meson setup build
+cd build
+ninja
+sudo ninja install
+
+# 3. Refresh library paths
+sudo ldconfig
+```
+
+After installation, verify the plugins are available:
+
+```bash
+gst-inspect-1.0 rockchipmpp
+```
+
+You should see `mpph265enc` and `mpph264enc` listed among the available elements.
