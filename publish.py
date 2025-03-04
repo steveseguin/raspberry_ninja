@@ -1308,6 +1308,11 @@ class WebRTCClient:
                     try:
                         if self.aom:
                             client['encoder'].set_property('target-bitrate', int(bitrate))  # line not active due to 'elif " av1enc " in self.pipeline:' line
+                        elif " mpph265enc " in self.pipeline or client['encoder'].get_name().startswith('mpph265enc'):
+                            # For mpph265enc, use bps instead of bitrate
+                            client['encoder'].set_property('bps', int(bitrate*1000))
+                        elif " x265enc " in self.pipeline or client['encoder'].get_name().startswith('x265enc'):
+                            client['encoder'].set_property('bitrate', int(bitrate))
                         elif client['encoder']:
                             client['encoder'].set_property('bitrate', int(bitrate*1000))
                         elif client['encoder1']:
@@ -1330,6 +1335,11 @@ class WebRTCClient:
                     try:
                         if self.aom:
                             client['encoder'].set_property('target-bitrate', int(bitrate))  # line not active due to 'elif " av1enc " in self.pipeline:' line
+                        elif " mpph265enc " in self.pipeline or client['encoder'].get_name().startswith('mpph265enc'):
+                            # For mpph265enc, use bps instead of bitrate
+                            client['encoder'].set_property('bps', int(bitrate*1000))
+                        elif " x265enc " in self.pipeline or client['encoder'].get_name().startswith('x265enc'):
+                            client['encoder'].set_property('bitrate', int(bitrate))
                         elif client['encoder']:
                             client['encoder'].set_property('bitrate', int(bitrate*1000))
                         elif client['encoder1']:
@@ -1975,6 +1985,9 @@ async def main():
     parser.add_argument('--stun-server', type=str, help='STUN server URL (stun://hostname:port)')
     parser.add_argument('--turn-server', type=str, help='TURN server URL (turn(s)://username:password@host:port)')
     parser.add_argument('--ice-transport-policy', type=str, choices=['all', 'relay'], default='all', help='ICE transport policy (all or relay)')
+    parser.add_argument('--h265', action='store_true', help='Prioritize h265/hevc encoding over h264')
+    parser.add_argument('--hevc', action='store_true', help='Prioritize h265/hevc encoding over h264 (same as --h265)')
+    parser.add_argument('--x265', action='store_true', help='Prioritizes x265 software encoder over hardware encoders')
 
 
     args = parser.parse_args()
@@ -2224,6 +2237,12 @@ async def main():
             
         if args.rtmp and not args.h264:
             args.h264 = True
+            
+        if args.hevc:
+            args.h265 = True
+
+        if args.x265:
+            args.h265 = True
 
         h264 = None
         if args.omx and check_plugins('omxh264enc'):
@@ -2256,8 +2275,22 @@ async def main():
             
         if h264:
             print("H264 encoder that we will try to use: "+h264)
-        
-
+       
+        h265 = None
+        if args.h265:
+            if args.x265 and check_plugins('x265enc'):
+                h265 = 'x265enc'
+            elif check_plugins('mpph265enc'):
+                h265 = 'mpph265enc'
+            elif check_plugins('x265enc'):
+                h265 = 'x265enc'
+            else:
+                print("Couldn't find an h265 encoder, falling back to h264")
+                args.h264 = True  # Fallback to h264 if no h265 encoder found
+            
+            if h265:
+                print("H265 encoder that we will try to use: "+h265)
+                
         if args.hdmi:
             args.v4l2 = '/dev/v4l/by-id/usb-MACROSILICON_*'
             args.alsa = 'hw:MS2109'
@@ -2490,7 +2523,19 @@ async def main():
                 pipeline_video_input += f' ! videoconvert{timestampOverlay} ! rav1enc bitrate={args.bitrate}000 name="encoder" low-latency=true error-resilient=true speed-preset=10 qos=true ! av1parse ! rtpav1pay'
             elif args.qsv:
                 pipeline_video_input += f' ! videoconvert{timestampOverlay} ! qsvav1enc gop-size=60 bitrate={args.bitrate} name="encoder1" ! av1parse ! rtpav1pay'
-
+            elif args.h265 and h265:
+                if h265 == "mpph265enc":
+                    # mpph265enc uses bps (bits per second) instead of bitrate
+                    # bps takes value in bits per second, so multiply bitrate (kbps) by 1000
+                    pipeline_video_input += f' ! videoconvert{timestampOverlay} ! video/x-raw,format=NV12 ! {h265} name="encoder" bps={args.bitrate * 1000} qos=true qp-init=35 qp-max=45 qp-min=20 qp-max-i=40 qp-min-i=20 rc-mode=1  ! video/x-h265,stream-format=(string)byte-stream'
+                elif h265 == "x265enc":
+                    # x265enc uses bitrate in kbps
+                    pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=10 ! {h265} bitrate={args.bitrate} speed-preset=superfast tune=zerolatency key-int-max=30 name="encoder" ! video/x-h265,profile=main,stream-format=byte-stream'
+                
+                if args.rtmp:
+                    pipeline_video_input += f' ! queue ! h265parse'
+                else:
+                    pipeline_video_input += f' ! queue max-size-time=1000000000 max-size-bytes=10000000000 max-size-buffers=1000000 ! h265parse {saveVideo} ! rtph265pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H265,payload=96'
             else:
                 if args.nvidia:
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxvp8enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
