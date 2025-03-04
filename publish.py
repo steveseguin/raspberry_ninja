@@ -2527,7 +2527,8 @@ async def main():
                 if h265 == "mpph265enc":
                     # mpph265enc uses bps (bits per second) instead of bitrate
                     # bps takes value in bits per second, so multiply bitrate (kbps) by 1000
-                    pipeline_video_input += f' ! videoconvert{timestampOverlay} ! video/x-raw,format=NV12 ! {h265} name="encoder" bps={args.bitrate * 1000} qos=true qp-init=35 qp-max=45 qp-min=20 qp-max-i=40 qp-min-i=20 rc-mode=1  ! video/x-h265,stream-format=(string)byte-stream'
+                   pipeline_video_input += f' ! videoconvert{timestampOverlay} ! video/x-raw,format=NV12 ! {h265} name="encoder" bps={args.bitrate * 1000} qos=true gop=30 header-mode=1 qp-init=30 qp-max=40 qp-min=18 qp-max-i=35 qp-min-i=18 rc-mode=1 ! video/x-h265,stream-format=(string)byte-stream'
+
                 elif h265 == "x265enc":
                     # x265enc uses bitrate in kbps
                     pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=10 ! {h265} bitrate={args.bitrate} speed-preset=superfast tune=zerolatency key-int-max=30 name="encoder" ! video/x-h265,profile=main,stream-format=byte-stream'
