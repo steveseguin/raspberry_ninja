@@ -34,7 +34,7 @@ sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
     gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav \
     gstreamer1.0-tools gstreamer1.0-x gstreamer1.0-alsa gstreamer1.0-gl \
     gstreamer1.0-gtk3 gstreamer1.0-qt5 gstreamer1.0-pulseaudio \
-    gstreamer1.0-nice gstreamer1.0-plugins-base-apps git
+    gstreamer1.0-nice gstreamer1.0-plugins-base-apps git ninja
 
 # Install Python dependencies
 pip3 install websockets cryptography
@@ -137,3 +137,10 @@ gst-inspect-1.0 rockchipmpp
 ```
 
 You should see `mpph265enc` and `mpph264enc` listed among the available elements.
+
+if not, maybe try:
+
+```
+sudo cp /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/* /usr/lib/aarch64-linux-gnu/gstreamer-1.0
+sudo ldconfig
+```
