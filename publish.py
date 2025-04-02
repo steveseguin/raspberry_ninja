@@ -1311,6 +1311,9 @@ class WebRTCClient:
                         elif " mpph265enc " in self.pipeline or client['encoder'].get_name().startswith('mpph265enc'):
                             # For mpph265enc, use bps instead of bitrate
                             client['encoder'].set_property('bps', int(bitrate*1000))
+                        elif " mppvp8enc " in self.pipeline or client['encoder'].get_name().startswith('mppvp8enc'):
+                            # For mppvp8enc, use bps instead of bitrate
+                            client['encoder'].set_property('bps', int(bitrate*1000))   
                         elif " x265enc " in self.pipeline or client['encoder'].get_name().startswith('x265enc'):
                             client['encoder'].set_property('bitrate', int(bitrate))
                         elif client['encoder']:
@@ -1335,10 +1338,15 @@ class WebRTCClient:
                     try:
                         if self.aom:
                             client['encoder'].set_property('target-bitrate', int(bitrate))  # line not active due to 'elif " av1enc " in self.pipeline:' line
-                        elif " mpph265enc " in self.pipeline or client['encoder'].get_name().startswith('mpph265enc'):
+                        elif " mpph265enc " in self.pipeline or (client['encoder'] and client['encoder'].get_name and client['encoder'].get_name().startswith('mpph265enc')):
                             # For mpph265enc, use bps instead of bitrate
                             client['encoder'].set_property('bps', int(bitrate*1000))
-                        elif " x265enc " in self.pipeline or client['encoder'].get_name().startswith('x265enc'):
+                        elif " mppvp8enc " in self.pipeline or (client['encoder'] and client['encoder'].get_name and client['encoder'].get_name().startswith('mppvp8enc')):
+                            # For mppvp8enc, use bps instead of bitrate
+                            client['encoder'].set_property('bps', int(bitrate*1000))    
+                            
+                            
+                        elif " x265enc " in self.pipeline or (client['encoder'] and client['encoder'].get_name and client['encoder'].get_name().startswith('x265enc')):
                             client['encoder'].set_property('bitrate', int(bitrate))
                         elif client['encoder']:
                             client['encoder'].set_property('bitrate', int(bitrate*1000))
@@ -1907,6 +1915,293 @@ class WHIPClient:
             self.pipe.set_state(Gst.State.NULL)
         if self.loop:
             self.loop.quit()
+            
+def find_hardware_converter():
+    """
+    Checks for the availability of hardware-accelerated format conversion elements
+    specific to Rockchip or other platforms.
+    
+    Returns:
+        tuple: (converter_element_name, is_hardware_converter)
+    """
+    # Check for Rockchip-specific hardware converters
+    rockchip_converters = [
+        "rkvideoconvert",     # Rockchip general converter
+        "mppvideoconvert",    # Possible MPP-based converter
+        "rkvideosink",        # Might include conversion capabilities
+        "rkmppvideoconvert"   # Another possible naming
+    ]
+    
+    for converter in rockchip_converters:
+        if check_plugins(converter):
+            print(f"Found hardware video converter: {converter}")
+            return converter, True
+    
+    # If no hardware converter found, fall back to software
+    print("No hardware video converter found, will use software videoconvert")
+    return "videoconvert", False
+
+def get_conversion_pipeline(src_format, dst_format="NV12", hw_converter=None):
+    """
+    Creates the appropriate conversion pipeline segment based on 
+    source and destination formats and available hardware converters.
+    
+    Args:
+        src_format: Source pixel format (e.g., "NV16", "BGR")
+        dst_format: Destination pixel format (usually "NV12" for encoders)
+        hw_converter: Name of hardware converter element if available
+        
+    Returns:
+        str: Pipeline string segment for conversion
+    """
+    # If formats are identical, no conversion needed
+    if src_format == dst_format:
+        return ""
+    
+    # If we have a hardware converter, use it
+    if hw_converter and hw_converter != "videoconvert":
+        # Hardware converters often need specific elements or parameters
+        if hw_converter == "rkvideoconvert":
+            # Some hardware converters might need additional parameters
+            return f" ! {hw_converter} ! video/x-raw,format={dst_format}"
+        else:
+            # Generic hardware converter usage
+            return f" ! {hw_converter} ! video/x-raw,format={dst_format}"
+    else:
+        # Default to software conversion with videoconvert
+        # Add a queue to prevent blocking the capture (makes it more real-time)
+        return f" ! queue max-size-buffers=2 leaky=downstream ! videoconvert ! video/x-raw,format={dst_format}"
+
+def detect_best_formats(device):
+    """
+    Detects the best formats available on the device for efficient encoding.
+    Returns a list of preferred formats in order of efficiency.
+    """
+    # Get device capabilities
+    properties = device.get_properties()
+    
+    # Check if this is a known Rockchip device (like Orange Pi 5 Plus)
+    is_rockchip = False
+    try:
+        if 'rockchip' in properties.get_value("device.bus_path").lower() or 'rk_' in device.get_display_name().lower():
+            is_rockchip = True
+    except:
+        pass
+
+    # Preferred format order for various platforms
+    if is_rockchip and check_plugins('rockchipmpp'):
+        # Rockchip MPP prefers these formats for hardware acceleration
+        return ["NV12", "NV16", "NV24", "I420", "YV12", "BGR", "RGB"]
+    else:
+        # Generic order of preference for most platforms
+        return ["I420", "NV12", "YUY2", "UYVY", "NV16", "NV24", "BGR", "RGB"]
+
+def get_supported_formats(device, width, height, framerate):
+    """
+    Gets a list of formats that are supported by the device at given resolution.
+    """
+    try:
+        caps = device.get_caps()
+        supported_formats = []
+        
+        # Iterate through all caps structures
+        for i in range(caps.get_size()):
+            structure = caps.get_structure(i)
+            name = structure.get_name()
+            
+            # Only look at raw video formats
+            if not name.startswith('video/x-raw'):
+                continue
+                
+            # Check if format is specified
+            if structure.has_field('format'):
+                format_value = structure.get_value('format')
+                
+                # Check if width/height match or are flexible
+                width_match = structure.has_field('width') and check_resolution_match(structure, 'width', width)
+                height_match = structure.has_field('height') and check_resolution_match(structure, 'height', height)
+                framerate_match = structure.has_field('framerate') and check_framerate_match(structure, 'framerate', framerate)
+                
+                if width_match and height_match and framerate_match:
+                    # If it's a string, add it directly
+                    if isinstance(format_value, str):
+                        supported_formats.append(format_value)
+                    # If it's a list of options (like from a GstValueList)
+                    else:
+                        try:
+                            for j in range(format_value.n_values()):
+                                supported_formats.append(format_value.get_string(j))
+                        except:
+                            # If we can't iterate, try to convert to string
+                            supported_formats.append(str(format_value))
+        
+        return supported_formats
+    except Exception as e:
+        print(f"Error getting supported formats: {e}")
+        return []
+
+def check_resolution_match(structure, field, target_value):
+    """
+    Checks if the structure supports the target resolution value.
+    Handles both exact values and ranges.
+    """
+    try:
+        field_value = structure.get_value(field)
+        # If it's a range
+        if hasattr(field_value, 'get_type_name') and field_value.get_type_name() == 'GstIntRange':
+            min_val = field_value.get_int_range_min()
+            max_val = field_value.get_int_range_max()
+            return min_val <= target_value <= max_val
+        # If it's an exact value
+        else:
+            return field_value == target_value
+    except:
+        # If we can't determine, assume it's supported
+        return True
+
+def check_framerate_match(structure, field, target_value):
+    """
+    Checks if the structure supports the target framerate.
+    Handles both exact values and ranges.
+    """
+    try:
+        field_value = structure.get_value(field)
+        # If it's a fraction range
+        if hasattr(field_value, 'get_type_name') and field_value.get_type_name() == 'GstFractionRange':
+            min_num = field_value.get_fraction_range_min().num
+            min_denom = field_value.get_fraction_range_min().denom
+            max_num = field_value.get_fraction_range_max().num
+            max_denom = field_value.get_fraction_range_max().denom
+            
+            min_rate = min_num / min_denom
+            max_rate = max_num / max_denom
+            
+            return min_rate <= target_value <= max_rate
+        # If it's an exact fraction
+        elif hasattr(field_value, 'get_type_name') and field_value.get_type_name() == 'GstFraction':
+            return field_value.num / field_value.denom == target_value
+        # If it's a list of fractions
+        elif hasattr(field_value, 'n_values'):
+            for i in range(field_value.n_values()):
+                val = field_value.get_value(i)
+                if val.num / val.denom == target_value:
+                    return True
+            return False
+        else:
+            return field_value == target_value
+    except:
+        # If we can't determine, assume it's supported
+        return True
+
+def find_best_format(device, width, height, framerate, encoder_type="auto"):
+    """
+    Find the best format for the given device, resolution, and encoder type.
+    
+    Args:
+        device: GstDevice object
+        width: desired width
+        height: desired height
+        framerate: desired framerate
+        encoder_type: "vp8", "h264", "auto" or other encoder types
+        
+    Returns:
+        The best format string or None if no suitable format found
+    """
+    # Get supported formats at this resolution
+    supported_formats = get_supported_formats(device, width, height, framerate)
+    
+    if not supported_formats:
+        print(f"No formats supported at {width}x{height}@{framerate}fps. Using default format.")
+        return None
+        
+    # Get preferred formats in ideal order
+    preferred_formats = detect_best_formats(device)
+    
+    # For rockchip hardware encoders
+    if check_plugins('rockchipmpp'):
+        if encoder_type == "vp8" or encoder_type == "auto":
+            # mppvp8enc works best with NV12
+            for fmt in ["NV12", "NV16", "I420"]:
+                if fmt in supported_formats:
+                    return fmt
+                    
+        elif encoder_type == "h264":
+            # mpph264enc works best with NV12
+            for fmt in ["NV12", "NV16", "I420"]:
+                if fmt in supported_formats:
+                    return fmt
+    
+    # For general cases, find the first match in our preferred order
+    for fmt in preferred_formats:
+        if fmt in supported_formats:
+            return fmt
+            
+    # If no preferred format matches, return the first supported format
+    return supported_formats[0] if supported_formats else None
+    
+def optimize_pipeline_for_device(device, width, height, framerate, iomode, formatspace, encoder_type="auto"):
+    """
+    Creates an optimized pipeline section for a specific device and desired output.
+    
+    Args:
+        device: Video device path (e.g., "/dev/video0")
+        width: Desired output width
+        height: Desired output height
+        framerate: Desired output framerate
+        encoder_type: Type of encoder being used ("vp8", "h264", etc.)
+        
+    Returns:
+        tuple: (input_pipeline, converter_pipeline, best_format)
+    """
+    # Set up device monitor to get device capabilities
+    video_monitor = Gst.DeviceMonitor.new()
+    video_monitor.add_filter("Video/Source", None)
+    videodevices = video_monitor.get_devices()
+    
+    # Find our target device
+    target_device = None
+    for dev in videodevices:
+        props = dev.get_properties()
+        if props.get_value("device.path") == device:
+            target_device = dev
+            break
+    
+    if not target_device:
+        print(f"Warning: Could not find detailed capabilities for {device}")
+        if videodevices:
+            print("Using first available device for capabilities")
+            target_device = videodevices[0]
+        else:
+            print("No video devices found")
+            return None, None, None
+    
+    # Find hardware converter if available
+    hw_converter, is_hw_converter = find_hardware_converter()
+    
+    # Find best format for device
+    best_format = formatspace or find_best_format(target_device, width, height, framerate, encoder_type)
+    
+    if not best_format:
+        print(f"Warning: Could not determine optimal format for {device}")
+        # Use a safe default based on platform
+        if check_plugins('rockchipmpp'):
+            best_format = "NV16"  # Common fallback for Rockchip
+        else:
+            best_format = "I420"  # Generic fallback
+    
+    # Create source pipeline segment with specific format
+    input_pipeline = f'v4l2src device={device} io-mode={str(iomode)} ! queue max-size-buffers=2 leaky=downstream ! video/x-raw,format={best_format},width=(int){width},height=(int){height},framerate=(fraction){framerate}/1'
+    
+    # Create conversion pipeline segment if needed
+    target_format = "NV12"  # Most hardware encoders prefer NV12
+    converter_pipeline = get_conversion_pipeline(best_format, target_format, hw_converter) 
+    
+    print(f"Optimized pipeline:")
+    print(f"- Source: {input_pipeline}")
+    print(f"- Converter: {converter_pipeline}")
+    print(f"- Using hardware converter: {is_hw_converter}")
+    
+    return input_pipeline, converter_pipeline, best_format
 
 WSS="wss://wss.vdo.ninja:443"
 
@@ -1932,6 +2227,7 @@ async def main():
     parser.add_argument('--z1passthru', action='store_true', help='Try to setup a Theta Z1 360 camera, but do not transcode')
     parser.add_argument('--apple', type=str, action=None, help='Sets Apple Video Foundation media device; takes a device index value (0,1,2,3,etc)')
     parser.add_argument('--v4l2', type=str, default=None, help='Sets the V4L2 input device.')
+    parser.add_argument('--iomode', type=int, default=2, help='Sets a custom V4L2 I/O Mode')
     parser.add_argument('--libcamera', action='store_true',  help='Use libcamera as the input source')
     parser.add_argument('--rpicam', action='store_true', help='Sets the RaspberryPi CSI input device. If this fails, try --rpi --raw or just --raw instead.')
     parser.add_argument('--format', type=str, default=None, help='The capture format type: YUYV, I420, BGR, or even JPEG/H264')
@@ -2258,6 +2554,8 @@ async def main():
         elif args.h264:
             if check_plugins('v4l2h264enc'):
                 h264 = 'v4l2h264enc'
+            elif check_plugins('mpph264enc'):
+                h264 = 'mpph264enc'
             elif check_plugins('vtenc_h264_hw'):
                 h264 = 'vtenc_h264_hw'
             elif check_plugins('omxh264enc'):
@@ -2332,7 +2630,7 @@ async def main():
                 needed += ['videotestsrc']
                 pipeline_video_input = 'videotestsrc'
                 if args.nvidia:
-                    pipeline_video_input = f'videotestsrc ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string)NV12,framerate=(fraction){args.framerate}/1'
+                    pipeline_video_input = f'videotestsrc ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string){args.format or "NV12"},framerate=(fraction){args.framerate}/1'
                 else:
                     pipeline_video_input = f'videotestsrc ! video/x-raw,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
             elif args.filesrc:
@@ -2360,7 +2658,7 @@ async def main():
                 if args.pipein=="auto":
                     pipeline_video_input = f'fdsrc ! decodebin name=ts ts.'
                 elif args.pipein=="raw":
-                    pipeline_video_input = f'fdsrc ! video/x-raw'
+                    pipeline_video_input = f'fdsrc ! video/x-raw,format={args.format or "NV12"}'
                 elif args.pipein=="vp9":
                     pipeline_video_input = f'fdsrc ! matroskademux ! rtpvp9pay'
                 elif args.pipein=="vp8":
@@ -2375,9 +2673,9 @@ async def main():
             elif args.camlink:
                 needed += ['video4linux2']
                 if args.rpi:
-                    pipeline_video_input = f'v4l2src device={args.v4l2} io-mode=2 ! videorate max-rate=30 ! capssetter caps="video/x-raw,format=YUY2,colorimetry=(string)2:4:5:4"'
+                    pipeline_video_input = f'v4l2src device={args.v4l2} io-mode={str(args.iomode)} ! videorate max-rate=30 ! capssetter caps="video/x-raw,format={args.format or "YUY2"},colorimetry=(string)2:4:5:4"'
                 else:
-                    pipeline_video_input = f'v4l2src device={args.v4l2} io-mode=2 ! capssetter caps="video/x-raw,format=YUY2,colorimetry=(string)2:4:5:4"'
+                    pipeline_video_input = f'v4l2src device={args.v4l2} io-mode={str(args.iomode)} ! capssetter caps="video/x-raw,format={args.format or "YUY2"},colorimetry=(string)2:4:5:4"'
 
             elif args.rpicam:
                 needed += ['rpicamsrc']
@@ -2392,7 +2690,7 @@ async def main():
             elif args.nvidiacsi:
                 needed += ['nvarguscamerasrc']
                 args.nvidia = True
-                pipeline_video_input = f'nvarguscamerasrc ! video/x-raw(memory:NVMM),width=(int){args.width},height=(int){args.height},format=(string)NV12,framerate=(fraction){args.framerate}/1'
+                pipeline_video_input = f'nvarguscamerasrc ! video/x-raw(memory:NVMM),width=(int){args.width},height=(int){args.height},format=(string){args.format or "NV12"},framerate=(fraction){args.framerate}/1'
             elif args.apple:
                 needed += ['applemedia']
                 pipeline_video_input = f'avfvideosrc device-index={appleidx} do-timestamp=true ! video/x-raw'
@@ -2438,7 +2736,7 @@ async def main():
 
                     elif args.format == "H264": # Not going to try to support this right now
                         print("Not support h264 at the moment as an input")
-                        pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string)YUY2,framerate=(fraction){args.framerate}/1'
+                        pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string){args.format or "YUY2"},framerate=(fraction){args.framerate}/1'
                     else:
                         pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string){args.format},framerate=(fraction){args.framerate}/1'
 
@@ -2448,26 +2746,57 @@ async def main():
 
             elif args.v4l2:
                 needed += ['video4linux2']
-                pipeline_video_input = f'v4l2src device={args.v4l2} io-mode=2 do-timestamp=true'
+                
                 if not os.path.exists(args.v4l2):
-                    print(f"The video input {args.v4l2} does not exists.")
+                    print(f"The video input {args.v4l2} does not exist.")
                     error = True
                 elif not os.access(args.v4l2, os.R_OK):
-                    print(f"The video input {args.v4l2} does exists, but no persmissions te read.")
+                    print(f"The video input {args.v4l2} exists, but no permissions to read.")
                     error = True
-
-                if args.raw:
-                    if args.rpi:
-                        if args.bt601:
-                            pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1,colorimetry=(string)bt601'  ## bt601 is another option,etc.
+                
+                if error:
+                    pipeline_video_input = f'v4l2src device={args.v4l2} io-mode={str(args.iomode)}'
+                elif args.raw:
+                    # Determine encoder type based on arguments
+                    encoder_type = "auto"
+                    if args.h264 or args.x264 or args.openh264 or args.nvidia or args.rpi or args.h265 or args.hevc or args.x265:
+                        encoder_type = "h264"
+                    elif args.vp8 or args.vp9:
+                        encoder_type = "vp8"
+                    elif args.aom or args.av1 or args.rav1e or args.qsv:
+                        encoder_type = "av1"
+                    
+                    # Get optimized pipeline sections
+                    try:
+                        input_section, converter_section, best_format = optimize_pipeline_for_device(
+                            args.v4l2, args.width, args.height, args.framerate, args.iomode, args.format, encoder_type
+                        )
+                        
+                        if input_section and best_format:
+                            pipeline_video_input = input_section
+                            
+                            # Store selected format for later use in encoder selection
+                            args.format = best_format
+                            
+                            # If we need to add a timestamp/clockstamp overlay, do it after conversion
+                            if timestampOverlay and converter_section:
+                                converter_section += timestampOverlay
+                            
+                            # No need to append converter section here - we'll do it at encoder selection time
+                            pipeline_video_converter = converter_section
                         else:
-                            pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1 ! capssetter caps="video/x-raw,format=YUY2,colorimetry=(string)2:4:5:4"'
-
-                    else:
-                        pipeline_video_input += f' ! video/x-raw,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
-
+                            # Fallback if optimization failed
+                            print("Format detection failed, using default pipeline")
+                            pipeline_video_input = f'v4l2src device={args.v4l2} io-mode={str(args.iomode)} ! video/x-raw,width=(int){args.width},height=(int){args.height},framerate=(fraction){args.framerate}/1'
+                            pipeline_video_converter = f' ! videoconvert{timestampOverlay} ! video/x-raw,format={args.format or "NV12"}'
+                    except Exception as e:
+                        print(f"Error during pipeline optimization: {e}")
+                        # Fallback with generic pipeline
+                        pipeline_video_input = f'v4l2src device={args.v4l2} io-mode={str(args.iomode)} ! video/x-raw,width=(int){args.width},height=(int){args.height},framerate=(fraction){args.framerate}/1'
+                        pipeline_video_converter = f' ! videoconvert{timestampOverlay} ! video/x-raw,format={args.format or "NV12"}'
                 else:
-                    pipeline_video_input += f' ! image/jpeg,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
+                    # Non-raw mode (JPEG capture)
+                    pipeline_video_input = f'v4l2src device={args.v4l2} io-mode={str(args.iomode)} ! image/jpeg,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
                     if args.nvidia:
                         pipeline_video_input += ' ! jpegparse ! nvjpegdec ! video/x-raw'
                     elif args.rpi:
@@ -2482,13 +2811,18 @@ async def main():
             elif args.pipein and args.pipein != "auto" and args.pipein != "raw": # We are doing a pass-thru with this pip # We are doing a pass-thru with this pipee
                 pass
             elif args.h264:
-                print("h264 preferred codec is ",h264)
+                print("h264 preferred codec is ", h264)
                 if h264 == "vtenc_h264_hw":
-                    pipeline_video_input += f' ! autovideoconvert ! vtenc_h264_hw name="encoder" qos=true bitrate={args.bitrate}realtime=true allow-frame-reordering=false ! video/x-h264'
+                    pipeline_video_input += f'{pipeline_video_converter} ! autovideoconvert ! vtenc_h264_hw name="encoder" qos=true bitrate={args.bitrate}realtime=true allow-frame-reordering=false ! video/x-h264'
                 elif args.nvidia:
-                    pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! video/x-h264,stream-format=(string)byte-stream'
+                    pipeline_video_input += f'{pipeline_video_converter} ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! video/x-h264,stream-format=(string)byte-stream'
                 elif args.rpicam:
                     pass
+                elif h264 == "mpph264enc" and check_plugins('rockchipmpp'):
+                    # For Rockchip MPP encoder, ensure we have NV12 input
+                    # The pipeline_video_converter should handle this if needed
+                    pipeline_video_input += f'{pipeline_video_converter} ! queue max-size-buffers=4 leaky=downstream ! {h264} qp-init=26 qp-min=10 qp-max=51 gop=30 name="encoder" rc-mode=cbr bps={args.bitrate * 1000} ! video/x-h264,stream-format=(string)byte-stream'
+               
                 elif h264 == "omxh264enc" and args.rpi:
                     pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420{timestampOverlay} ! omxh264enc name="encoder" target-bitrate={args.bitrate}000 qos=true control-rate="constant" ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                 elif h264 == "x264enc" and args.rpi:
@@ -2500,7 +2834,8 @@ async def main():
                         pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw{timestampOverlay} ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4'
                     else:
                         pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw,format=I420{timestampOverlay} ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4' ## v4l2h264enc only supports 30fps max @ 1080p on most rpis, and there might be a spike or skipped frame causing the encode to fail; videorating it seems to fix it though
-                
+                elif h264=="mpph264enc":
+                    pipeline_video_input += f' ! videoconvert{timestampOverlay} ! videorate max-rate=30 ! {h264} rc-mode=cbr bps=4000000 gop=30 profile=high name="encoder" bps={args.bitrate * 1000} ! video/x-h264,stream-format=(string)byte-stream'
                 elif h264=="x264enc":
                     pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=10 ! x264enc bitrate={args.bitrate} name="encoder1" speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline'
                 elif h264=="avenc_h264_omx":
@@ -2527,7 +2862,7 @@ async def main():
                 if h265 == "mpph265enc":
                     # mpph265enc uses bps (bits per second) instead of bitrate
                     # bps takes value in bits per second, so multiply bitrate (kbps) by 1000
-                   pipeline_video_input += f' ! videoconvert{timestampOverlay} ! video/x-raw,format=NV12 ! {h265} name="encoder" bps={args.bitrate * 1000} qos=true gop=30 header-mode=1 qp-init=30 qp-max=40 qp-min=18 qp-max-i=35 qp-min-i=18 rc-mode=1 ! video/x-h265,stream-format=(string)byte-stream'
+                   pipeline_video_input += f' ! videoconvert{timestampOverlay} ! {h265} name="encoder" bps={args.bitrate * 1000} qos=true gop=30 header-mode=1 qp-init=30 qp-max=40 qp-min=18 qp-max-i=35 qp-min-i=18 rc-mode=1 ! video/x-h265,stream-format=(string)byte-stream'
 
                 elif h265 == "x265enc":
                     # x265enc uses bitrate in kbps
@@ -2542,6 +2877,10 @@ async def main():
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxvp8enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                 elif args.rpi:
                     pipeline_video_input += f' ! v4l2convert{timestampOverlay} ! video/x-raw,format=I420 ! queue max-size-buffers=10 ! vp8enc deadline=1 name="encoder" target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
+                elif check_plugins('mppvp8enc'):
+                    # Rockchip hardware VP8 encoder - ensure NV12 input
+                    pipeline_video_input += f'{pipeline_video_converter} ! queue max-size-buffers=4 leaky=downstream ! mppvp8enc qp-init=40 qp-min=10 qp-max=100 gop=30 name="encoder" rc-mode=cbr bps={args.bitrate * 1000} {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
+
                 else:
                     pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=10 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 name="encoder" {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
 
