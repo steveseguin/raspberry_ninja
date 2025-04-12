@@ -14,6 +14,7 @@ import re
 import traceback
 import subprocess
 import struct
+import glob
 try:
     import hashlib
     from urllib.parse import urlparse
@@ -2592,6 +2593,21 @@ async def main():
         if args.hdmi:
             args.v4l2 = '/dev/v4l/by-id/usb-MACROSILICON_*'
             args.alsa = 'hw:MS2109'
+            
+            matching_devices = glob.glob(args.v4l2)
+            if matching_devices:
+                args.v4l2 = matching_devices[0]  # Use the first matching device
+                print(f"Found HDMI capture device: {args.v4l2}")
+            else:
+                print("No MACROSILICON HDMI capture device found. Searching for any video device...")
+                all_v4l_devices = glob.glob('/dev/video*')
+                if all_v4l_devices:
+                    args.v4l2 = all_v4l_devices[0]
+                    print(f"Using fallback video device: {args.v4l2}")
+                else:
+                    print("No video devices found!")
+                    sys.exit(1)
+            
             if args.raw:
                 args.width = 1280
                 args.height = 720
