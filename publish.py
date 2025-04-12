@@ -1395,7 +1395,7 @@ class WebRTCClient:
         if self.streamin:
             client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
             client['webrtc'].set_property('bundle-policy', "max-bundle")
-            ssetup_ice_servers(client['webrtc'], self)
+            self.setup_ice_servers(client['webrtc'])
             
             try:
                 client['webrtc'].set_property('latency', self.buffer)
@@ -2325,6 +2325,7 @@ async def main():
         args.password = None
 
     PIPELINE_DESC = ""
+    pipeline_video_converter = ""
 
     needed = ["rtp", "rtpmanager"]
     if not args.rtmp:
@@ -2591,30 +2592,125 @@ async def main():
                 print("H265 encoder that we will try to use: "+h265)
                 
         if args.hdmi:
-            args.v4l2 = '/dev/v4l/by-id/usb-MACROSILICON_*'
             args.alsa = 'hw:MS2109'
             
-            matching_devices = glob.glob(args.v4l2)
-            if matching_devices:
-                args.v4l2 = matching_devices[0]  # Use the first matching device
-                print(f"Found HDMI capture device: {args.v4l2}")
-            else:
-                print("No MACROSILICON HDMI capture device found. Searching for any video device...")
-                all_v4l_devices = glob.glob('/dev/video*')
-                if all_v4l_devices:
-                    args.v4l2 = all_v4l_devices[0]
-                    print(f"Using fallback video device: {args.v4l2}")
-                else:
-                    print("No video devices found!")
-                    sys.exit(1)
+            # Better detection - scan all devices and check capabilities
+            monitor = Gst.DeviceMonitor.new()
+            monitor.add_filter("Video/Source", None)
+            devices = monitor.get_devices()
+            hdmi_device = None
             
+            print("Scanning for HDMI capture devices...")
+            for d in devices:
+                device_name = d.get_display_name()
+                props = d.get_properties()
+                
+                # Skip devices with no properties
+                if not props:
+                    continue
+                    
+                # Get the path if available
+                path = None
+                if props.has_field('device.path'):
+                    path = props.get_string('device.path')
+                else:
+                    continue  # Skip devices without a path
+                    
+                # Check for HDMI devices by various indicators
+                if ('MACROSILICON' in device_name or 
+                    'MS2109' in device_name or 
+                    (props.has_field('device.vendor.name') and 'MACROSILICON' in props.get_string('device.vendor.name')) or
+                    (props.has_field('device.serial') and 'MACROSILICON' in props.get_string('device.serial'))):
+                    
+                    # Verify it's a capture device by checking caps
+                    caps = d.get_caps()
+                    if caps and caps.to_string() and ('image/jpeg' in caps.to_string() or 'video/x-raw' in caps.to_string()):
+                        hdmi_device = d
+                        args.v4l2 = path
+                        print(f"Found HDMI capture device: {device_name} at {path}")
+                        break
+                    
+            if not hdmi_device:
+                print("No MACROSILICON HDMI capture device found. Trying alternative detection method...")
+                # Try to find by checking all video devices
+                for i in range(20):  # Check video0 through video19
+                    device_path = f"/dev/video{i}"
+                    if os.path.exists(device_path):
+                        # Test if this device works with v4l2-ctl
+                        try:
+                            result = subprocess.run(['v4l2-ctl', '-d', device_path, '--list-formats-ext'], 
+                                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=2)
+                            if result.returncode == 0 and ('JPEG' in result.stdout or 'MJPG' in result.stdout):
+                                args.v4l2 = device_path
+                                print(f"Found potential HDMI device: {device_path}")
+                                break
+                        except (subprocess.SubprocessError, subprocess.TimeoutExpired):
+                            continue
+                
+                if not args.v4l2:
+                    print("No usable video devices found!")
+                    sys.exit(1)
+                    
             if args.raw:
                 args.width = 1280
                 args.height = 720
                 args.framerate = 10
 
         if args.camlink:
-            args.v4l2 = '/dev/video0'
+            # Better Camlink detection - similar approach
+            monitor = Gst.DeviceMonitor.new()
+            monitor.add_filter("Video/Source", None)
+            devices = monitor.get_devices()
+            camlink_device = None
+            
+            print("Scanning for Cam Link devices...")
+            for d in devices:
+                device_name = d.get_display_name()
+                props = d.get_properties()
+                
+                # Skip devices with no properties
+                if not props:
+                    continue
+                    
+                # Get the path if available
+                path = None
+                if props.has_field('device.path'):
+                    path = props.get_string('device.path')
+                else:
+                    continue  # Skip devices without a path
+                    
+                # Check for Cam Link devices
+                if ('Cam Link' in device_name or 
+                    'Elgato' in device_name or 
+                    (props.has_field('device.vendor.name') and 'Elgato' in props.get_string('device.vendor.name'))):
+                    
+                    # Verify it's a capture device by checking caps
+                    caps = d.get_caps()
+                    if caps and caps.to_string() and ('image/jpeg' in caps.to_string() or 'video/x-raw' in caps.to_string()):
+                        camlink_device = d
+                        args.v4l2 = path
+                        print(f"Found Cam Link device: {device_name} at {path}")
+                        break
+                    
+            if not camlink_device:
+                print("No specific Cam Link device found. Checking all video devices...")
+                # Try to find by checking all video devices
+                for i in range(10):  # Check video0 through video9
+                    device_path = f"/dev/video{i}"
+                    if os.path.exists(device_path):
+                        try:
+                            result = subprocess.run(['v4l2-ctl', '-d', device_path, '--list-formats-ext'], 
+                                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=2)
+                            if result.returncode == 0:
+                                args.v4l2 = device_path
+                                print(f"Using device: {device_path}")
+                                break
+                        except (subprocess.SubprocessError, subprocess.TimeoutExpired):
+                            continue
+                
+                if not args.v4l2:
+                    args.v4l2 = '/dev/video0'
+                    print(f"Falling back to default: {args.v4l2}")
 
         if args.save:
             args.multiviewer = True
@@ -2772,6 +2868,7 @@ async def main():
                 
                 if error:
                     pipeline_video_input = f'v4l2src device={args.v4l2} io-mode={str(args.iomode)}'
+                    pipeline_video_converter = ""  # Add this line
                 elif args.raw:
                     # Determine encoder type based on arguments
                     encoder_type = "auto"
@@ -2790,16 +2887,14 @@ async def main():
                         
                         if input_section and best_format:
                             pipeline_video_input = input_section
+                            pipeline_video_converter = converter_section  # Fixed assignment here
                             
                             # Store selected format for later use in encoder selection
                             args.format = best_format
                             
                             # If we need to add a timestamp/clockstamp overlay, do it after conversion
                             if timestampOverlay and converter_section:
-                                converter_section += timestampOverlay
-                            
-                            # No need to append converter section here - we'll do it at encoder selection time
-                            pipeline_video_converter = converter_section
+                                pipeline_video_converter += timestampOverlay
                         else:
                             # Fallback if optimization failed
                             print("Format detection failed, using default pipeline")
@@ -2813,10 +2908,11 @@ async def main():
                 else:
                     # Non-raw mode (JPEG capture)
                     pipeline_video_input = f'v4l2src device={args.v4l2} io-mode={str(args.iomode)} ! image/jpeg,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
+                    pipeline_video_converter = ""  # Add this line
                     if args.nvidia:
                         pipeline_video_input += ' ! jpegparse ! nvjpegdec ! video/x-raw'
                     elif args.rpi:
-                        pipeline_video_input += ' ! jpegparse ! v4l2jpegdec '
+                        pipeline_video_input += ' ! jpegparse ! ' + ('v4l2jpegdec' if check_plugins('v4l2jpegdec') else 'jpegdec') + ' '
                     else:
                         pipeline_video_input += ' ! jpegdec'
 
@@ -2846,7 +2942,7 @@ async def main():
                 elif h264 == "openh264enc" and args.rpi:
                     pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420{timestampOverlay} ! queue max-size-buffers=10 ! openh264enc  name="encoder" bitrate={args.bitrate}000 complexity=0 ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
                 elif check_plugins("v4l2h264enc") and args.rpi:
-                    if args.format in ["I420", "YV12", "NV12" "NV21", "RGB16", "RGB", "BGR", "RGBA", "BGRx", "BGRA", "YUY2", "YVYU", "UYVY"]:
+                    if args.format in ["I420", "YV12", "NV12", "NV21", "RGB16", "RGB", "BGR", "RGBA", "BGRx", "BGRA", "YUY2", "YVYU", "UYVY"]:
                         pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw{timestampOverlay} ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4'
                     else:
                         pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw,format=I420{timestampOverlay} ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4' ## v4l2h264enc only supports 30fps max @ 1080p on most rpis, and there might be a spike or skipped frame causing the encode to fail; videorating it seems to fix it though
