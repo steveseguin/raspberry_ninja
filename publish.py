@@ -1309,13 +1309,13 @@ class WebRTCClient:
                     try:
                         if self.aom:
                             client['encoder'].set_property('target-bitrate', int(bitrate))  # line not active due to 'elif " av1enc " in self.pipeline:' line
-                        elif " mpph265enc " in self.pipeline or client['encoder'].get_name().startswith('mpph265enc'):
+                        elif " mpph265enc " in self.pipeline or (client['encoder'] and client['encoder'].get_name().startswith('mpph265enc')):
                             # For mpph265enc, use bps instead of bitrate
                             client['encoder'].set_property('bps', int(bitrate*1000))
-                        elif " mppvp8enc " in self.pipeline or client['encoder'].get_name().startswith('mppvp8enc'):
+                        elif " mppvp8enc " in self.pipeline or (client['encoder'] and client['encoder'].get_name().startswith('mppvp8enc')):
                             # For mppvp8enc, use bps instead of bitrate
                             client['encoder'].set_property('bps', int(bitrate*1000))   
-                        elif " x265enc " in self.pipeline or client['encoder'].get_name().startswith('x265enc'):
+                        elif " x265enc " in self.pipeline or (client['encoder'] and client['encoder'].get_name().startswith('x265enc')):
                             client['encoder'].set_property('bitrate', int(bitrate))
                         elif client['encoder']:
                             client['encoder'].set_property('bitrate', int(bitrate*1000))
