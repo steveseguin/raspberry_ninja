@@ -45,7 +45,7 @@ from gi.repository import GstSdp
 
 try:
     from gi.repository import GLib
-except:
+except ImportError:
     pass
     
 #os.environ['GST_DEBUG'] = '3,ndisink:7,videorate:5,videoscale:5,videoconvert:5'
@@ -1766,7 +1766,7 @@ class WebRTCClient:
         return 0
 
 def check_plugins(needed, require=False):
-    if type(needed)==type("str"):
+    if isinstance(needed, str):
         needed = [needed]
     missing = list(filter(lambda p: (Gst.Registry.get().find_plugin(p) is None and not Gst.ElementFactory.find(p)), needed))
     if len(missing):
@@ -1774,6 +1774,47 @@ def check_plugins(needed, require=False):
             print('Missing gstreamer plugin/element:', missing)
         return False
     return True
+
+def get_raspberry_pi_model():
+    """Detect Raspberry Pi model. Returns model number (1,2,3,4,5) or 0 if not a Pi"""
+    try:
+        with open('/proc/cpuinfo', 'r') as f:
+            cpuinfo = f.read()
+            
+        # Check if it's a Raspberry Pi
+        if 'Raspberry Pi' not in cpuinfo:
+            return 0
+            
+        # Extract model information
+        for line in cpuinfo.split('\n'):
+            if 'Model' in line and ':' in line:
+                model_info = line.split(':')[1].strip()
+                if 'Raspberry Pi 5' in model_info:
+                    return 5
+                elif 'Raspberry Pi 4' in model_info:
+                    return 4
+                elif 'Raspberry Pi 3' in model_info:
+                    return 3
+                elif 'Raspberry Pi 2' in model_info:
+                    return 2
+                elif 'Raspberry Pi' in model_info:
+                    return 1
+                    
+        # Alternative method using revision codes
+        for line in cpuinfo.split('\n'):
+            if line.startswith('Revision'):
+                revision = line.split(':')[1].strip()
+                # RPi5 revision codes start with c04170, d04170, etc
+                if revision.startswith(('c04170', 'd04170')):
+                    return 5
+                # RPi4 revision codes
+                elif revision.startswith(('a03111', 'b03111', 'c03111', 'a03112', 'b03112', 'c03112', 'd03114', 'c03114')):
+                    return 4
+                    
+    except (IOError, FileNotFoundError):
+        pass
+        
+    return 0
 
 def on_message(bus: Gst.Bus, message: Gst.Message, loop):
     mtype = message.type
@@ -2251,7 +2292,7 @@ async def main():
     parser.add_argument('--omx', action='store_true', help='Try to use the OMX driver for encoding video; not recommended')
     parser.add_argument('--vorbis', action='store_true', help='Try to use the OMX driver for encoding video; not recommended')
     parser.add_argument('--nvidia', action='store_true', help='Creates a pipeline optimised for nvidia hardware.')
-    parser.add_argument('--rpi', action='store_true', help='Creates a pipeline optimised for raspberry pi hardware encoder. This wont work with the Raspberry Pi 5, as it has no hardware encoder..')
+    parser.add_argument('--rpi', action='store_true', help='Creates a pipeline optimised for raspberry pi hardware encoder. Note: RPi5 has no hardware encoder and will automatically fall back to software encoding (x264).')
     parser.add_argument('--multiviewer', action='store_true', help='Allows for multiple viewers to watch a single encoded stream; will use more CPU and bandwidth.')
     parser.add_argument('--noqos', action='store_true', help='Do not try to automatically reduce video bitrate if packet loss gets too high. The default will reduce the bitrate if needed.')
     parser.add_argument('--nored', action='store_true', help='Disable error correction redundency for transmitted video. This may reduce the bandwidth used by half, but it will be more sensitive to packet loss')
@@ -2407,6 +2448,18 @@ async def main():
         if check_plugins("nvarguscamerasrc"):
             if not args.nvidiacsi and not args.record:
                 print("\nTip: If using the Nvidia CSI camera, you'll want to use --nvidiacsi to enable it.\n")
+    
+    # Check if we're on a Raspberry Pi 5 and handle --rpi parameter
+    if args.rpi:
+        pi_model = get_raspberry_pi_model()
+        if pi_model == 5:
+            print("\n⚠️  WARNING: Raspberry Pi 5 detected!")
+            print("The Raspberry Pi 5 does not have hardware video encoding (no v4l2h264enc or omxh264enc).")
+            print("Falling back to software encoding. This may impact performance.")
+            print("Consider using --x264 or --openh264 for better software encoder control.\n")
+            # Force software encoding
+            args.x264 = True
+            # Don't disable args.rpi entirely as it may affect other pipeline choices
 
     if args.rpicam:
         print("Please note: If rpicamsrc cannot be found, use --libcamera instead")
@@ -2935,24 +2988,24 @@ async def main():
                     # The pipeline_video_converter should handle this if needed
                     pipeline_video_input += f'{pipeline_video_converter} ! queue max-size-buffers=4 leaky=downstream ! {h264} qp-init=26 qp-min=10 qp-max=51 gop=30 name="encoder" rc-mode=cbr bps={args.bitrate * 1000} ! video/x-h264,stream-format=(string)byte-stream'
                
-                elif h264 == "omxh264enc" and args.rpi:
+                elif h264 == "omxh264enc" and args.rpi and get_raspberry_pi_model() != 5:
                     pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420{timestampOverlay} ! omxh264enc name="encoder" target-bitrate={args.bitrate}000 qos=true control-rate="constant" ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                 elif h264 == "x264enc" and args.rpi:
                     pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420{timestampOverlay} ! queue max-size-buffers=10 ! x264enc  name="encoder1" bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
                 elif h264 == "openh264enc" and args.rpi:
                     pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420{timestampOverlay} ! queue max-size-buffers=10 ! openh264enc  name="encoder" bitrate={args.bitrate}000 complexity=0 ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
-                elif check_plugins("v4l2h264enc") and args.rpi:
+                elif check_plugins("v4l2h264enc") and args.rpi and get_raspberry_pi_model() != 5:
                     if args.format in ["I420", "YV12", "NV12", "NV21", "RGB16", "RGB", "BGR", "RGBA", "BGRx", "BGRA", "YUY2", "YVYU", "UYVY"]:
                         pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw{timestampOverlay} ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4'
                     else:
                         pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw,format=I420{timestampOverlay} ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4' ## v4l2h264enc only supports 30fps max @ 1080p on most rpis, and there might be a spike or skipped frame causing the encode to fail; videorating it seems to fix it though
                 elif h264=="mpph264enc":
-                    pipeline_video_input += f' ! videoconvert{timestampOverlay} ! videorate max-rate=30 ! {h264} rc-mode=cbr bps=4000000 gop=30 profile=high name="encoder" bps={args.bitrate * 1000} ! video/x-h264,stream-format=(string)byte-stream'
+                    pipeline_video_input += f' ! videoconvert{timestampOverlay} ! videorate max-rate=30 ! {h264} rc-mode=cbr gop=30 profile=high name="encoder" bps={args.bitrate * 1000} ! video/x-h264,stream-format=(string)byte-stream'
                 elif h264=="x264enc":
                     pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=10 ! x264enc bitrate={args.bitrate} name="encoder1" speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline'
                 elif h264=="avenc_h264_omx":
                     pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=10 ! avenc_h264_omx bitrate={args.bitrate}000 name="encoder" ! video/x-h264,profile=constrained-baseline'
-                elif check_plugins("v4l2convert") and check_plugins("omxh264enc"):
+                elif check_plugins("v4l2convert") and check_plugins("omxh264enc") and get_raspberry_pi_model() != 5:
                     pipeline_video_input += f' ! v4l2convert{timestampOverlay} ! video/x-raw,format=I420 ! omxh264enc name="encoder" target-bitrate={args.bitrate}000 qos=true control-rate=1 ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                 elif check_plugins("v4l2convert"):
                     pipeline_video_input += f' ! v4l2convert{timestampOverlay} ! video/x-raw,format=I420 ! {h264} name="encoder" bitrate={args.bitrate}000 ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?

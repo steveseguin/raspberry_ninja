@@ -118,7 +118,9 @@ If you are using a Raspberry Pi 4, then you should be pretty good to go at this 
 
 If you are using a Raspberry Pi 2 or 3, you might want to limit the resolution to 720p, at least if using a USB camera source. I can get 1080p30 on a Raspberry Pi 2 at fairly high bitrates, when running a stable version of the operating system with Gstreamer v1.22; this wasn't the case with older versions or nightly-built versions.
 
-If using the CSI camera, the hardware encoder often works quite well, although it might still be best to limit the resolution to 720p30 or 360p30 if using an older raspberry pi zero w. The Raspberry Pi Zero 2 however works quite well at 1080p30 with the official Raspberry Pi cameras. There is no hardware encoder on the RPi-5.
+If using the CSI camera, the hardware encoder often works quite well, although it might still be best to limit the resolution to 720p30 or 360p30 if using an older raspberry pi zero w. The Raspberry Pi Zero 2 however works quite well at 1080p30 with the official Raspberry Pi cameras. 
+
+**Important Note about Raspberry Pi 5**: The Raspberry Pi 5 does not have hardware video encoding support (no v4l2h264enc or omxh264enc). When using the `--rpi` parameter on a RPi5, the script will automatically detect this and fall back to software encoding (x264enc). This may impact performance compared to earlier Pi models with hardware encoders. For best results on RPi5, consider using `--x264` or `--openh264` parameters explicitly.
 
 To enable the CSI camera on older versions of Raspberry Pi OS (Raspbian), you may need to add `--rpicam` to the command-line, as the default is USB MPJEG. With newer versions of Raspberry Pi OS, you may instead need to use `--libcamera --rpi` instead (or just --libcamera).  If you don't have audio connected, you might also need to add `--noaudio`, as sometimes that can cause issues.
 
@@ -132,7 +134,7 @@ To enable RAW-mode (YUY2) via a USB Camera, instead of MJPEG, you'll need to add
 
 If using an HDMI adapter as a camera source, you may need to adjust things at a code level to account for the color-profiles of your camera source. `--bt601` is an option for one stanard profile, with the default profile set at `coloimetry=2:4:5:4` for a Raspberry Pi. 10-bit and interlaced video probably isn't a good idea to attempt to use, and if possible setting the HDMI output of your camera to 8-bit 1080p24,25 or 30 is the highest you should probably go.
 
-Raspberry Pis only support up to 1080p30 FPS with the hardware encoder, and since the Raspberry Pi 5 doesn't have a hardware encoder, you will be using software encoders instead. A setting a faster preset, if using x264 for example, will allow a Raspberry 5 to output potentially even faster frame rates and resolutions, but at the cost of compression and video quality. 
+Raspberry Pis (models 1-4) only support up to 1080p30 FPS with the hardware encoder. The Raspberry Pi 5 doesn't have a hardware encoder, so you will be using software encoders instead. When using the `--rpi` parameter on a RPi5, the script automatically detects this and switches to software encoding. Setting a faster preset, if using x264 for example, will allow a Raspberry Pi 5 to output potentially even faster frame rates and resolutions, but at the cost of compression and video quality. 
 
 One user who had issues mentioned they had to disable "Legacy Camera" mode in the raspi-config settings app to have their Pi camera be detected; this should be already off by default, but if you enabled it, I suppose try turning it off.
 
