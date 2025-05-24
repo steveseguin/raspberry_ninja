@@ -7,6 +7,8 @@ __pycache__/
 *.so
 
 # Distribution / packaging
+WSL2-Linux-Kernel
+WSL2-Linux-Kernel/
 .Python
 build/
 develop-eggs/
