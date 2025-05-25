@@ -11,8 +11,6 @@ It also has the ability to record remote VDO.Ninja streams to disk (no transcode
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 **Table of Contents**
 
-- [Documentation](#documentation)
-
 - [Preface](#preface)
 - [Install options](#install-options)
   - [Setup for a Raspberry Pi](#setup-for-a-raspberry-pi)
@@ -25,6 +23,7 @@ It also has the ability to record remote VDO.Ninja streams to disk (no transcode
 - [Updating](#updating)
 - [Usage](#usage)
     - [Adding an audio source](#adding-an-audio-source)
+- [Documentation](#documentation)
 - [How to Run:](#how-to-run)
   - [Auto-starting the script on boot](#auto-starting-the-script-on-boot)
   - [RTMP output](#rtmp-output)
