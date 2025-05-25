@@ -15,6 +15,7 @@ import traceback
 import subprocess
 import struct
 import glob
+import signal
 try:
     import hashlib
     from urllib.parse import urlparse
@@ -273,6 +274,9 @@ class WebRTCClient:
         self.room_name = params.room
         self.room_hashcode = None
         self.multiviewer = params.multiviewer
+        self.cleanup_lock = asyncio.Lock()  # Prevent concurrent cleanup
+        self.pipeline_lock = threading.Lock()  # Thread-safe pipeline operations
+        self._shutdown_requested = False  # Initialize shutdown flag
         self.record = params.record
         self.streamin = params.streamin
         self.ndiout = params.ndiout
@@ -1038,14 +1042,14 @@ class WebRTCClient:
             return
 
         def on_offer_created(promise, _, __):
-            print("ON OFFER CREATED")
+            # Offer created, sending to peer
             promise.wait()
             reply = promise.get_reply()
             offer = reply.get_value('offer')
             promise = Gst.Promise.new()
             client['webrtc'].emit('set-local-description', offer, promise)
             promise.interrupt()
-            print("SEND SDP OFFER")
+            printc("📤 Sending connection offer...", "77F")
             text = offer.sdp.as_text()
             if ("96 96 96 96 96" in text):
                 printc("Patching SDP due to Gstreamer webRTC bug - none-unique line values","A6F")
@@ -1067,10 +1071,10 @@ class WebRTCClient:
             self.sendMessage(msg)
 
         def on_new_tranceiver(element, trans):
-            print("ON NEW TRANS")
+            # New transceiver added
 
         def on_negotiation_needed(element):
-            print("ON NEGO NEEDED")
+            # Negotiation needed, creating offer
             promise = Gst.Promise.new_with_change_func(on_offer_created, element, None)
             element.emit('create-offer', None, promise)
 
@@ -1085,23 +1089,25 @@ class WebRTCClient:
             self.sendMessage(icemsg)
 
         def on_signaling_state(p1, p2):
-            print("ON SIGNALING STATE CHANGE: {}".format(client['webrtc'].get_property(p2.name)))
+            # Signaling state changed
 
         def on_ice_connection_state(p1, p2):
-            if (client['webrtc'].get_property(p2.name)==1):
-                printwarn("ice changed to checking state")
-            elif (client['webrtc'].get_property(p2.name)==2):
-                printwarn("ice changed to connected state")
-            elif (client['webrtc'].get_property(p2.name)==3):
-                printwarn("ice changed to completed state")
-            elif (client['webrtc'].get_property(p2.name)>3):
-                printc("ice changed to state +4","FC2")
+            state = client['webrtc'].get_property(p2.name)
+            if state == 1:
+                printc("🔍 ICE: Checking connectivity...", "77F")
+            elif state == 2:
+                printc("✅ ICE: Connected", "0F0")
+            elif state == 3:
+                printc("🎯 ICE: Connection established", "0F0")
+            elif state > 3:
+                printc("❌ ICE: Connection failed", "F44")
 
         def on_connection_state(p1, p2):
-            print("on_connection_state")
-
-            if (client['webrtc'].get_property(p2.name)==2): # connected
-                print("PEER CONNECTION ACTIVE")
+            state = client['webrtc'].get_property(p2.name)
+            
+            if state == 2: # connected
+                printc("\n🎬 Peer connection established!", "0F0")
+                printc("   └─ Viewer connected successfully\n", "0F0")
                 promise = Gst.Promise.new_with_change_func(on_stats, client['webrtc'], None) # check stats
                 client['webrtc'].emit('get-stats', None, promise)
 
@@ -1115,11 +1121,11 @@ class WebRTCClient:
                     client['timer'].start()
                     self.clients[client["UUID"]] = client
 
-            elif (client['webrtc'].get_property(p2.name)>=4): # closed/failed , but this won't work unless Gstreamer / LibNice support it -- which isn't the case in most versions.
-                print("PEER CONNECTION DISCONNECTED")
+            elif state >= 4: # closed/failed
+                printc("\n🚫 Peer disconnected", "F77")
                 self.stop_pipeline(client['UUID'])
-            else:
-                print("PEER CONNECTION STATE {}".format(client['webrtc'].get_property(p2.name)))
+            elif state == 1:
+                printc("🔄 Connecting to peer...", "77F")
         def print_trans(p1,p2):
             print("trans:  {}".format(client['webrtc'].get_property(p2.name)))
 
@@ -1139,7 +1145,9 @@ class WebRTCClient:
                 self.clients[client["UUID"]] = client
                 try:
                     client['send_channel'].emit('send-string', '{"ping":"'+str(time.time())+'"}')
-                    printout("PINGED")
+                    if client.get('_last_ping_logged', 0) < time.time() - 30:
+                        printc("💓 Connection healthy (ping/pong active)", "666")
+                        client['_last_ping_logged'] = time.time()
                 except Exception as E:
                     printwarn(get_exception_info(E))
 
@@ -1167,10 +1175,10 @@ class WebRTCClient:
             channel.connect('on-message-string', on_data_channel_message)
 
         def on_data_channel_error(arg1, arg2):
-            printc('DATA CHANNEL: ERROR', "F44")
+            printc('❌ Data channel error', "F44")
 
         def on_data_channel_open(channel):
-            printc('DATA CHANNEL: OPENED', "06F")
+            # Don't print, already shown in connection message
             client['send_channel'] = channel
             self.clients[client["UUID"]] = client
             if self.streamin:
@@ -1189,16 +1197,16 @@ class WebRTCClient:
                 self.sendMessage(msg)
 
         def on_data_channel_close(channel):
-            printc('DATA CHANNEL: CLOSE', "F44")
+            printc('🔌 Data channel closed', "F77")
 
         def on_data_channel_message(channel, msg_raw): 
             try:
                 msg = json.loads(msg_raw)
             except:
-                printin("DID NOT GET JSON")
+                # Invalid JSON in data channel message
                 return
             if 'candidates' in msg:
-                printin("INBOUND ICE BUNDLE - DC")
+                # Processing ICE candidates bundle
                 
                 if 'vector' in msg:
                     try:
@@ -1211,7 +1219,7 @@ class WebRTCClient:
                 for ice in msg['candidates']:
                     self.handle_sdp_ice(ice, client["UUID"])
             elif 'candidate' in msg:
-                printin("INBOUND ICE SINGLE - DC")
+                # Processing single ICE candidate
                 
                 if 'vector' in msg:
                     try:
@@ -1223,13 +1231,13 @@ class WebRTCClient:
                 
                 self.handle_sdp_ice(msg, client["UUID"])
             elif 'pong' in msg: # Supported in v19 of VDO.Ninja
-                printin('PONG')
+                # Don't print individual pongs, handled by periodic health message
                 client['ping'] = 0
                 self.clients[client["UUID"]] = client
             elif 'bye' in msg: ## v19 of VDO.Ninja
-                printin("PEER INTENTIONALLY HUNG UP")
+                printc("👋 Peer disconnected gracefully", "77F")
             elif 'description' in msg:
-                printin("INCOMING SDP - DC")
+                printc("📥 Receiving connection details...", "77F")
                 
                 if 'vector' in msg:
                     try:
@@ -1251,7 +1259,7 @@ class WebRTCClient:
                     # VDO.Ninja sends bitrate in kbps
                     self.set_encoder_bitrate(client, int(msg['bitrate']))
             else:
-                printin("MISC DC DATA")
+                # Silently handle misc data channel messages
                 return
 
         def vdo2midi(midi):
@@ -1338,31 +1346,48 @@ class WebRTCClient:
             stats = stats.split("fraction-lost=(double)")
             if (len(stats)>1):
                 stats = stats[1].split(",")[0]
-                printc(f"📊 Packet loss: {stats}", "FFF")
+                # Only log packet loss if it's significant or changed substantially
+                if not hasattr(client, '_last_packet_loss'):
+                    client['_last_packet_loss'] = -1
+                
+                if float(stats) > 0.01 or abs(float(stats) - client['_last_packet_loss']) > 0.005:
+                    if float(stats) > 0.01:
+                        printc(f"📊 Packet loss: {stats} ⚠️", "F77")
+                    else:
+                        printc(f"📊 Network quality: excellent", "0F0")
+                    client['_last_packet_loss'] = float(stats)
                 if " vp8enc " in self.pipeline: # doesn't support dynamic bitrates? not sure the property to use at least
                     return
                 elif " av1enc " in self.pipeline: # seg-fault if I try to change it currently
                     return
                 stats = float(stats)
                 if (stats>0.01) and not self.noqos:
+                    old_bitrate = self.bitrate
                     bitrate = self.bitrate*0.9
                     if bitrate < self.max_bitrate*0.2:
                         bitrate = self.max_bitrate*0.2
                     elif bitrate > self.max_bitrate*0.8:
                         bitrate = self.bitrate*0.9
-                    self.bitrate = bitrate
-                    printc(f"   └─ Reducing bitrate to {int(bitrate)} kbps (packet loss detected)", "FF0")
-                    self.set_encoder_bitrate(client, int(bitrate))
+                    
+                    # Only update and print if bitrate actually changed
+                    if int(bitrate) != int(old_bitrate):
+                        self.bitrate = bitrate
+                        printc(f"   └─ Reducing bitrate to {int(bitrate)} kbps (packet loss detected)", "FF0")
+                        self.set_encoder_bitrate(client, int(bitrate))
 
                 elif (stats<0.003) and not self.noqos:
+                    old_bitrate = self.bitrate
                     bitrate = self.bitrate*1.05
                     if bitrate>self.max_bitrate:
                         bitrate = self.max_bitrate
                     elif bitrate*2<self.max_bitrate:
                         bitrate = self.bitrate*1.05
-                    self.bitrate = bitrate
-                    printc(f"   └─ Increasing bitrate to {int(bitrate)} kbps (good connection)", "0F0")
-                    self.set_encoder_bitrate(client, int(bitrate))
+                    
+                    # Only update and print if bitrate actually changed
+                    if int(bitrate) != int(old_bitrate):
+                        self.bitrate = bitrate
+                        printc(f"   └─ Increasing bitrate to {int(bitrate)} kbps (good connection)", "0F0")
+                        self.set_encoder_bitrate(client, int(bitrate))
 
         printc("🔧 Creating WebRTC pipeline...", "0FF")
 
@@ -1376,7 +1401,11 @@ class WebRTCClient:
                 self.pipe = Gst.Pipeline.new('data-only-pipeline')
             else:
                 print(self.pipeline)
-                self.pipe = Gst.parse_launch(self.pipeline)
+                try:
+                    self.pipe = Gst.parse_launch(self.pipeline)
+                except Exception as e:
+                    printc(f"Failed to create pipeline: {e}", "F00")
+                    return
                 
             print(self.pipe)
             started = False
@@ -1533,7 +1562,7 @@ class WebRTCClient:
             client['webrtc'].emit('set-remote-description', answer, promise)
             promise.interrupt()
         elif 'candidate' in msg:
-            print("  ~ HANDLING INBOUND ICE")
+            # Silently handle ICE candidates
             candidate = msg['candidate']
             sdpmlineindex = msg['sdpMLineIndex']
             client['webrtc'].emit('add-ice-candidate', sdpmlineindex, candidate)
@@ -1579,14 +1608,14 @@ class WebRTCClient:
             print("No SDP as expected")
 
     async def start_pipeline(self, UUID):
-        print("\nSTART PIPE\n----")
+        printc("\n🎬 Starting video pipeline...", "0FF")
         enableLEDs(100)
         if self.multiviewer:
             await self.createPeer(UUID)
         else:
             for uid in self.clients:
                 if uid != UUID:
-                    print("Consider --multiviewer mode if you need multiple viewers")
+                    printc("⚠️  New viewer replacing previous one (use --multiviewer for multiple viewers)", "F70")
                     self.stop_pipeline(uid)
                     break
             if self.save_file:
@@ -1633,13 +1662,18 @@ class WebRTCClient:
             await self.createPeer(UUID)
 
     def stop_pipeline(self, UUID):
-        print("STOP PIPE")
-        if not self.multiviewer:
-            if UUID in self.clients:
-                del self.clients[UUID]
-        elif UUID in self.clients:
-            atee = self.pipe.get_by_name('audiotee')
-            vtee = self.pipe.get_by_name('videotee')
+        printc("🛑 Stopping pipeline for viewer", "F77")
+        with self.pipeline_lock:
+            if UUID not in self.clients:
+                print(f"Client {UUID} not found in clients list")
+                return
+                
+            if not self.multiviewer:
+                if UUID in self.clients:
+                    del self.clients[UUID]
+            elif UUID in self.clients:
+                atee = self.pipe.get_by_name('audiotee')
+                vtee = self.pipe.get_by_name('videotee')
 
             # Unlink elements before cleanup to prevent dangling references
             try:
@@ -1656,15 +1690,28 @@ class WebRTCClient:
 
             # CRITICAL: Set elements to NULL state BEFORE removing from pipeline
             # This prevents segfaults during cleanup
-            if self.clients[UUID]['webrtc'] is not None:
-                self.clients[UUID]['webrtc'].set_state(Gst.State.NULL)
-                self.pipe.remove(self.clients[UUID]['webrtc'])
-            if self.clients[UUID]['qa'] is not None:
-                self.clients[UUID]['qa'].set_state(Gst.State.NULL)
-                self.pipe.remove(self.clients[UUID]['qa'])
-            if self.clients[UUID]['qv'] is not None:
-                self.clients[UUID]['qv'].set_state(Gst.State.NULL)
-                self.pipe.remove(self.clients[UUID]['qv'])
+            try:
+                if self.clients[UUID]['webrtc'] is not None:
+                    self.clients[UUID]['webrtc'].set_state(Gst.State.NULL)
+                    self.pipe.remove(self.clients[UUID]['webrtc'])
+            except Exception as e:
+                printwarn(f"Failed to cleanup webrtc element: {e}")
+                
+            try:
+                if self.clients[UUID]['qa'] is not None:
+                    self.clients[UUID]['qa'].set_state(Gst.State.NULL)
+                    self.pipe.remove(self.clients[UUID]['qa'])
+            except Exception as e:
+                printwarn(f"Failed to cleanup audio queue: {e}")
+                
+            try:
+                if self.clients[UUID]['qv'] is not None:
+                    self.clients[UUID]['qv'].set_state(Gst.State.NULL)
+                    self.pipe.remove(self.clients[UUID]['qv'])
+            except Exception as e:
+                printwarn(f"Failed to cleanup video queue: {e}")
+                
+            # Always remove from clients dict, even if cleanup failed
             del self.clients[UUID]
 
         if len(self.clients)==0:
@@ -1674,13 +1721,82 @@ class WebRTCClient:
             if self.save_file:
                 pass
             elif len(self.clients)==0:
-                self.pipe.set_state(Gst.State.NULL)
-                self.pipe = None
+                # Ensure pipeline is properly cleaned up when no clients remain
+                try:
+                    self.pipe.set_state(Gst.State.PAUSED)
+                    self.pipe.get_state(Gst.CLOCK_TIME_NONE)
+                    self.pipe.set_state(Gst.State.NULL)
+                    self.pipe.get_state(Gst.CLOCK_TIME_NONE)
+                except Exception as e:
+                    printwarn(f"Error setting pipeline to NULL: {e}")
+                    # Force cleanup even if state change failed
+                    try:
+                        self.pipe.set_state(Gst.State.NULL)
+                    except:
+                        pass
+                finally:
+                    # Always clear the pipeline reference to prevent reuse
+                    self.pipe = None
+
+    async def cleanup_pipeline(self):
+        """Safely cleanup pipeline and all resources"""
+        async with self.cleanup_lock:
+            printc("🧹 Cleaning up pipeline and resources...", "FF0")
+            
+            # Stop all client connections first
+            client_uuids = list(self.clients.keys())
+            for uuid in client_uuids:
+                try:
+                    self.stop_pipeline(uuid)
+                except Exception as e:
+                    printwarn(f"Error stopping client {uuid}: {e}")
+            
+            # Clean up main pipeline
+            if self.pipe:
+                try:
+                    # First set to PAUSED to stop data flow
+                    self.pipe.set_state(Gst.State.PAUSED)
+                    # Wait for state change to complete
+                    self.pipe.get_state(Gst.CLOCK_TIME_NONE)
+                    # Then set to NULL to release resources
+                    self.pipe.set_state(Gst.State.NULL)
+                    # Wait for NULL state
+                    self.pipe.get_state(Gst.CLOCK_TIME_NONE)
+                    printc("   └─ ✅ Pipeline cleaned up successfully", "0F0")
+                except Exception as e:
+                    printwarn(f"Error cleaning up pipeline: {e}")
+                    # Force cleanup even if state change failed
+                    try:
+                        self.pipe.set_state(Gst.State.NULL)
+                    except:
+                        pass
+                finally:
+                    # Always clear the pipeline reference to prevent reuse
+                    self.pipe = None
+            
+            # Close websocket connection
+            if self.conn:
+                try:
+                    await self.conn.close()
+                    self.conn = None
+                except Exception as e:
+                    printwarn(f"Error closing websocket: {e}")
 
     async def loop(self):
         assert self.conn
         printc("✅ WebSocket ready", "0F0")
-        async for message in self.conn:
+        
+        # Check for shutdown periodically
+        while not self._shutdown_requested:
+            try:
+                # Wait for message with timeout to check shutdown flag
+                message = await asyncio.wait_for(self.conn.recv(), timeout=1.0)
+            except asyncio.TimeoutError:
+                # Check shutdown flag periodically
+                continue
+            except websockets.exceptions.ConnectionClosed:
+                break
+                
             try:
                 msg = json.loads(message)
                 if 'from' in msg:
@@ -1744,17 +1860,17 @@ class WebRTCClient:
                     if 'type' in msg:
                         if msg['type'] == "offer":
                             if self.streamin:
-                                printwin("incoming offer")
+                                printc("📥 Incoming connection offer", "0FF")
                                 await self.start_pipeline(UUID)
                                 self.handle_offer(msg, UUID)
                             else:
                                 printc("We don't support two-way video calling yet. ignoring remote offer.", "399")
                                 continue
                         elif msg['type'] == "answer":
-                            printwin("incoming answer")
+                            printc("🤝 Connection accepted", "0F0")
                             self.handle_sdp_ice(msg, UUID)
                 elif 'candidates' in msg:
-                    print("ice candidates BUNDLE via WSS")
+                    # Processing ICE candidates bundle via websocket
                     
                     if 'vector' in msg:
                         decryptedJson = decrypt_message(msg['candidates'], msg['vector'], self.password+self.salt)
@@ -1766,14 +1882,15 @@ class WebRTCClient:
                     else:
                         printc("Warning: Expected a list of candidates","F00")
                 elif 'candidate' in msg:
-                    print("ice candidate SINGLE via WSS")
+                    # Processing single ICE candidate via websocket
                     if 'vector' in msg:
                         decryptedJson = decrypt_message(msg['candidate'], msg['vector'], self.password+self.salt)
                         msg['candidate'] = json.loads(decryptedJson)
                     
                     self.handle_sdp_ice(msg, UUID)
                 elif 'request' in msg:
-                    print("REQUEST via WSS: ", msg['request'])
+                    if msg['request'] not in ['play', 'offerSDP', 'cleanup', 'bye', 'videoaddedtoroom']:
+                        printc(f"📨 Request: {msg['request']}", "77F")
                     if 'offerSDP' in  msg['request']:
                         await self.start_pipeline(UUID)
                     elif msg['request'] == 'cleanup' or msg['request'] == 'bye':
@@ -1781,7 +1898,7 @@ class WebRTCClient:
                         if self.room_recording and UUID in self.room_streams:
                             await self.cleanup_room_stream(UUID)
                     elif msg['request'] == "play":
-                        printwin("play requested")
+                        # Play request received
                         if 'streamID' in msg:
                             if msg['streamID'] == self.stream_id+self.hashcode:
                                 await self.start_pipeline(UUID)
@@ -2993,9 +3110,24 @@ async def main():
             if not args.nvidiacsi and not args.record:
                 print("\nTip: If using the Nvidia CSI camera, you'll want to use --nvidiacsi to enable it.\n")
     
+    # Detect Raspberry Pi model for optimal defaults
+    pi_model = get_raspberry_pi_model()
+    
+    # Auto-adjust resolution for Raspberry Pi models if using defaults
+    # Only apply to software encoding scenarios (when NOT using --rpi)
+    if pi_model > 0 and pi_model <= 4 and args.width == 1920 and args.height == 1080 and not args.rpi:
+        # RPi 4 and older struggle with 1080p30 in SOFTWARE encoding
+        args.width = 1280
+        args.height = 720
+        printc(f"\n📺 Raspberry Pi {pi_model} detected (software encoding mode)", "0FF")
+        printc("   ├─ Defaulting to 720p (1280x720) for better performance", "FF0")
+        printc("   ├─ Software encoding struggles with 1080p on RPi 4 and older", "FFF")
+        printc("   ├─ Override with: --width 1920 --height 1080", "FFF")
+        printc("   └─ Or use --rpi for hardware encoding at 1080p", "0F0")
+        print("")  # Add spacing
+    
     # Check if we're on a Raspberry Pi 5 and handle --rpi parameter
     if args.rpi:
-        pi_model = get_raspberry_pi_model()
         if pi_model == 5:
             print("\n⚠️  WARNING: Raspberry Pi 5 detected!")
             print("The Raspberry Pi 5 does not have hardware video encoding (no v4l2h264enc or omxh264enc).")
@@ -3778,17 +3910,68 @@ async def main():
     if args.record_room:
         stats_task = asyncio.create_task(c.display_room_stats())
     
-    while True:
-        try:
-            await c.connect()
-            res = await c.loop()
-        except KeyboardInterrupt:
-            printc("\n👋 Shutting down gracefully...", "0FF")
-            break
-        except Exception as e:
-            printc(f"⚠️  Connection error: {e}", "F77")
-            # WebSocket reconnection - peer connections remain active
-            await asyncio.sleep(5)
+    # Setup signal handlers for graceful shutdown
+    shutdown_event = asyncio.Event()
+    
+    def signal_handler(signum, frame):
+        if not shutdown_event.is_set():
+            printc("\n🛑 Received interrupt signal, shutting down gracefully...", "F70")
+            shutdown_event.set()
+            c._shutdown_requested = True
+    
+    # Set up signal handlers
+    original_sigint = signal.signal(signal.SIGINT, signal_handler)
+    original_sigterm = signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Also handle SIGTSTP (Ctrl+Z) to prevent suspension with camera locked
+    def sigtstp_handler(signum, frame):
+        printc("\n⚠️  Process suspension (Ctrl+Z) not recommended with active camera!", "F70")
+        printc("   Use Ctrl+C for graceful shutdown instead.", "F70")
+        # Still allow suspension but warn the user
+        signal.signal(signal.SIGTSTP, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGTSTP)
+    
+    signal.signal(signal.SIGTSTP, sigtstp_handler)
+    
+    # Add shutdown flag to client
+    c._shutdown_requested = False
+    
+    # Create tasks for main loop and shutdown monitoring
+    async def run_client():
+        while not shutdown_event.is_set():
+            try:
+                await c.connect()
+                res = await c.loop()
+            except Exception as e:
+                if shutdown_event.is_set():
+                    break
+                printc(f"⚠️  Connection error: {e}", "F77")
+                # WebSocket reconnection - peer connections remain active
+                await asyncio.sleep(5)
+    
+    # Run client and wait for shutdown
+    client_task = asyncio.create_task(run_client())
+    
+    try:
+        # Wait for shutdown signal
+        await shutdown_event.wait()
+    except KeyboardInterrupt:
+        printc("\n👋 Shutting down gracefully...", "0FF")
+        shutdown_event.set()
+    
+    # Cancel client task
+    client_task.cancel()
+    try:
+        await client_task
+    except asyncio.CancelledError:
+        pass
+    
+    # Ensure cleanup is called
+    await c.cleanup_pipeline()
+    
+    # Restore original signal handlers
+    signal.signal(signal.SIGINT, original_sigint)
+    signal.signal(signal.SIGTERM, original_sigterm)
     
     # Cancel stats task if running
     if stats_task:
@@ -3802,8 +3985,15 @@ async def main():
     if c.shared_memory:
         c.shared_memory.close()
         c.shared_memory.unlink()
-    sys.exit(res)
+    sys.exit(0)
     return
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        printc("\n🛑 Process interrupted", "F70")
+        sys.exit(0)
+    except Exception as e:
+        printc(f"\n❌ Fatal error: {e}", "F00")
+        sys.exit(1)
