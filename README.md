@@ -5,11 +5,13 @@ Turn your Raspberry Pi, Nvidia Jetson, Orange Pi, Windows PC, Mac, Linux box, or
 
 <img src='https://github.com/steveseguin/raspberry_ninja/assets/2575698/0b3c7140-5aed-4b21-babb-3c842e2bc010' width="400">    <img src='https://github.com/steveseguin/raspberry_ninja/assets/2575698/cf301391-0375-45c9-bb1c-d665dd0fe1bb' width="400">
 
-It also has the ability to record remote VDO.Ninja streams to disk (no transcode step), it can broadcast a low-latency video stream to multiple viewers (with a built-in SFU) at time, and because it works with VDO.Ninja, you get access to its ecosystem and related features. There are other cool things available, such as AV1 support, NDI output, OpenCV output, WHIP, and fdsink output.
+It also has the ability to record remote VDO.Ninja streams to disk (no transcode step), record multiple room participants simultaneously, broadcast a low-latency video stream to multiple viewers (with a built-in SFU), and because it works with VDO.Ninja, you get access to its ecosystem and related features. There are other cool things available, such as AV1 support, NDI output, OpenCV output, WHIP, and fdsink output.
 
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 **Table of Contents**
+
+- [Documentation](#documentation)
 
 - [Preface](#preface)
 - [Install options](#install-options)
@@ -243,6 +245,10 @@ options:
   --record RECORD       Specify a stream ID to record to disk. System will not publish a stream when enabled.
   --view VIEW           Specify a stream ID to play out to the local display/audio.
   --save                Save a copy of the outbound stream to disk. Publish Live + Store the video.
+  --record-room         Record all streams in a room to separate files. Requires --room parameter.
+  --record-streams RECORD_STREAMS
+                        Comma-separated list of stream IDs to record from a room. Optional filter for --record-room.
+  --room-ndi            Relay all room streams to NDI as separate sources. Requires --room parameter.
   --midi                Transparent MIDI bridge mode; no video or audio.
   --filesrc FILESRC     Provide a media file (local file location) as a source instead of physical device; it can be a
                         transparent webm or whatever. It will be transcoded, which offers the best results.
@@ -256,7 +262,7 @@ options:
   --framebuffer FRAMEBUFFER
                         VDO.Ninja to local frame buffer; performant and Numpy/OpenCV friendly
   --debug               Show added debug information from Gsteamer and other aspects of the app
-  --buffer BUFFER       The jitter buffer latency in milliseconds; default is 200ms. (gst +v1.18)
+  --buffer BUFFER       The jitter buffer latency in milliseconds; default is 200ms, minimum is 10ms. (gst +v1.18)
   --password [PASSWORD]
                         Specify a custom password. If setting to false, password/encryption will be disabled.
   --hostname HOSTNAME   Your URL for vdo.ninja, if self-hosting the website code
@@ -297,6 +303,13 @@ alsa_input.platform-sound.analog-stereo
 In this example, an HDMI audio source is the first in the list, so that is our device name. Your device name will likely vary.
 
 Pulse audio and ALSA audio command-line arguments can be passed to setup audio, without needing to tweak Gstreamer pipelines manually. The defaults I think will use the system ALSA default device.
+
+## Documentation
+
+- [Quick Start Guide](QUICK_START.md) - Common commands and examples
+- [Room Recording Feature](ROOM_RECORDING.md) - Record multiple participants in a room
+- [Troubleshooting Guide](TROUBLESHOOTING.md) - Common issues and solutions
+- [Discord Support](https://discord.vdo.ninja) - Get help from the community
 
 ## How to Run:
 
@@ -406,7 +419,9 @@ If nothing happens when you run `python3 publish.py --ndiout someTestStream123`,
 
 NDI support should be something you can get working on vanilla Ubuntu and MacOS as well, but I don't have an install script for that yet.
 
-Note: NDI support for publishing is yet to be added.  H264/OPUS is tested mainly.
+Note: NDI support for publishing is yet to be added. H264/OPUS is tested mainly.
+
+**Important:** The `--record-room` and `--room-ndi` features require a VDO.Ninja-compatible server that tracks room membership. These features will not work with custom websocket relay servers (when using `--puuid`).
 
 ### OpenCV / Tensorflow / FFMPEG / FDSink / Framebuffer support
 

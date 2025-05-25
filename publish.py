@@ -306,6 +306,14 @@ class WebRTCClient:
         self.socketport = params.socketport
         self.socket = None
         
+        # Room recording parameters
+        self.room_recording = getattr(params, 'room_recording', False)
+        self.record_room = getattr(params, 'record_room', False)
+        self.room_ndi = getattr(params, 'room_ndi', False)
+        self.stream_filter = getattr(params, 'stream_filter', None)
+        self.room_streams = {}  # Track all streams in the room
+        self.room_streams_lock = asyncio.Lock()  # Lock for thread-safe access
+        
         try:
             if self.password:
                 parsed_url = urlparse(self.hostname)
@@ -343,7 +351,7 @@ class WebRTCClient:
             printwarn(get_exception_info(E))
 
     async def connect(self):
-        print("Connecting to handshake server")
+        printc("🔌 Connecting to handshake server...", "0FF")
         
         # Convert wss:// to ws:// for no-SSL attempt
         ws_server = self.server.replace('wss://', 'ws://') if self.server.startswith('wss://') else self.server
@@ -357,7 +365,7 @@ class WebRTCClient:
         last_exception = None
         for create_ssl_context, context_type, server_url in connection_attempts:
             try:
-                print(f"Attempting connection with {context_type} to {server_url}")
+                printc(f"   ├─ Trying {context_type} to {server_url}", "FFF")
                 ssl_context = create_ssl_context()
                 if ssl_context:
                     ssl_context.check_hostname = False
@@ -368,11 +376,11 @@ class WebRTCClient:
                     ssl=ssl_context,
                     ping_interval=None
                 )
-                print(f"Connected successfully using {context_type}")
+                printc(f"   └─ ✅ Connected successfully!", "0F0")
                 break
             except Exception as e:
                 last_exception = e
-                print(f"Failed {context_type} connection: {str(e)}")
+                printc(f"   ├─ ❌ {context_type} failed: {str(e)}", "F00")
                 continue
         
         if not self.conn:
@@ -551,7 +559,7 @@ class WebRTCClient:
         self.processing = False
         return False    
    
-    def on_incoming_stream(self, _, pad):
+    def on_incoming_stream(self, webrtc, pad):
         try:
             if Gst.PadDirection.SRC != pad.direction:
                 print("pad direction wrong?")
@@ -559,6 +567,29 @@ class WebRTCClient:
             caps = pad.get_current_caps()
             name = caps.to_string()
             print(f"Incoming stream caps: {name}")
+            
+            # In room recording mode, find the client from webrtc element
+            if self.room_recording:
+                # Find which client this webrtc belongs to
+                client = None
+                client_uuid = None
+                for uuid, c in self.clients.items():
+                    if c.get('webrtc') == webrtc:
+                        client = c
+                        client_uuid = uuid
+                        break
+                
+                if client and client_uuid:
+                    # Add streamID to client if not present
+                    if 'streamID' not in client and client_uuid in self.room_streams:
+                        client['streamID'] = self.room_streams[client_uuid]['streamID']
+                    
+                    self.on_new_stream_room(client, pad)
+                    return
+                else:
+                    printc("Warning: Could not find client for webrtc element", "F00")
+                    if self.puuid:
+                        printc("This may occur with custom websocket servers that don't provide proper stream metadata", "F77")
             if self.ndiout:
                 print("NDI OUT")
                 ndi_combiner = self.pipe.get_by_name("ndi_combiner")
@@ -867,11 +898,10 @@ class WebRTCClient:
                         pad.link(sink)
                     else:
                         if "VP8" in name:
-                            out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! mpegtsmux name=mux1 ! queue !"
-            + "hlssink name=hlssink max-files=0 "
-            + "target-duration=10 playlist-length=0 "
-            + "location=" + "./" + self.streamin + "_"+str(int(time.time()))+"_segment_%05d.ts "
-            + "playlist-location=" + "./" + self.streamin + "_"+str(int(time.time()))+".video.m3u8 " , True)
+                            # VP8 recording - save as webm file
+                            out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! webmmux name=mux1 ! "
+            + "filesink name=filesink "
+            + "location=" + "./" + self.streamin + "_"+str(int(time.time()))+".webm", True)
 
                         elif "H264" in name:
                             out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! mpegtsmux name=mux1 ! queue ! "
@@ -884,7 +914,7 @@ class WebRTCClient:
                         out.sync_state_with_parent()
                         sink = out.get_static_pad('sink')
                         pad.link(sink)
-                    print("success video?")
+                    printc("   ✅ Video recording configured", "0F0")
 
                 if self.framebuffer:
                     frame_shape = (720, 1280, 3)
@@ -940,19 +970,44 @@ class WebRTCClient:
                     
                 else:
                 
-                    if self.pipe.get_by_name('filesink'):
-                        print("Audio being added after video")
-                        if "OPUS" in name:
-                            out = Gst.parse_bin_from_description("queue rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,channels=2,rate=48000", True)
-                            
-                        self.pipe.add(out)
-                        out.sync_state_with_parent()
-                        sink = out.get_static_pad('sink')
-                        out.link(self.pipe.get_by_name('filesink'))
-                        pad.link(sink)
+                    # Check if we have a muxer already (video came first)
+                    mux = self.pipe.get_by_name('mux1')
+                    if mux:
+                        printc("   📼 Checking muxer compatibility...", "FFF")
+                        mux_name = mux.get_factory().get_name()
                         
-                    else:
-                        print("audio being saved...")
+                        if "OPUS" in name:
+                            if mux_name == 'webmmux':
+                                # WebM can handle Opus directly
+                                out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse", True)
+                                self.pipe.add(out)
+                                out.sync_state_with_parent()
+                                
+                                # Get source pad from audio pipeline
+                                src_pad = out.get_static_pad('src')
+                                # WebM uses audio_%u for audio pads
+                                audio_pad = mux.get_request_pad('audio_%u')
+                                if audio_pad:
+                                    src_pad.link(audio_pad)
+                                    sink = out.get_static_pad('sink')
+                                    pad.link(sink)
+                                    printc("   ✅ Audio muxed with video in WebM file", "0F0")
+                                    return  # Important: return after successful muxing
+                                else:
+                                    print("Failed to get audio pad from WebM muxer")
+                                    self.pipe.remove(out)
+                                    mux = None  # Fall through to separate file
+                            elif mux_name == 'mpegtsmux':
+                                # MPEG-TS needs AAC audio, not Opus
+                                # For now, create separate audio file for H264/HLS
+                                printc("      └─ H264/HLS detected - audio will record separately", "FF0")
+                                mux = None  # Fall through to separate file
+                            else:
+                                print(f"Unknown muxer type: {mux_name} - creating separate audio file")
+                                mux = None  # Fall through to separate file
+                    
+                    if not mux:  # No muxer or incompatible muxer
+                        printc("   📼 Recording audio to separate file...", "FFF")
                         if "OPUS" in name:
                             out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,rate=48000 ! mpegtsmux name=mux2 ! queue ! multifilesink name=filesinkaudio sync=true location="+self.streamin+"_"+str(int(time.time()))+"_audio.%02d.ts next-file=5 max-file-duration="+str(10*Gst.SECOND), True)
 
@@ -961,10 +1016,10 @@ class WebRTCClient:
                         sink = out.get_static_pad('sink')
                         pad.link(sink)
                         
-                print("success audio?")
+                printc("   ✅ Audio recording configured", "0F0")
 
         except Exception as E:
-            print("============= ERROR =========")
+            printc("\n❌ Error during stream setup:", "F00")
             printwarn(get_exception_info(E))
 
             traceback.print_exc()
@@ -1100,12 +1155,12 @@ class WebRTCClient:
                 self.stop_pipeline(client['UUID'])
 
         def on_data_channel(webrtc, channel):
-            print("    --------- ON DATA CHANNEL")
+            printc("   📡 Data channel event", "FFF")
             if channel is None:
-                print('DATA CHANNEL: NOT AVAILABLE')
+                printc('      └─ No data channel available', "F44")
                 return
             else:
-                print('DATA CHANNEL SETUP')
+                printc('      └─ Data channel setup', "0F0")
             channel.connect('on-open', on_data_channel_open)
             channel.connect('on-error', on_data_channel_error)
             channel.connect('on-close', on_data_channel_close)
@@ -1191,18 +1246,10 @@ class WebRTCClient:
                 vdo2midi(msg['midi'])
             elif 'bitrate' in msg:
                 printin("bitrate msg")
-                if client['encoder'] and msg['bitrate']:
+                if msg['bitrate']:
                     print("Trying to change bitrate...")
-                    if self.aom:
-                        print("Aom doesn't support dynamic bitrates currently")
-                        pass
-                    else:
-                        try:
-                            client['encoder'].set_property('bitrate', int(msg['bitrate'])*1000)
-                        except Exception as E:
-                            printwarn(get_exception_info(E))
-
-                            pass
+                    # VDO.Ninja sends bitrate in kbps
+                    self.set_encoder_bitrate(client, int(msg['bitrate']))
             else:
                 printin("MISC DC DATA")
                 return
@@ -1291,78 +1338,37 @@ class WebRTCClient:
             stats = stats.split("fraction-lost=(double)")
             if (len(stats)>1):
                 stats = stats[1].split(",")[0]
-                print("Packet loss:"+stats)
+                printc(f"📊 Packet loss: {stats}", "FFF")
                 if " vp8enc " in self.pipeline: # doesn't support dynamic bitrates? not sure the property to use at least
                     return
                 elif " av1enc " in self.pipeline: # seg-fault if I try to change it currently
                     return
                 stats = float(stats)
                 if (stats>0.01) and not self.noqos:
-                    print("Trying to reduce change bitrate...")
                     bitrate = self.bitrate*0.9
                     if bitrate < self.max_bitrate*0.2:
                         bitrate = self.max_bitrate*0.2
                     elif bitrate > self.max_bitrate*0.8:
                         bitrate = self.bitrate*0.9
                     self.bitrate = bitrate
-                    print(str(bitrate))
-                    try:
-                        if self.aom:
-                            client['encoder'].set_property('target-bitrate', int(bitrate))  # line not active due to 'elif " av1enc " in self.pipeline:' line
-                        elif " mpph265enc " in self.pipeline or (client['encoder'] and client['encoder'].get_name().startswith('mpph265enc')):
-                            # For mpph265enc, use bps instead of bitrate
-                            client['encoder'].set_property('bps', int(bitrate*1000))
-                        elif " mppvp8enc " in self.pipeline or (client['encoder'] and client['encoder'].get_name().startswith('mppvp8enc')):
-                            # For mppvp8enc, use bps instead of bitrate
-                            client['encoder'].set_property('bps', int(bitrate*1000))   
-                        elif " x265enc " in self.pipeline or (client['encoder'] and client['encoder'].get_name().startswith('x265enc')):
-                            client['encoder'].set_property('bitrate', int(bitrate))
-                        elif client['encoder']:
-                            client['encoder'].set_property('bitrate', int(bitrate*1000))
-                        elif client['encoder1']:
-                            client['encoder1'].set_property('bitrate', int(bitrate))
-                        elif client['encoder2']:
-                            pass
-
-                    except Exception as E:
-                        printwarn(get_exception_info(E))
+                    printc(f"   └─ Reducing bitrate to {int(bitrate)} kbps (packet loss detected)", "FF0")
+                    self.set_encoder_bitrate(client, int(bitrate))
 
                 elif (stats<0.003) and not self.noqos:
-                    print("Trying to increase change bitrate...")
                     bitrate = self.bitrate*1.05
                     if bitrate>self.max_bitrate:
                         bitrate = self.max_bitrate
                     elif bitrate*2<self.max_bitrate:
                         bitrate = self.bitrate*1.05
                     self.bitrate = bitrate
-                    print(str(bitrate))
-                    try:
-                        if self.aom:
-                            client['encoder'].set_property('target-bitrate', int(bitrate))  # line not active due to 'elif " av1enc " in self.pipeline:' line
-                        elif " mpph265enc " in self.pipeline or (client['encoder'] and client['encoder'].get_name and client['encoder'].get_name().startswith('mpph265enc')):
-                            # For mpph265enc, use bps instead of bitrate
-                            client['encoder'].set_property('bps', int(bitrate*1000))
-                        elif " mppvp8enc " in self.pipeline or (client['encoder'] and client['encoder'].get_name and client['encoder'].get_name().startswith('mppvp8enc')):
-                            # For mppvp8enc, use bps instead of bitrate
-                            client['encoder'].set_property('bps', int(bitrate*1000))    
-                            
-                            
-                        elif " x265enc " in self.pipeline or (client['encoder'] and client['encoder'].get_name and client['encoder'].get_name().startswith('x265enc')):
-                            client['encoder'].set_property('bitrate', int(bitrate))
-                        elif client['encoder']:
-                            client['encoder'].set_property('bitrate', int(bitrate*1000))
-                        elif client['encoder1']:
-                            client['encoder1'].set_property('bitrate', int(bitrate))
-                        elif client['encoder2']:
-                            pass
-                    except Exception as E:
-                        printwarn(get_exception_info(E))
+                    printc(f"   └─ Increasing bitrate to {int(bitrate)} kbps (good connection)", "0F0")
+                    self.set_encoder_bitrate(client, int(bitrate))
 
-        print("creating a new webrtc bin")
+        printc("🔧 Creating WebRTC pipeline...", "0FF")
 
         started = True
         if not self.pipe:
-            print("loading pipe")
+            printc("   └─ Loading pipeline configuration...", "FFF")
 
             if self.streamin:
                 self.pipe = Gst.Pipeline.new('decode-pipeline') ## decode or capture
@@ -1398,7 +1404,9 @@ class WebRTCClient:
             self.setup_ice_servers(client['webrtc'])
             
             try:
-                client['webrtc'].set_property('latency', self.buffer)
+                # Ensure minimum latency to prevent crashes
+                buffer_ms = max(self.buffer, 10)
+                client['webrtc'].set_property('latency', buffer_ms)
                 client['webrtc'].set_property('async-handling', True)
             except Exception as E:
                 pass
@@ -1423,7 +1431,9 @@ class WebRTCClient:
             self.setup_ice_servers(client['webrtc'])
             
             try:
-                client['webrtc'].set_property('latency', self.buffer)
+                # Ensure minimum latency to prevent crashes
+                buffer_ms = max(self.buffer, 10)
+                client['webrtc'].set_property('latency', buffer_ms)
                 client['webrtc'].set_property('async-handling', True)
             except Exception as E:
                 pass
@@ -1469,7 +1479,9 @@ class WebRTCClient:
             pass
 
         if self.streamin:
-            client['webrtc'].connect('pad-added', self.on_incoming_stream)
+            # For room recording, we need to be able to map webrtc back to client
+            # Use a lambda to pass the client UUID
+            client['webrtc'].connect('pad-added', lambda webrtc, pad: self.on_incoming_stream(webrtc, pad))
             client['webrtc'].connect('on-ice-candidate', send_ice_remote_candidate_message)
             client['webrtc'].connect('on-data-channel', on_data_channel)
         else:
@@ -1581,25 +1593,42 @@ class WebRTCClient:
                 pass
             elif self.pipe:
                 print("setting pipe to null")
-                self.pipe.set_state(Gst.State.NULL)
-                self.pipe = None
-
+                
                 if UUID in self.clients:
                     print("Resetting existing pipe and p2p connection.")
-                    session = self.clients[UUID]["session"]
+                    # Save session before cleanup
+                    session = self.clients[UUID]["session"] if "session" in self.clients[UUID] else None
 
-                    if self.clients[UUID]['timer']:
-                        self.clients[UUID]['timer'].cancel()
-                        print("stop previous ping/pong timer")
+                    # Cancel timer if exists
+                    if 'timer' in self.clients[UUID] and self.clients[UUID]['timer']:
+                        try:
+                            self.clients[UUID]['timer'].cancel()
+                            print("stop previous ping/pong timer")
+                        except:
+                            pass
+                    
+                    # Clean up webrtc element if it exists
+                    if 'webrtc' in self.clients[UUID] and self.clients[UUID]['webrtc']:
+                        try:
+                            self.clients[UUID]['webrtc'].set_state(Gst.State.NULL)
+                        except:
+                            pass
 
+                    # Reset client data
                     self.clients[UUID] = {}
                     self.clients[UUID]["UUID"] = UUID
                     self.clients[UUID]["session"] = session
                     self.clients[UUID]["send_channel"] = None
-
                     self.clients[UUID]["timer"] = None
                     self.clients[UUID]["ping"] = 0
                     self.clients[UUID]["webrtc"] = None
+                
+                # Set pipeline to NULL after cleaning up elements
+                try:
+                    self.pipe.set_state(Gst.State.NULL)
+                except Exception as e:
+                    printwarn(f"Failed to set pipeline to NULL: {e}")
+                self.pipe = None
 
             await self.createPeer(UUID)
 
@@ -1612,20 +1641,30 @@ class WebRTCClient:
             atee = self.pipe.get_by_name('audiotee')
             vtee = self.pipe.get_by_name('videotee')
 
-            if atee is not None and self.clients[UUID]['qa'] is not None:
-                atee.unlink(self.clients[UUID]['qa'])
-            if vtee is not None and self.clients[UUID]['qv'] is not None:
-                vtee.unlink(self.clients[UUID]['qv'])
+            # Unlink elements before cleanup to prevent dangling references
+            try:
+                if atee is not None and self.clients[UUID]['qa'] is not None:
+                    atee.unlink(self.clients[UUID]['qa'])
+            except Exception as e:
+                printwarn(f"Failed to unlink audio queue: {e}")
+                
+            try:
+                if vtee is not None and self.clients[UUID]['qv'] is not None:
+                    vtee.unlink(self.clients[UUID]['qv'])
+            except Exception as e:
+                printwarn(f"Failed to unlink video queue: {e}")
 
+            # CRITICAL: Set elements to NULL state BEFORE removing from pipeline
+            # This prevents segfaults during cleanup
             if self.clients[UUID]['webrtc'] is not None:
-                self.pipe.remove(self.clients[UUID]['webrtc'])
                 self.clients[UUID]['webrtc'].set_state(Gst.State.NULL)
+                self.pipe.remove(self.clients[UUID]['webrtc'])
             if self.clients[UUID]['qa'] is not None:
-                self.pipe.remove(self.clients[UUID]['qa'])
                 self.clients[UUID]['qa'].set_state(Gst.State.NULL)
+                self.pipe.remove(self.clients[UUID]['qa'])
             if self.clients[UUID]['qv'] is not None:
-                self.pipe.remove(self.clients[UUID]['qv'])
                 self.clients[UUID]['qv'].set_state(Gst.State.NULL)
+                self.pipe.remove(self.clients[UUID]['qv'])
             del self.clients[UUID]
 
         if len(self.clients)==0:
@@ -1640,7 +1679,7 @@ class WebRTCClient:
 
     async def loop(self):
         assert self.conn
-        print("WSS CONNECTED")
+        printc("✅ WebSocket ready", "0F0")
         async for message in self.conn:
             try:
                 msg = json.loads(message)
@@ -1661,7 +1700,16 @@ class WebRTCClient:
                     if self.room_name:
                         if 'request' in msg:
                             if msg['request'] == 'listing':
-                                if self.streamin:
+                                # Handle room listing
+                                if 'list' in msg:
+                                    await self.handle_room_listing(msg['list'])
+                                
+                                if self.room_recording:
+                                    # In room recording mode, we'll connect to streams after processing the list
+                                    if not msg.get('list'):
+                                        printc("Warning: Room recording requires a server that provides room listings", "F77")
+                                        printc("Custom websocket servers may not support this feature", "F77")
+                                elif self.streamin:
                                     printwout("play stream")
                                     await self.sendMessageAsync({"request":"play","streamID":self.streamin+self.hashcode})
                                 else:
@@ -1728,6 +1776,10 @@ class WebRTCClient:
                     print("REQUEST via WSS: ", msg['request'])
                     if 'offerSDP' in  msg['request']:
                         await self.start_pipeline(UUID)
+                    elif msg['request'] == 'cleanup' or msg['request'] == 'bye':
+                        # Handle room stream cleanup
+                        if self.room_recording and UUID in self.room_streams:
+                            await self.cleanup_room_stream(UUID)
                     elif msg['request'] == "play":
                         printwin("play requested")
                         if 'streamID' in msg:
@@ -1735,11 +1787,21 @@ class WebRTCClient:
                                 await self.start_pipeline(UUID)
                     elif msg['request'] == "videoaddedtoroom":
                         if 'streamID' in msg:
-                            if self.streamin:
+                            if self.room_recording:
+                                # New stream added to room
+                                stream_id = msg['streamID']
+                                # UUID comes from the message context, not the msg dict
+                                # In custom websocket mode, this event may not be sent
+                                await self.handle_new_room_stream(stream_id, UUID)
+                            elif self.streamin:
                                 printwout("play stream.")
                                 await self.sendMessageAsync({"request":"play","streamID":self.streamin+self.hashcode})
                     elif msg['request'] == 'joinroom':
-                        if self.streamin and self.streamID and (self.streamin+self.hashcode == self.streamID):
+                        if self.room_recording:
+                            # Handle new member joining when we're recording the room
+                            if 'streamID' in msg:
+                                await self.handle_new_room_stream(msg['streamID'], UUID)
+                        elif self.streamin and self.streamID and (self.streamin+self.hashcode == self.streamID):
                             if self.room_hashcode:
                                 printwout("play stream..")
                                 await self.sendMessageAsync({"request":"play","streamID":self.streamin+self.hashcode,"roomid":self.room_hashcode, "UUID":UUID})
@@ -1749,21 +1811,469 @@ class WebRTCClient:
                         else:
                             printwout("seed start")
                             await self.sendMessageAsync({"request":"seed", "streamID":self.stream_id+self.hashcode, "UUID":UUID})
+                    elif msg['request'] == 'someonejoined':
+                        # Handle someone joining the room
+                        if self.room_recording and 'streamID' in msg:
+                            await self.handle_new_room_stream(msg['streamID'], UUID)
                             
                             
             except KeyboardInterrupt:
-                print("Ctrl+C detected. Exiting...")
+                printc("\n👋 Shutting down gracefully...", "0FF")
                 break
 
             except websockets.ConnectionClosed:
-                print("WEB SOCKETS CLOSED; retrying in 5s")
+                printc("⚠️  WebSocket connection lost - reconnecting in 5s...", "F77")
+                # WebSocket closed - exit the message loop but keep peer connections
                 await asyncio.sleep(5)
-                continue
+                break
             except Exception as E:
                 printwarn(get_exception_info(E))
 
 
         return 0
+    
+    async def handle_room_listing(self, room_list):
+        """Handle the initial room listing when joining"""
+        if not room_list:
+            printc("Warning: Empty room list received. Room recording may not work properly.", "F77")
+            if self.puuid:
+                printc("This appears to be a custom websocket server that doesn't provide room listings.", "F77")
+            return
+            
+        printc(f"Room has {len(room_list)} members", "7F7")
+        
+        for member in room_list:
+            if 'UUID' in member and 'streamID' in member:
+                stream_id = member['streamID']
+                uuid = member['UUID']
+                
+                # Check if we should record this stream
+                if self.stream_filter and stream_id not in self.stream_filter:
+                    continue
+                    
+                # Track this stream (thread-safe)
+                async with self.room_streams_lock:
+                    self.room_streams[uuid] = {
+                        'streamID': stream_id,
+                        'recording': False,
+                        'stats': {}
+                    }
+                
+                if self.room_recording:
+                    printc(f"Found stream to record: {stream_id}", "7FF")
+                    # Request to play this stream
+                    await self.sendMessageAsync({
+                        "request": "play",
+                        "streamID": stream_id,
+                        "UUID": uuid
+                    })
+    
+    async def handle_new_room_stream(self, stream_id, uuid):
+        """Handle a new stream that joined the room"""
+        # Check if we should record this stream
+        if self.stream_filter and stream_id not in self.stream_filter:
+            return
+            
+        printc(f"New stream joined room: {stream_id}", "7FF")
+        
+        # Track this stream (thread-safe)
+        async with self.room_streams_lock:
+            self.room_streams[uuid] = {
+                'streamID': stream_id,
+                'recording': False,
+                'stats': {}
+            }
+        
+        if self.room_recording:
+            # Request to play this stream
+            await self.sendMessageAsync({
+                "request": "play",
+                "streamID": stream_id,
+                "UUID": uuid
+            })
+    
+    def on_new_stream_room(self, client, pad):
+        """Handle new stream pad for room recording"""
+        try:
+            name = pad.get_current_caps().get_structure(0).get_name()
+            print(f"New stream pad for {client['streamID']}: {name}")
+            
+            if self.room_ndi:
+                # Setup NDI output for this stream
+                self.setup_room_ndi(client, pad, name)
+            elif "video" in name:
+                self.setup_room_video_recording(client, pad, name)
+            elif "audio" in name:
+                if not self.noaudio:
+                    self.setup_room_audio_recording(client, pad, name)
+        except Exception as e:
+            printc(f"Error handling new stream pad: {e}", "F00")
+            import traceback
+            traceback.print_exc()
+    
+    def setup_room_video_recording(self, client, pad, name):
+        """Setup video recording pipeline for a room stream"""
+        stream_id = client['streamID']
+        timestamp = str(int(time.time()))
+        
+        # Create recording pipeline without transcoding
+        if "H264" in name:
+            # Direct mux H264 to MPEG-TS
+            # Add counter to prevent file collisions
+            filename = f"{self.room_name}_{stream_id}_{timestamp}_{client['UUID'][:8]}.ts"
+            pipeline_str = (
+                f"queue ! rtph264depay ! h264parse ! "
+                f"mpegtsmux name=mux_{client['UUID']} ! "
+                f"filesink location={filename}"
+            )
+        elif "VP8" in name:
+            # Direct mux VP8 to MPEG-TS
+            # Add counter to prevent file collisions
+            filename = f"{self.room_name}_{stream_id}_{timestamp}_{client['UUID'][:8]}.ts"
+            pipeline_str = (
+                f"queue ! rtpvp8depay ! "
+                f"mpegtsmux name=mux_{client['UUID']} ! "
+                f"filesink location={filename}"
+            )
+        else:
+            printc(f"Unknown video codec: {name}", "F00")
+            return
+            
+        out = Gst.parse_bin_from_description(pipeline_str, True)
+        self.pipe.add(out)
+        out.sync_state_with_parent()
+        sink = out.get_static_pad('sink')
+        pad.link(sink)
+        
+        client['video_recording'] = True
+        # Update room stream status (no async context in sync function)
+        # This is OK since GStreamer callbacks are serialized
+        if client['UUID'] in self.room_streams:
+            self.room_streams[client['UUID']]['recording'] = True
+        printc(f"Recording video for stream {stream_id}", "7F7")
+    
+    def setup_room_audio_recording(self, client, pad, name):
+        """Setup audio recording pipeline for a room stream"""
+        if "OPUS" in name:
+            # Check if we already have a mux for this client
+            mux_name = f"mux_{client['UUID']}"
+            mux = self.pipe.get_by_name(mux_name)
+            
+            if mux:
+                # Add audio to existing mux
+                pipeline_str = "queue ! rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,rate=48000"
+                out = Gst.parse_bin_from_description(pipeline_str, True)
+                self.pipe.add(out)
+                out.sync_state_with_parent()
+                
+                # Get source pad from the audio pipeline
+                src_pad = out.get_static_pad('src')
+                # Get audio sink pad from mux
+                audio_pad = mux.get_request_pad('sink_%d')
+                if audio_pad:
+                    src_pad.link(audio_pad)
+                    # Link incoming pad to our pipeline
+                    sink = out.get_static_pad('sink')
+                    pad.link(sink)
+                else:
+                    printc(f"Failed to get audio pad from mux for stream {client['streamID']}", "F00")
+                    return
+                printc(f"Added audio to recording for stream {client['streamID']}", "7F7")
+            else:
+                # Create standalone audio recording
+                stream_id = client['streamID']
+                timestamp = str(int(time.time()))
+                # Add UUID to prevent file collisions
+                filename = f"{self.room_name}_{stream_id}_{timestamp}_{client['UUID'][:8]}_audio.ts"
+                pipeline_str = (
+                    f"queue ! rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,rate=48000 ! "
+                    f"mpegtsmux ! filesink location={filename}"
+                )
+                out = Gst.parse_bin_from_description(pipeline_str, True)
+                self.pipe.add(out)
+                out.sync_state_with_parent()
+                sink = out.get_static_pad('sink')
+                pad.link(sink)
+                printc(f"Recording audio only for stream {client['streamID']}", "7F7")
+    
+    def setup_room_ndi(self, client, pad, name):
+        """Setup NDI output for a room stream"""
+        stream_id = client['streamID']
+        ndi_name = f"{self.room_name}_{stream_id}"
+        
+        # Create individual NDI sink for this stream
+        ndi_sink_name = f"ndi_sink_{client['UUID']}"
+        
+        if "video" in name:
+            # Create NDI sink combiner for this client if not exists
+            ndi_combiner_name = f"ndi_combiner_{client['UUID']}"
+            ndi_combiner = self.pipe.get_by_name(ndi_combiner_name)
+            
+            if not ndi_combiner:
+                ndi_combiner = Gst.ElementFactory.make("ndisinkcombiner", ndi_combiner_name)
+                if not ndi_combiner:
+                    print("Failed to create ndisinkcombiner element")
+                    return
+                
+                # Create NDI sink for this stream
+                ndi_sink = Gst.ElementFactory.make("ndisink", ndi_sink_name)
+                if not ndi_sink:
+                    print("Failed to create ndisink element")
+                    return
+                
+                ndi_sink.set_property("ndi-name", ndi_name)
+                
+                self.pipe.add(ndi_combiner)
+                self.pipe.add(ndi_sink)
+                
+                ndi_combiner.link(ndi_sink)
+                ndi_combiner.sync_state_with_parent()
+                ndi_sink.sync_state_with_parent()
+                
+                client['ndi_combiner'] = ndi_combiner
+                client['ndi_sink'] = ndi_sink
+                printc(f"Created NDI output: {ndi_name}", "7F7")
+            
+            # Process video for NDI
+            if "H264" in name:
+                pipeline_str = "queue ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert"
+            elif "VP8" in name:
+                pipeline_str = "queue ! rtpvp8depay ! vp8dec ! videoconvert"
+            else:
+                printc(f"Unknown video codec for NDI: {name}", "F00")
+                return
+            
+            out = Gst.parse_bin_from_description(pipeline_str, True)
+            self.pipe.add(out)
+            out.sync_state_with_parent()
+            
+            # Link to NDI combiner
+            ndi_pad = ndi_combiner.get_request_pad("video")
+            if ndi_pad:
+                ghost_src = out.get_static_pad("src")
+                ghost_src.link(ndi_pad)
+            
+            sink = out.get_static_pad('sink')
+            pad.link(sink)
+            
+        elif "audio" in name and not self.noaudio:
+            # Get existing NDI combiner for this client
+            ndi_combiner_name = f"ndi_combiner_{client['UUID']}"
+            ndi_combiner = self.pipe.get_by_name(ndi_combiner_name)
+            
+            if ndi_combiner:
+                # Process audio for NDI
+                if "OPUS" in name:
+                    pipeline_str = "queue ! rtpopusdepay ! opusdec ! audioconvert ! audioresample"
+                else:
+                    printc(f"Unknown audio codec for NDI: {name}", "F00")
+                    return
+                
+                out = Gst.parse_bin_from_description(pipeline_str, True)
+                self.pipe.add(out)
+                out.sync_state_with_parent()
+                
+                # Link to NDI combiner
+                ndi_pad = ndi_combiner.get_request_pad("audio")
+                if ndi_pad:
+                    ghost_src = out.get_static_pad("src")
+                    ghost_src.link(ndi_pad)
+                
+                sink = out.get_static_pad('sink')
+                pad.link(sink)
+    
+    async def display_room_stats(self):
+        """Periodically display stats for all room streams"""
+        while True:
+            await asyncio.sleep(10)  # Update every 10 seconds
+            
+            # Check if we're still connected
+            if not hasattr(self, 'conn') or not self.conn or self.conn.closed:
+                break
+                
+            if not self.room_recording or not self.room_streams:
+                continue
+                
+            print("\n" + "="*60)
+            printc(f"Room Recording Status - {len(self.room_streams)} streams", "7FF")
+            print("="*60)
+            
+            for uuid, stream_info in self.room_streams.items():
+                stream_id = stream_info['streamID']
+                status = "Recording" if stream_info.get('recording', False) else "Waiting"
+                
+                # Get stats if available
+                if uuid in self.clients and self.clients[uuid].get('webrtc'):
+                    webrtc = self.clients[uuid]['webrtc']
+                    # TODO: Get actual bitrate/resolution from GStreamer
+                    print(f"  {stream_id}: {status}")
+                else:
+                    print(f"  {stream_id}: {status}")
+            
+            print("="*60 + "\n")
+    
+    def set_encoder_bitrate(self, client, bitrate):
+        """Set bitrate for various encoder types with proper error handling
+        
+        Args:
+            client: The client dictionary containing encoder references
+            bitrate: The target bitrate in kbps (kilobits per second)
+        """
+        try:
+            # Try to re-fetch encoder elements if they're not set or are False
+            if (not client.get('encoder') or client.get('encoder') is False) and \
+               (not client.get('encoder1') or client.get('encoder1') is False) and \
+               (not client.get('encoder2') or client.get('encoder2') is False):
+                try:
+                    enc = self.pipe.get_by_name('encoder')
+                    if enc:
+                        client['encoder'] = enc
+                except:
+                    pass
+                try:
+                    enc1 = self.pipe.get_by_name('encoder1')
+                    if enc1:
+                        client['encoder1'] = enc1
+                except:
+                    pass
+                try:
+                    enc2 = self.pipe.get_by_name('encoder2')
+                    if enc2:
+                        client['encoder2'] = enc2
+                except:
+                    pass
+            # Check each encoder type and use the appropriate property/method
+            if self.aom:
+                if client['encoder']:
+                    client['encoder'].set_property('target-bitrate', int(bitrate))
+                else:
+                    print("AOM encoder not found")
+                    
+            elif " mpph265enc " in self.pipeline or (client['encoder'] and hasattr(client['encoder'], 'get_name') and client['encoder'].get_name() and client['encoder'].get_name().startswith('mpph265enc')):
+                # For mpph265enc, use bps instead of bitrate
+                if client['encoder']:
+                    client['encoder'].set_property('bps', int(bitrate*1000))
+                    
+            elif " mppvp8enc " in self.pipeline or (client['encoder'] and hasattr(client['encoder'], 'get_name') and client['encoder'].get_name() and client['encoder'].get_name().startswith('mppvp8enc')):
+                # For mppvp8enc, use bps instead of bitrate
+                if client['encoder']:
+                    client['encoder'].set_property('bps', int(bitrate*1000))
+                    
+            elif " x265enc " in self.pipeline or (client['encoder'] and hasattr(client['encoder'], 'get_name') and client['encoder'].get_name() and client['encoder'].get_name().startswith('x265enc')):
+                if client['encoder']:
+                    # x265enc uses kbps
+                    client['encoder'].set_property('bitrate', int(bitrate))
+                    
+            elif " x264enc " in self.pipeline:
+                if client.get('encoder1') and client['encoder1'] is not False:
+                    # x264enc uses kbps
+                    client['encoder1'].set_property('bitrate', int(bitrate))
+                    printc(f"Set x264enc bitrate to {bitrate} kbps", "0F0")
+                else:
+                    printc("x264enc detected in pipeline but encoder1 element not found", "F77")
+                    
+            elif client['encoder2']:
+                # v4l2h264enc uses extra-controls, not direct property
+                encoder_name = ""
+                try:
+                    if hasattr(client['encoder2'], 'get_name'):
+                        encoder_name = client['encoder2'].get_name() or ""
+                except:
+                    pass
+                    
+                if "v4l2h264enc" in encoder_name or "v4l2h264enc" in self.pipeline:
+                    # v4l2h264enc doesn't support dynamic bitrate changes via properties
+                    # It requires setting extra-controls at creation time
+                    printc("Warning: v4l2h264enc does not support dynamic bitrate changes", "F77")
+                    printc(f"To change bitrate, restart with --bitrate {int(bitrate)}", "F77")
+                else:
+                    # Try generic bitrate property for unknown encoder2 types
+                    try:
+                        client['encoder2'].set_property('bitrate', int(bitrate*1000))
+                    except:
+                        # Try kbps if bps fails
+                        client['encoder2'].set_property('bitrate', int(bitrate))
+                        
+            elif client['encoder']:
+                # Generic encoder - try bitrate in bps first
+                try:
+                    client['encoder'].set_property('bitrate', int(bitrate*1000))
+                except:
+                    # Fallback to kbps
+                    try:
+                        client['encoder'].set_property('bitrate', int(bitrate))
+                    except Exception as e:
+                        printc(f"Failed to set bitrate on encoder: {e}", "F00")
+                        
+            elif client['encoder1']:
+                # encoder1 typically uses kbps
+                client['encoder1'].set_property('bitrate', int(bitrate))
+                
+            else:
+                # More informative message about encoder state
+                encoder_info = []
+                if 'encoder' in client:
+                    encoder_info.append(f"encoder={client.get('encoder', 'not found')}")
+                if 'encoder1' in client:
+                    encoder_info.append(f"encoder1={client.get('encoder1', 'not found')}")
+                if 'encoder2' in client:
+                    encoder_info.append(f"encoder2={client.get('encoder2', 'not found')}")
+                
+                if encoder_info:
+                    printc(f"No valid encoder found to set bitrate. Encoder state: {', '.join(encoder_info)}", "F77")
+                else:
+                    printc("No encoder elements found in client object", "F77")
+                
+        except Exception as E:
+            printwarn(f"Failed to set encoder bitrate: {get_exception_info(E)}")
+            # Don't crash - just log the error
+    
+    async def cleanup_room_stream(self, uuid):
+        """Clean up resources for a disconnected room stream"""
+        async with self.room_streams_lock:
+            if uuid not in self.room_streams:
+                return
+                
+            stream_info = self.room_streams[uuid]
+            stream_id = stream_info['streamID']
+            printc(f"Cleaning up stream {stream_id}", "F77")
+            
+            # Remove from tracking
+            del self.room_streams[uuid]
+            
+        # Clean up any recording pipelines
+        if uuid in self.clients:
+            client = self.clients[uuid]
+            
+            # Remove any mux elements
+            mux_name = f"mux_{uuid}"
+            mux = self.pipe.get_by_name(mux_name)
+            if mux:
+                mux.set_state(Gst.State.NULL)
+                self.pipe.remove(mux)
+                
+            # Remove any NDI elements
+            if self.room_ndi:
+                ndi_combiner_name = f"ndi_combiner_{uuid}"
+                ndi_sink_name = f"ndi_sink_{uuid}"
+                
+                ndi_combiner = self.pipe.get_by_name(ndi_combiner_name)
+                if ndi_combiner:
+                    ndi_combiner.set_state(Gst.State.NULL)
+                    self.pipe.remove(ndi_combiner)
+                    
+                ndi_sink = self.pipe.get_by_name(ndi_sink_name)
+                if ndi_sink:
+                    ndi_sink.set_state(Gst.State.NULL)
+                    self.pipe.remove(ndi_sink)
+            
+            # Close the webrtc connection
+            if 'webrtc' in client and client['webrtc']:
+                client['webrtc'].set_state(Gst.State.NULL)
+                self.pipe.remove(client['webrtc'])
+                
+            # Remove from clients
+            del self.clients[uuid]
 
 def check_plugins(needed, require=False):
     if isinstance(needed, str):
@@ -2303,6 +2813,9 @@ async def main():
     parser.add_argument('--record',  type=str, help='Specify a stream ID to record to disk. System will not publish a stream when enabled.')
     parser.add_argument('--view',  type=str, help='Specify a stream ID to play out to the local display/audio.')
     parser.add_argument('--save', action='store_true', help='Save a copy of the outbound stream to disk. Publish Live + Store the video.')
+    parser.add_argument('--record-room', action='store_true', help='Record all streams in a room to separate files. Requires --room parameter.')
+    parser.add_argument('--record-streams', type=str, help='Comma-separated list of stream IDs to record from a room. Optional filter for --record-room.')
+    parser.add_argument('--room-ndi', action='store_true', help='Relay all room streams to NDI as separate sources. Requires --room parameter.')
     parser.add_argument('--midi', action='store_true', help='Transparent MIDI bridge mode; no video or audio.')
     parser.add_argument('--filesrc', type=str, default=None,  help='Provide a media file (local file location) as a source instead of physical device; it can be a transparent webm or whatever. It will be transcoded, which offers the best results.')
     parser.add_argument('--filesrc2', type=str, default=None,  help='Provide a media file (local file location) as a source instead of physical device; it can be a transparent webm or whatever. It will not be transcoded, so be sure its encoded correctly. Specify if --vp8 or --vp9, else --h264 is assumed.')
@@ -2311,7 +2824,7 @@ async def main():
     parser.add_argument('--fdsink',  type=str, help='VDO.Ninja to the stdout pipe; common for piping data between command line processes')
     parser.add_argument('--framebuffer', type=str, help='VDO.Ninja to local frame buffer; performant and Numpy/OpenCV friendly')
     parser.add_argument('--debug', action='store_true', help='Show added debug information from Gsteamer and other aspects of the app')
-    parser.add_argument('--buffer',  type=int, default=200, help='The jitter buffer latency in milliseconds; default is 200ms. (gst +v1.18)')
+    parser.add_argument('--buffer',  type=int, default=200, help='The jitter buffer latency in milliseconds; default is 200ms, minimum is 10ms. (gst +v1.18)')
     parser.add_argument('--password', type=str, nargs='?', default="someEncryptionKey123", required=False, const='', help='Specify a custom password. If setting to false, password/encryption will be disabled.')
     parser.add_argument('--hostname', type=str, default='https://vdo.ninja/', help='Your URL for vdo.ninja, if self-hosting the website code')
     parser.add_argument('--video-pipeline', type=str, default=None, help='Custom GStreamer video source pipeline')
@@ -2329,6 +2842,17 @@ async def main():
 
 
     args = parser.parse_args()
+    
+    # Display header
+    printc("\n╔═══════════════════════════════════════════════╗", "0FF")
+    printc("║          🥷 Raspberry Ninja                   ║", "0FF") 
+    printc("║     Multi-Platform WebRTC Publisher           ║", "0FF")
+    printc("╚═══════════════════════════════════════════════╝\n", "0FF")
+    
+    # Validate buffer value to prevent segfaults
+    if args.buffer < 10:
+        printc("Warning: Buffer values below 10ms can cause segfaults. Setting to minimum of 10ms.", "F77")
+        args.buffer = 10
 
     Gst.init(None)
     Gst.debug_set_active(False)
@@ -2395,6 +2919,26 @@ async def main():
         args.streamin = args.framebuffer
     elif args.record:
         args.streamin = args.record
+    elif args.record_room or args.room_ndi:
+        # Room recording mode
+        args.streamin = "room_recording"  # Special value to indicate room recording mode
+        args.room_recording = True
+        
+        # Validate room parameter
+        if not args.room:
+            printc("Error: --record-room and --room-ndi require --room parameter", "F00")
+            sys.exit(1)
+            
+        # Warn about custom websocket limitations
+        if args.puuid:
+            printc("Warning: Room recording may not work with custom websocket servers", "F77")
+            printc("This feature requires a server that tracks room membership and sends notifications", "F77")
+            
+        # Parse stream filter if provided
+        if args.record_streams:
+            args.stream_filter = [s.strip() for s in args.record_streams.split(',')]
+        else:
+            args.stream_filter = None
     else:
         args.streamin = False
 
@@ -2891,13 +3435,18 @@ async def main():
                     pipeline_video_input = f'libcamerasrc'
 
                     if args.format == "JPEG":
+                        # Check if on Raspberry Pi and recommend --rpi flag
+                        if not args.rpi and get_raspberry_pi_model() is not None:
+                            printc("Tip: You're on a Raspberry Pi. Using --rpi flag can improve JPEG decoding performance and reduce errors.", "7F7")
                         pipeline_video_input += f' ! image/jpeg,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
+                        # Add queue before decoder to handle bursty/corrupted frames from USB adapters
                         if args.nvidia:
-                            pipeline_video_input += ' ! jpegparse ! nvjpegdec ! video/x-raw'
+                            pipeline_video_input += ' ! queue ! jpegparse ! nvjpegdec ! video/x-raw'
                         elif args.rpi:
-                            pipeline_video_input += ' ! jpegparse ! v4l2jpegdec '
+                            pipeline_video_input += ' ! queue ! jpegparse ! v4l2jpegdec '
                         else:
-                            pipeline_video_input += ' ! jpegdec'
+                            # Add jpegparse for better error handling of corrupted JPEG frames
+                            pipeline_video_input += ' ! queue ! jpegparse ! jpegdec'
 
                     elif args.format == "H264": # Not going to try to support this right now
                         print("Not support h264 at the moment as an input")
@@ -2967,7 +3516,8 @@ async def main():
                     elif args.rpi:
                         pipeline_video_input += ' ! jpegparse ! ' + ('v4l2jpegdec' if check_plugins('v4l2jpegdec') else 'jpegdec') + ' '
                     else:
-                        pipeline_video_input += ' ! jpegdec'
+                        # Add jpegparse for better error handling of corrupted JPEG frames
+                        pipeline_video_input += ' ! jpegparse ! jpegdec'
 
             if args.filesrc2:
                 pass
@@ -3002,7 +3552,7 @@ async def main():
                 elif h264=="mpph264enc":
                     pipeline_video_input += f' ! videoconvert{timestampOverlay} ! videorate max-rate=30 ! {h264} rc-mode=cbr gop=30 profile=high name="encoder" bps={args.bitrate * 1000} ! video/x-h264,stream-format=(string)byte-stream'
                 elif h264=="x264enc":
-                    pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=10 ! x264enc bitrate={args.bitrate} name="encoder1" speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline'
+                    pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=10 ! x264enc bitrate={args.bitrate} name="encoder1" speed-preset=1 tune=zerolatency key-int-max=60 qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
                 elif h264=="avenc_h264_omx":
                     pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=10 ! avenc_h264_omx bitrate={args.bitrate}000 name="encoder" ! video/x-h264,profile=constrained-baseline'
                 elif check_plugins("v4l2convert") and check_plugins("omxh264enc") and get_raspberry_pi_model() != 5:
@@ -3041,13 +3591,15 @@ async def main():
                 if args.nvidia:
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxvp8enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                 elif args.rpi:
-                    pipeline_video_input += f' ! v4l2convert{timestampOverlay} ! video/x-raw,format=I420 ! queue max-size-buffers=10 ! vp8enc deadline=1 name="encoder" target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
+                    # Add leaky queue to handle frame drops and prevent buffer overruns with low latency
+                    pipeline_video_input += f' ! v4l2convert{timestampOverlay} ! video/x-raw,format=I420 ! queue max-size-buffers=30 max-size-time=0 leaky=downstream ! vp8enc deadline=1 name="encoder" target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                 elif check_plugins('mppvp8enc'):
                     # Rockchip hardware VP8 encoder - ensure NV12 input
                     pipeline_video_input += f'{pipeline_video_converter} ! queue max-size-buffers=4 leaky=downstream ! mppvp8enc qp-init=40 qp-min=10 qp-max=100 gop=30 name="encoder" rc-mode=cbr bps={args.bitrate * 1000} {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
 
                 else:
-                    pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=10 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 name="encoder" {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
+                    # Add leaky queue to handle frame drops and prevent buffer overruns with low latency
+                    pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=30 max-size-time=0 leaky=downstream ! vp8enc deadline=1 target-bitrate={args.bitrate}000 name="encoder" {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
 
             if args.multiviewer:
                 pipeline_video_input += ' ! tee name=videotee '
@@ -3187,19 +3739,32 @@ async def main():
     bold_color = hex_to_ansi("FAF")
 
     if args.streamin:
-        if not args.room:
-            printc(f"\n-> You can publish a stream to capture at: {bold_color}{watchURL}push={args.streamin}{server}", "77F")
+        if args.record_room:
+            printc(f"\n-> Recording all streams from room: {bold_color}{args.room}", "7FF")
+            if args.stream_filter:
+                printc(f"   Filter: {', '.join(args.stream_filter)}", "77F")
+            printc(f"   Files will be saved as: {args.room}_<streamID>_<timestamp>.ts", "77F")
+        elif args.room_ndi:
+            printc(f"\n-> Relaying all streams from room '{args.room}' to NDI", "7FF")
+            if args.stream_filter:
+                printc(f"   Filter: {', '.join(args.stream_filter)}", "77F")
+        elif not args.room:
+            printc(f"\n📹 Recording Mode", "0FF")
+            printc(f"   └─ Publish to: {bold_color}{watchURL}push={args.streamin}{server}", "77F")
         else:
-            printc(f"\n-> You can publish a stream to capture at: {bold_color}{watchURL}push={args.streamin}{server}&room={args.room}", "77F")
+            printc(f"\n📹 Recording Mode (Room: {args.room})", "0FF")
+            printc(f"   └─ Publish to: {bold_color}{watchURL}push={args.streamin}{server}&room={args.room}", "77F")
         print("\nAvailable options include --noaudio, --ndiout, --record and --server. See --help for more options.")
     else:
         print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default video bitrate is 2500 (kbps)")
         if not args.nored and not args.novideo:
             print("Note: Redundant error correction is enabled (default). This will double the sending video bitrate, but handle packet loss better. Use --nored to disable this.")
         if args.room:
-            printc(f"\n-> You can view this stream at: {bold_color}{watchURL}view={args.streamid}&room={args.room}&scene{server}\n", "77F")
+            printc(f"\n📡 Stream Ready!", "0FF")
+            printc(f"   └─ View at: {bold_color}{watchURL}view={args.streamid}&room={args.room}&scene{server}\n", "7FF")
         else:
-            printc(f"\n-> You can view this stream at: {bold_color}{watchURL}view={args.streamid}{server}\n", "7FF")
+            printc(f"\n📡 Stream Ready!", "0FF")
+            printc(f"   └─ View at: {bold_color}{watchURL}view={args.streamid}{server}\n", "7FF")
 
     args.pipeline = PIPELINE_DESC
     
@@ -3208,15 +3773,31 @@ async def main():
     if args.socketout:
         c.setup_socket()
     
+    # Start stats display task if room recording
+    stats_task = None
+    if args.record_room:
+        stats_task = asyncio.create_task(c.display_room_stats())
+    
     while True:
         try:
             await c.connect()
             res = await c.loop()
         except KeyboardInterrupt:
-            print("Ctrl+C detected. Exiting...")
+            printc("\n👋 Shutting down gracefully...", "0FF")
             break
-        except:
+        except Exception as e:
+            printc(f"⚠️  Connection error: {e}", "F77")
+            # WebSocket reconnection - peer connections remain active
             await asyncio.sleep(5)
+    
+    # Cancel stats task if running
+    if stats_task:
+        stats_task.cancel()
+        try:
+            await stats_task
+        except asyncio.CancelledError:
+            pass
+    
     disableLEDs()
     if c.shared_memory:
         c.shared_memory.close()

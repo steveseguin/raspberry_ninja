@@ -30,19 +30,28 @@ sudo apt-get dist-upgrade -y
 sudo dphys-swapfile swapoff
 # sudo echo "CONF_SWAPSIZE=1024" >> /etc/dphys-swapfile
 # sudo vi /etc/dphys-swapfile
-CONF_SWAPSIZE=1024 ## to to file
+# Detect Pi model and adjust swap size
+PI_MODEL=$(cat /proc/device-tree/model 2>/dev/null || echo "Unknown")
+if [[ "$PI_MODEL" == *"Zero 2"* ]]; then
+    CONF_SWAPSIZE=2048  # Pi Zero 2 needs more swap for building
+else
+    CONF_SWAPSIZE=1024  # Default for other models
+fi
+# Update the config file with: CONF_SWAPSIZE value
 sudo dphys-swapfile setup
 sudo dphys-swapfile swapon
 ###############################
 
 sudo apt-get install python3 python3-pip -y
 sudo apt-get install build-essential cmake libtool libc6 libc6-dev unzip wget libnuma1 libnuma-dev -y
-sudo rm /usr/lib/python3.11/EXTERNALLY-MANAGED # Debian 12 is an opinionated bully? ha, yah, no thank you.
+# Remove EXTERNALLY-MANAGED file for any Python version
+PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+sudo rm /usr/lib/python${PYTHON_VERSION}/EXTERNALLY-MANAGED 2>/dev/null || true # Debian 12 protection
 sudo pip3 install scikit-build
 sudo pip3 install ninja 
 sudo pip3 install websockets
 sudo pip3 install python-rtmidi
-pip3 install cryptography
+sudo pip3 install cryptography
 
 sudo apt-get install apt-transport-https ca-certificates -y
 
