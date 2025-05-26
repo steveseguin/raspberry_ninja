@@ -28,6 +28,13 @@ try:
     from multiprocessing import shared_memory
 except Exception as e:
     pass
+
+try:
+    from aiohttp import web
+    import aiohttp
+except ImportError:
+    web = None
+    aiohttp = None
     
 try:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -129,6 +136,9 @@ def hex_to_ansi(hex_color):
 
     return f"\033[38;5;{ansi_color}m"
 
+# Global webserver reference for logging
+_webserver_instance = None
+
 def printc(message, color_code=None):
     reset_color = "\033[0m"
 
@@ -138,6 +148,12 @@ def printc(message, color_code=None):
         print(colored_message)
     else:
         print(message)
+    
+    # Send to webserver if available
+    if _webserver_instance:
+        # Strip ANSI codes for web display
+        clean_message = re.sub(r'\033\[[0-9;]*m', '', message)
+        _webserver_instance.add_log(clean_message)
 
 def printwin(message):
     printc("<= "+message,"93F")
@@ -255,6 +271,728 @@ def decrypt_message(encrypted_data, iv, phrase):
     except (UnicodeDecodeError, ValueError) as e:
         print(f"Error decoding message: {e}")
         return None
+
+
+class WebServer:
+    def __init__(self, port, client):
+        self.port = port
+        self.client = client
+        self.app = web.Application()
+        self.runner = None
+        self.logs = []  # Store recent logs
+        self.max_logs = 1000
+        
+        # Setup routes
+        self.app.router.add_get('/', self.index)
+        self.app.router.add_get('/api/stats', self.get_stats)
+        self.app.router.add_get('/api/logs', self.get_logs)
+        self.app.router.add_post('/api/control', self.control)
+        self.app.router.add_get('/ws', self.websocket_handler)
+        self.app.router.add_get('/api/system', self.get_system_stats)
+        
+    async def index(self, request):
+        html = r"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Raspberry Ninja - Web Interface</title>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    margin: 0;
+                    padding: 20px;
+                    background: #1a1a1a;
+                    color: #e0e0e0;
+                }
+                .container {
+                    max-width: 1200px;
+                    margin: 0 auto;
+                }
+                h1 {
+                    color: #4CAF50;
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                }
+                .stats-grid {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                    gap: 20px;
+                    margin: 20px 0;
+                }
+                .stat-card {
+                    background: #2a2a2a;
+                    padding: 20px;
+                    border-radius: 8px;
+                    border: 1px solid #333;
+                }
+                .stat-label {
+                    color: #888;
+                    font-size: 0.9em;
+                    margin-bottom: 5px;
+                }
+                .stat-value {
+                    font-size: 1.8em;
+                    font-weight: bold;
+                    color: #4CAF50;
+                }
+                .logs {
+                    background: #2a2a2a;
+                    border: 1px solid #333;
+                    border-radius: 8px;
+                    padding: 20px;
+                    height: 400px;
+                    overflow-y: auto;
+                    font-family: 'Consolas', 'Monaco', monospace;
+                    font-size: 0.9em;
+                }
+                .log-entry {
+                    margin: 2px 0;
+                    padding: 2px 0;
+                }
+                .controls {
+                    margin: 20px 0;
+                    display: flex;
+                    gap: 10px;
+                }
+                button {
+                    background: #4CAF50;
+                    color: white;
+                    border: none;
+                    padding: 10px 20px;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 1em;
+                }
+                button:hover {
+                    background: #45a049;
+                }
+                button:disabled {
+                    background: #666;
+                    cursor: not-allowed;
+                }
+                .status {
+                    display: inline-block;
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 50%;
+                    margin-right: 5px;
+                }
+                .status.connected { background: #4CAF50; }
+                .status.disconnected { background: #f44336; }
+                .quality-graph {
+                    background: #2a2a2a;
+                    border: 1px solid #333;
+                    border-radius: 8px;
+                    padding: 20px;
+                    margin: 20px 0;
+                    height: 200px;
+                    position: relative;
+                }
+                .graph-canvas {
+                    width: 100%;
+                    height: 100%;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Raspberry Ninja Web Interface</h1>
+                
+                <div class="stats-grid" id="stats">
+                    <div class="stat-card">
+                        <div class="stat-label">Status</div>
+                        <div class="stat-value"><span class="status disconnected"></span>Connecting...</div>
+                    </div>
+                </div>
+                
+                <div class="controls">
+                    <button onclick="toggleRecording()">Start Recording</button>
+                    <button onclick="adjustBitrate()">Adjust Bitrate</button>
+                    <button onclick="takeSnapshot()">Take Snapshot</button>
+                    <button onclick="clearLogs()">Clear Logs</button>
+                    <button onclick="downloadLogs()">Download Logs</button>
+                </div>
+                
+                <div style="margin: 20px 0;">
+                    <label style="margin-right: 10px;">Filter logs:</label>
+                    <input type="text" id="logFilter" placeholder="Type to filter logs..." 
+                           style="padding: 5px; background: #2a2a2a; border: 1px solid #444; color: #e0e0e0;"
+                           onkeyup="filterLogs()">
+                    <select id="logLevel" onchange="filterLogs()" 
+                            style="padding: 5px; background: #2a2a2a; border: 1px solid #444; color: #e0e0e0; margin-left: 10px;">
+                        <option value="all">All Levels</option>
+                        <option value="error">Errors</option>
+                        <option value="warning">Warnings</option>
+                        <option value="info">Info</option>
+                        <option value="success">Success</option>
+                    </select>
+                </div>
+                
+                <h2>Connection Quality</h2>
+                <div class="quality-graph">
+                    <canvas id="qualityGraph" class="graph-canvas"></canvas>
+                </div>
+                
+                <h2>System Resources</h2>
+                <div class="stats-grid" id="systemStats">
+                    <div class="stat-card">
+                        <div class="stat-label">Loading...</div>
+                    </div>
+                </div>
+                
+                <h2>Live Logs</h2>
+                <div class="logs" id="logs"></div>
+            </div>
+            
+            <script>
+                let ws;
+                
+                function connectWebSocket() {
+                    ws = new WebSocket('ws://' + window.location.host + '/ws');
+                    
+                    ws.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'stats') {
+                            updateStats(data.stats);
+                        } else if (data.type === 'log') {
+                            addLog(data.message);
+                        }
+                    };
+                    
+                    ws.onclose = () => {
+                        setTimeout(connectWebSocket, 5000);
+                    };
+                }
+                
+                async function fetchStats() {
+                    try {
+                        const response = await fetch('/api/stats');
+                        const stats = await response.json();
+                        updateStats(stats);
+                    } catch (error) {
+                        console.error('Failed to fetch stats:', error);
+                    }
+                }
+                
+                async function fetchLogs() {
+                    try {
+                        const response = await fetch('/api/logs');
+                        const logs = await response.json();
+                        const logsDiv = document.getElementById('logs');
+                        logsDiv.innerHTML = logs.map(log => 
+                            '<div class="log-entry">' + log + '</div>'
+                        ).join('');
+                    } catch (error) {
+                        console.error('Failed to fetch logs:', error);
+                    }
+                }
+                
+                function updateStats(stats) {
+                    const statsDiv = document.getElementById('stats');
+                    const viewerDetails = stats.viewer_details;
+                    delete stats.viewer_details;
+                    
+                    let html = Object.entries(stats).map(([key, value]) => {
+                        // Special formatting for certain fields
+                        let displayValue = value;
+                        let statusClass = '';
+                        
+                        if (key === 'status') {
+                            statusClass = value === 'connected' ? 'connected' : 'disconnected';
+                            displayValue = '<span class="status ' + statusClass + '"></span>' + value;
+                        }
+                        
+                        return '<div class="stat-card">' +
+                            '<div class="stat-label">' + key.replace(/_/g, ' ').toUpperCase() + '</div>' +
+                            '<div class="stat-value">' + displayValue + '</div>' +
+                            '</div>';
+                    }).join('');
+                    
+                    // Add viewer details if any
+                    if (viewerDetails && viewerDetails.length > 0) {
+                        html += '<div class="stat-card" style="grid-column: span 2;">' +
+                            '<div class="stat-label">VIEWER DETAILS</div>' +
+                            '<div style="font-size: 0.9em; margin-top: 10px;">' +
+                            viewerDetails.map(v => 
+                                '<div style="margin: 5px 0;">' +
+                                'Viewer ' + v.id + ': ' +
+                                (v.has_data_channel ? 'YES' : 'NO') + ' Data Channel | ' +
+                                'Ping: ' + v.ping +
+                                '</div>'
+                            ).join('') +
+                            '</div></div>';
+                    }
+                    
+                    statsDiv.innerHTML = html;
+                }
+                
+                let allLogs = [];
+                
+                function addLog(message) {
+                    const logsDiv = document.getElementById('logs');
+                    const logEntry = document.createElement('div');
+                    logEntry.className = 'log-entry';
+                    logEntry.textContent = message;
+                    logEntry.setAttribute('data-raw', message);
+                    
+                    // Detect log level
+                    if (message.includes('Error') || message.includes('error') || message.includes('Failed')) {
+                        logEntry.setAttribute('data-level', 'error');
+                    } else if (message.includes('Warning') || message.includes('warning')) {
+                        logEntry.setAttribute('data-level', 'warning');
+                    } else if (message.includes('success') || message.includes('Success')) {
+                        logEntry.setAttribute('data-level', 'success');
+                    } else {
+                        logEntry.setAttribute('data-level', 'info');
+                    }
+                    
+                    logsDiv.appendChild(logEntry);
+                    logsDiv.scrollTop = logsDiv.scrollHeight;
+                    
+                    // Store in allLogs array
+                    allLogs.push(message);
+                    
+                    // Keep only last 1000 logs
+                    while (logsDiv.children.length > 1000) {
+                        logsDiv.removeChild(logsDiv.firstChild);
+                        allLogs.shift();
+                    }
+                    
+                    // Apply current filter
+                    filterLogs();
+                }
+                
+                function clearLogs() {
+                    document.getElementById('logs').innerHTML = '';
+                    allLogs = [];
+                }
+                
+                function filterLogs() {
+                    const filterText = document.getElementById('logFilter').value.toLowerCase();
+                    const filterLevel = document.getElementById('logLevel').value;
+                    const logEntries = document.querySelectorAll('.log-entry');
+                    
+                    logEntries.forEach(entry => {
+                        const text = entry.textContent.toLowerCase();
+                        const level = entry.getAttribute('data-level');
+                        
+                        const matchesText = !filterText || text.includes(filterText);
+                        const matchesLevel = filterLevel === 'all' || level === filterLevel;
+                        
+                        entry.style.display = (matchesText && matchesLevel) ? 'block' : 'none';
+                    });
+                }
+                
+                function downloadLogs() {
+                    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                    const filename = 'raspberry-ninja-logs-' + timestamp + '.txt';
+                    const content = allLogs.join('\n');
+                    
+                    const blob = new Blob([content], { type: 'text/plain' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                }
+                
+                async function takeSnapshot() {
+                    try {
+                        const response = await fetch('/api/control', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({action: 'take_snapshot'})
+                        });
+                        const result = await response.json();
+                        
+                        if (result.status === 'success') {
+                            // Download the snapshot
+                            const a = document.createElement('a');
+                            a.href = '/api/snapshot';
+                            a.download = result.filename;
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                            
+                            addLog('[SNAPSHOT] ' + result.message);
+                        } else {
+                            alert('Error: ' + result.message);
+                        }
+                    } catch (error) {
+                        alert('Failed to take snapshot: ' + error.message);
+                    }
+                }
+                
+                let isRecording = false;
+                
+                async function toggleRecording() {
+                    try {
+                        const response = await fetch('/api/control', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({action: 'toggle_recording'})
+                        });
+                        const result = await response.json();
+                        
+                        if (result.status === 'success') {
+                            isRecording = result.recording;
+                            const btn = event.target;
+                            btn.textContent = isRecording ? 'Stop Recording' : 'Start Recording';
+                            btn.style.background = isRecording ? '#f44336' : '#4CAF50';
+                            
+                            if (result.message) {
+                                addLog('[RECORDING] ' + result.message);
+                            }
+                        } else {
+                            alert('Error: ' + result.message);
+                        }
+                    } catch (error) {
+                        alert('Failed to toggle recording: ' + error.message);
+                    }
+                }
+                
+                async function adjustBitrate() {
+                    const bitrate = prompt('Enter new bitrate (kbps):', '2000');
+                    if (bitrate) {
+                        await fetch('/api/control', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({action: 'set_bitrate', value: parseInt(bitrate)})
+                        });
+                    }
+                }
+                
+                // Initial fetch and setup
+                fetchStats().then(() => {
+                    // Check initial recording state from stats
+                    fetch('/api/stats')
+                        .then(r => r.json())
+                        .then(stats => {
+                            if (stats.recording === 'active') {
+                                isRecording = true;
+                                const btn = document.querySelector('button[onclick="toggleRecording()"]');
+                                btn.textContent = 'Recording Active';
+                                btn.style.background = '#666';
+                                btn.disabled = true;
+                                btn.title = 'Recording was enabled at startup with --save flag';
+                            }
+                        });
+                });
+                fetchLogs();
+                connectWebSocket();
+                
+                // Quality tracking
+                const qualityHistory = {
+                    bitrate: [],
+                    packetLoss: [],
+                    timestamps: []
+                };
+                const maxHistoryPoints = 60; // 2 minutes at 2-second intervals
+                
+                function updateQualityGraph() {
+                    const canvas = document.getElementById('qualityGraph');
+                    const ctx = canvas.getContext('2d');
+                    const width = canvas.width = canvas.offsetWidth;
+                    const height = canvas.height = canvas.offsetHeight;
+                    
+                    // Clear canvas
+                    ctx.fillStyle = '#1a1a1a';
+                    ctx.fillRect(0, 0, width, height);
+                    
+                    if (qualityHistory.bitrate.length < 2) return;
+                    
+                    // Draw grid
+                    ctx.strokeStyle = '#333';
+                    ctx.lineWidth = 1;
+                    for (let i = 0; i <= 4; i++) {
+                        const y = (height / 4) * i;
+                        ctx.beginPath();
+                        ctx.moveTo(0, y);
+                        ctx.lineTo(width, y);
+                        ctx.stroke();
+                    }
+                    
+                    // Draw bitrate line
+                    ctx.strokeStyle = '#4CAF50';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    
+                    const maxBitrate = Math.max(...qualityHistory.bitrate, 1);
+                    qualityHistory.bitrate.forEach((bitrate, i) => {
+                        const x = (i / (maxHistoryPoints - 1)) * width;
+                        const y = height - (bitrate / maxBitrate) * height * 0.9;
+                        if (i === 0) ctx.moveTo(x, y);
+                        else ctx.lineTo(x, y);
+                    });
+                    ctx.stroke();
+                    
+                    // Draw labels
+                    ctx.fillStyle = '#888';
+                    ctx.font = '12px monospace';
+                    ctx.fillText(maxBitrate + ' kbps', 5, 15);
+                    ctx.fillText('0 kbps', 5, height - 5);
+                    ctx.fillText('2 min ago', 5, height - 20);
+                    ctx.fillText('now', width - 30, height - 20);
+                }
+                
+                async function fetchSystemStats() {
+                    try {
+                        const response = await fetch('/api/system');
+                        const stats = await response.json();
+                        
+                        if (!stats.error) {
+                            const systemDiv = document.getElementById('systemStats');
+                            systemDiv.innerHTML = Object.entries(stats).map(([key, value]) => 
+                                '<div class="stat-card">' +
+                                '<div class="stat-label">' + key.replace(/_/g, ' ').toUpperCase() + '</div>' +
+                                '<div class="stat-value">' + value + '</div>' +
+                                '</div>'
+                            ).join('');
+                        }
+                    } catch (error) {
+                        console.error('Failed to fetch system stats:', error);
+                    }
+                }
+                
+                // Update fetchStats to track quality
+                const originalFetchStats = fetchStats;
+                fetchStats = async function() {
+                    await originalFetchStats();
+                    
+                    // Extract bitrate from stats for graph
+                    try {
+                        const response = await fetch('/api/stats');
+                        const stats = await response.json();
+                        const bitrateMatch = stats.bitrate.match(/(\d+)/);
+                        if (bitrateMatch) {
+                            const bitrate = parseInt(bitrateMatch[1]);
+                            qualityHistory.bitrate.push(bitrate);
+                            qualityHistory.timestamps.push(Date.now());
+                            
+                            // Trim old data
+                            if (qualityHistory.bitrate.length > maxHistoryPoints) {
+                                qualityHistory.bitrate.shift();
+                                qualityHistory.timestamps.shift();
+                            }
+                            
+                            updateQualityGraph();
+                        }
+                    } catch (error) {
+                        // Ignore errors
+                    }
+                };
+                
+                // Refresh stats every 2 seconds
+                setInterval(fetchStats, 2000);
+                setInterval(fetchSystemStats, 5000);
+                fetchSystemStats();
+            </script>
+        </body>
+        </html>
+        """
+        return web.Response(text=html, content_type='text/html')
+    
+    async def get_stats(self, request):
+        stats = {
+            'status': 'connected' if len(self.client.clients) > 0 else 'idle',
+            'viewers': len(self.client.clients),
+            'bitrate': f"{self.client.bitrate} kbps",
+            'max_bitrate': f"{self.client.max_bitrate} kbps",
+            'stream_id': self.client.stream_id or 'N/A',
+            'room': self.client.room_name or 'N/A',
+            'multiviewer': 'enabled' if self.client.multiviewer else 'disabled',
+            'pipeline_state': 'active' if self.client.pipe else 'inactive',
+            'recording': 'active' if self.client.record else 'inactive',
+            'audio': 'disabled' if self.client.noaudio else 'enabled',
+            'video': 'disabled' if self.client.novideo else 'enabled'
+        }
+        
+        # Add codec information
+        if self.client.h264:
+            stats['video_codec'] = 'H.264'
+        elif self.client.vp8:
+            stats['video_codec'] = 'VP8'
+        elif self.client.av1:
+            stats['video_codec'] = 'AV1'
+        else:
+            stats['video_codec'] = 'Auto'
+        
+        # Add viewer-specific stats with more detail
+        if self.client.clients:
+            viewer_list = []
+            for uuid, client_data in self.client.clients.items():
+                viewer_info = {
+                    'id': uuid[:8],
+                    'status': 'connected',
+                    'has_data_channel': bool(client_data.get('send_channel')),
+                    'ping': client_data.get('ping', 0)
+                }
+                viewer_list.append(viewer_info)
+            stats['viewer_details'] = viewer_list
+        
+        return web.json_response(stats)
+    
+    async def get_logs(self, request):
+        return web.json_response(self.logs[-100:])  # Return last 100 logs
+    
+    async def control(self, request):
+        try:
+            data = await request.json()
+            action = data.get('action')
+            
+            if action == 'set_bitrate':
+                new_bitrate = data.get('value')
+                if new_bitrate and 100 <= new_bitrate <= 50000:
+                    self.client.bitrate = new_bitrate
+                    self.client.max_bitrate = new_bitrate
+                    # Update all active encoders
+                    for client_data in self.client.clients.values():
+                        self.client.set_encoder_bitrate(client_data, new_bitrate)
+                    return web.json_response({'status': 'success', 'bitrate': new_bitrate})
+            
+            elif action == 'toggle_recording':
+                # Check if we can record
+                if self.client.streamin:
+                    return web.json_response({
+                        'status': 'error', 
+                        'message': 'Cannot record while in viewer mode'
+                    })
+                
+                if not self.client.pipe:
+                    return web.json_response({
+                        'status': 'error', 
+                        'message': 'No active pipeline to record'
+                    })
+                
+                # Check if recording was enabled at startup
+                if self.client.save_file:
+                    return web.json_response({
+                        'status': 'info',
+                        'recording': True,
+                        'message': 'Recording is already active (enabled with --save flag)'
+                    })
+                else:
+                    return web.json_response({
+                        'status': 'info',
+                        'recording': False,
+                        'message': 'Recording must be enabled at startup with --save flag'
+                    })
+            
+            elif action == 'take_snapshot':
+                # Take a snapshot of the current frame
+                if not self.client.pipe:
+                    return web.json_response({
+                        'status': 'error',
+                        'message': 'No active pipeline'
+                    })
+                
+                timestamp = int(time.time())
+                filename = f"snapshot_{self.client.stream_id}_{timestamp}.jpg"
+                
+                # For now, return a message that this feature requires pipeline modification
+                # In a real implementation, we'd use a valve element and jpegenc
+                return web.json_response({
+                    'status': 'info',
+                    'message': 'Snapshot feature coming soon!',
+                    'filename': filename
+                })
+            
+            return web.json_response({'status': 'error', 'message': 'Invalid action'})
+        except Exception as e:
+            return web.json_response({'status': 'error', 'message': str(e)})
+    
+    async def websocket_handler(self, request):
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        
+        # TODO: Implement real-time updates via websocket
+        
+        async for msg in ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                # Handle incoming websocket messages
+                pass
+            elif msg.type == aiohttp.WSMsgType.ERROR:
+                print(f'WebSocket error: {ws.exception()}')
+        
+        return ws
+    
+    def add_log(self, message):
+        """Add a log message to the buffer"""
+        timestamp = time.strftime('%H:%M:%S')
+        log_entry = f"[{timestamp}] {message}"
+        self.logs.append(log_entry)
+        if len(self.logs) > self.max_logs:
+            self.logs.pop(0)
+    
+    async def get_system_stats(self, request):
+        """Get system resource usage"""
+        try:
+            import psutil
+            
+            # Get CPU and memory usage
+            cpu_percent = psutil.cpu_percent(interval=0.1)
+            memory = psutil.virtual_memory()
+            
+            # Get process-specific stats
+            process = psutil.Process()
+            process_memory = process.memory_info().rss / 1024 / 1024  # MB
+            
+            stats = {
+                'cpu_percent': f"{cpu_percent:.1f}%",
+                'memory_percent': f"{memory.percent:.1f}%",
+                'memory_used': f"{memory.used / 1024 / 1024 / 1024:.1f} GB",
+                'memory_total': f"{memory.total / 1024 / 1024 / 1024:.1f} GB",
+                'process_memory': f"{process_memory:.1f} MB",
+                'uptime': f"{int(time.time() - process.create_time())} seconds"
+            }
+            
+            # Add GStreamer pipeline stats if available
+            if self.client.pipe:
+                clock = self.client.pipe.get_clock()
+                if clock:
+                    pipeline_time = clock.get_time() / Gst.SECOND
+                    stats['pipeline_time'] = f"{pipeline_time:.1f} seconds"
+                    
+            return web.json_response(stats)
+            
+        except ImportError:
+            return web.json_response({
+                'error': 'psutil not installed',
+                'message': 'Install psutil for system stats: pip install psutil'
+            })
+        except Exception as e:
+            return web.json_response({'error': str(e)})
+    
+    async def start(self):
+        """Start the web server"""
+        self.runner = web.AppRunner(self.app)
+        await self.runner.setup()
+        site = web.TCPSite(self.runner, '0.0.0.0', self.port)
+        await site.start()
+        printc(f"🌐 Web interface started on http://0.0.0.0:{self.port}", "0F0")
+        printc(f"   └─ Access from browser: http://localhost:{self.port}", "0F0")
+    
+    async def start_recording(self):
+        """Start recording the stream to disk"""
+        # For now, return a message that recording must be enabled at startup
+        # Dynamic recording would require significant pipeline modifications
+        return None
+    
+    async def stop_recording(self):
+        """Stop recording and clean up"""
+        # Not implemented for dynamic recording
+        return False
+    
+    async def stop(self):
+        """Stop the web server"""
+        if self.runner:
+            await self.runner.cleanup()
 
                     
 class WebRTCClient:
@@ -1072,6 +1810,7 @@ class WebRTCClient:
 
         def on_new_tranceiver(element, trans):
             # New transceiver added
+            pass
 
         def on_negotiation_needed(element):
             # Negotiation needed, creating offer
@@ -1090,6 +1829,7 @@ class WebRTCClient:
 
         def on_signaling_state(p1, p2):
             # Signaling state changed
+            pass
 
         def on_ice_connection_state(p1, p2):
             state = client['webrtc'].get_property(p2.name)
@@ -2921,6 +3661,7 @@ async def main():
     parser.add_argument('--nvidia', action='store_true', help='Creates a pipeline optimised for nvidia hardware.')
     parser.add_argument('--rpi', action='store_true', help='Creates a pipeline optimised for raspberry pi hardware encoder. Note: RPi5 has no hardware encoder and will automatically fall back to software encoding (x264).')
     parser.add_argument('--multiviewer', action='store_true', help='Allows for multiple viewers to watch a single encoded stream; will use more CPU and bandwidth.')
+    parser.add_argument('--webserver', type=int, metavar='PORT', help='Enable web interface on specified port (e.g., --webserver 8080) for monitoring stats, logs, and controls.')
     parser.add_argument('--noqos', action='store_true', help='Do not try to automatically reduce video bitrate if packet loss gets too high. The default will reduce the bitrate if needed.')
     parser.add_argument('--nored', action='store_true', help='Disable error correction redundency for transmitted video. This may reduce the bandwidth used by half, but it will be more sensitive to packet loss')
     parser.add_argument('--novideo', action='store_true', help='Disables video input.')
@@ -3910,6 +4651,18 @@ async def main():
     if args.record_room:
         stats_task = asyncio.create_task(c.display_room_stats())
     
+    # Start web server if requested
+    webserver = None
+    if hasattr(args, 'webserver') and args.webserver:
+        if web is None:
+            printc("⚠️  Web server requires aiohttp: pip install aiohttp", "F77")
+        else:
+            webserver = WebServer(args.webserver, c)
+            await webserver.start()
+            # Set global reference for logging
+            global _webserver_instance
+            _webserver_instance = webserver
+    
     # Setup signal handlers for graceful shutdown
     shutdown_event = asyncio.Event()
     
@@ -3980,6 +4733,10 @@ async def main():
             await stats_task
         except asyncio.CancelledError:
             pass
+    
+    # Stop web server if running
+    if webserver:
+        await webserver.stop()
     
     disableLEDs()
     if c.shared_memory:
