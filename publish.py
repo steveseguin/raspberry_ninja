@@ -2124,6 +2124,10 @@ class WebRTCClient:
             print("trans:  {}".format(client['webrtc'].get_property(p2.name)))
 
         def pingTimer():
+            # Check if client still exists before proceeding
+            if client["UUID"] not in self.clients:
+                print(f"Client {client['UUID']} no longer exists, stopping pingTimer")
+                return
 
             if not client['send_channel']:
                 client['timer'] = threading.Timer(3, pingTimer)
@@ -2136,7 +2140,9 @@ class WebRTCClient:
 
             if client['ping'] < 10:
                 client['ping'] += 1
-                self.clients[client["UUID"]] = client
+                # Only update if client still exists
+                if client["UUID"] in self.clients:
+                    self.clients[client["UUID"]] = client
                 try:
                     client['send_channel'].emit('send-string', '{"ping":"'+str(time.time())+'"}')
                     if client.get('_last_ping_logged', 0) < time.time() - 30:
@@ -2662,6 +2668,14 @@ class WebRTCClient:
             if UUID not in self.clients:
                 print(f"Client {UUID} not found in clients list")
                 return
+            
+            # Cancel the ping timer if it exists
+            if 'timer' in self.clients[UUID] and self.clients[UUID]['timer'] is not None:
+                try:
+                    self.clients[UUID]['timer'].cancel()
+                    self.clients[UUID]['timer'] = None
+                except Exception as e:
+                    printwarn(f"Failed to cancel timer: {e}")
                 
             if not self.multiviewer:
                 if UUID in self.clients:
