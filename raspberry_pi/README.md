@@ -152,10 +152,12 @@ cd raspberry_pi
 sudo vi raspininja.service
 ```
 To use VIM, press `i` to enter text edit mode.  `:wq` will let you save and exit.
+(`yy` will 'yank' - copy - a line, and `p` will paste) 
 
 Once done editing the file, you can set it up to auto launch on load and to start running immediately.
 ```
 sudo cp raspininja.service /etc/systemd/system/
+sudo chmod 755 /etc/systemd/system/raspininja.service
 sudo systemctl daemon-reload
 sudo systemctl enable raspininja
 sudo systemctl restart raspininja
@@ -166,6 +168,8 @@ sudo systemctl status raspininja
 ```
 
 Things should now auto-boot on system boot, and restart if things crash.  
+
+If you want to change the `hostname`, you can use `raspi-config`, but you also have to add the new name to `/etc/hosts` so that the above commands will work.
 
 note: If using an Nvidia Jetson, please see its folder on github here for its service file.
 
