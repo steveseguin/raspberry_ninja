@@ -289,6 +289,9 @@ class WebServer:
         self.app.router.add_post('/api/control', self.control)
         self.app.router.add_get('/ws', self.websocket_handler)
         self.app.router.add_get('/api/system', self.get_system_stats)
+        self.app.router.add_get('/api/devices', self.get_devices)
+        self.app.router.add_get('/api/pipeline', self.get_pipeline_info)
+        self.app.router.add_get('/api/ice', self.get_ice_stats)
         
     async def index(self, request):
         html = r"""
@@ -395,6 +398,44 @@ class WebServer:
                     width: 100%;
                     height: 100%;
                 }
+                .modal {
+                    display: none;
+                    position: fixed;
+                    z-index: 1000;
+                    left: 0;
+                    top: 0;
+                    width: 100%;
+                    height: 100%;
+                    background-color: rgba(0,0,0,0.8);
+                }
+                .modal-content {
+                    background-color: #2a2a2a;
+                    margin: 5% auto;
+                    padding: 20px;
+                    border: 1px solid #444;
+                    border-radius: 8px;
+                    width: 80%;
+                    max-width: 800px;
+                    max-height: 80vh;
+                    overflow-y: auto;
+                }
+                .modal-close {
+                    color: #aaa;
+                    float: right;
+                    font-size: 28px;
+                    font-weight: bold;
+                    cursor: pointer;
+                }
+                .modal-close:hover {
+                    color: #fff;
+                }
+                pre {
+                    background: #1a1a1a;
+                    padding: 10px;
+                    border-radius: 4px;
+                    overflow-x: auto;
+                    font-size: 0.9em;
+                }
             </style>
         </head>
         <body>
@@ -412,6 +453,9 @@ class WebServer:
                     <button onclick="toggleRecording()">Start Recording</button>
                     <button onclick="adjustBitrate()">Adjust Bitrate</button>
                     <button onclick="takeSnapshot()">Take Snapshot</button>
+                    <button onclick="showDevices()">Show Devices</button>
+                    <button onclick="showPipeline()">Show Pipeline</button>
+                    <button onclick="showICEStats()">ICE Stats</button>
                     <button onclick="clearLogs()">Clear Logs</button>
                     <button onclick="downloadLogs()">Download Logs</button>
                 </div>
@@ -442,6 +486,8 @@ class WebServer:
                         <div class="stat-label">Loading...</div>
                     </div>
                 </div>
+                
+                <div id="modalContainer"></div>
                 
                 <h2>Live Logs</h2>
                 <div class="logs" id="logs"></div>
@@ -788,6 +834,114 @@ class WebServer:
                     }
                 };
                 
+                // Modal functions
+                function showModal(title, content) {
+                    const modal = document.createElement('div');
+                    modal.className = 'modal';
+                    modal.style.display = 'block';
+                    modal.innerHTML = '<div class="modal-content">' +
+                        '<span class="modal-close" onclick="this.parentElement.parentElement.remove()">&times;</span>' +
+                        '<h2>' + title + '</h2>' +
+                        content +
+                        '</div>';
+                    document.getElementById('modalContainer').appendChild(modal);
+                    
+                    // Close on outside click
+                    modal.onclick = function(event) {
+                        if (event.target === modal) {
+                            modal.remove();
+                        }
+                    };
+                }
+                
+                async function showDevices() {
+                    try {
+                        const response = await fetch('/api/devices');
+                        const devices = await response.json();
+                        
+                        let content = '<h3>Video Devices</h3>';
+                        if (devices.video && devices.video.length > 0) {
+                            content += '<ul>';
+                            devices.video.forEach(dev => {
+                                content += '<li><strong>' + dev.name + '</strong><br>';
+                                content += 'Path: ' + dev.path + '<br>';
+                                content += 'Class: ' + dev.class + '</li>';
+                            });
+                            content += '</ul>';
+                        } else {
+                            content += '<p>No video devices found</p>';
+                        }
+                        
+                        content += '<h3>Audio Devices</h3>';
+                        if (devices.audio && devices.audio.length > 0) {
+                            content += '<ul>';
+                            devices.audio.forEach(dev => {
+                                content += '<li>' + dev.name + '</li>';
+                            });
+                            content += '</ul>';
+                        } else {
+                            content += '<p>No audio devices found</p>';
+                        }
+                        
+                        showModal('Available Devices', content);
+                    } catch (error) {
+                        alert('Failed to fetch devices: ' + error.message);
+                    }
+                }
+                
+                async function showPipeline() {
+                    try {
+                        const response = await fetch('/api/pipeline');
+                        const pipeline = await response.json();
+                        
+                        let content = '<h3>Pipeline State: ' + pipeline.pipeline_state + '</h3>';
+                        content += '<h3>Pipeline Configuration</h3>';
+                        content += '<pre>' + pipeline.pipeline_string.replace(/!/g, '!\n    ') + '</pre>';
+                        
+                        if (pipeline.elements && pipeline.elements.length > 0) {
+                            content += '<h3>Pipeline Elements (' + pipeline.elements.length + ')</h3>';
+                            content += '<ul>';
+                            pipeline.elements.forEach(elem => {
+                                content += '<li>' + elem.name + ' (' + elem.type + ')</li>';
+                            });
+                            content += '</ul>';
+                        }
+                        
+                        showModal('Pipeline Information', content);
+                    } catch (error) {
+                        alert('Failed to fetch pipeline info: ' + error.message);
+                    }
+                }
+                
+                async function showICEStats() {
+                    try {
+                        const response = await fetch('/api/ice');
+                        const ice = await response.json();
+                        
+                        let content = '<h3>ICE Configuration</h3>';
+                        content += '<p><strong>STUN Server:</strong> ' + ice.stun_server + '</p>';
+                        content += '<p><strong>TURN Server:</strong> ' + (ice.turn_server || 'Not configured') + '</p>';
+                        
+                        if (ice.connections && ice.connections.length > 0) {
+                            content += '<h3>Active Connections</h3>';
+                            ice.connections.forEach(conn => {
+                                content += '<div style="margin: 10px 0; padding: 10px; background: #1a1a1a; border-radius: 4px;">';
+                                content += '<strong>Viewer ' + conn.viewer_id + '</strong><br>';
+                                content += 'ICE State: ' + conn.ice_connection_state + '<br>';
+                                content += 'Gathering: ' + conn.ice_gathering_state + '<br>';
+                                content += 'Signaling: ' + conn.signaling_state;
+                                content += '</div>';
+                            });
+                        } else {
+                            content += '<p>No active connections</p>';
+                        }
+                        
+                        showModal('ICE Connection Statistics', content);
+                    } catch (error) {
+                        alert('Failed to fetch ICE stats: ' + error.message);
+                    }
+                }
+                
                 // Refresh stats every 2 seconds
                 setInterval(fetchStats, 2000);
                 setInterval(fetchSystemStats, 5000);
@@ -969,6 +1123,98 @@ class WebServer:
         except Exception as e:
             return web.json_response({'error': str(e)})
     
+    async def get_devices(self, request):
+        """Get available video and audio devices"""
+        devices = {'video': [], 'audio': []}
+        
+        try:
+            # Get video devices
+            monitor = Gst.DeviceMonitor.new()
+            monitor.add_filter("Video/Source", None)
+            monitor.start()
+            
+            for device in monitor.get_devices():
+                props = device.get_properties()
+                device_info = {
+                    'name': device.get_display_name(),
+                    'path': props.get_string('device.path') if props else 'Unknown',
+                    'class': props.get_string('device.class') if props else 'Unknown'
+                }
+                devices['video'].append(device_info)
+            
+            monitor.stop()
+            
+            # Get audio devices using ALSA
+            try:
+                import subprocess
+                result = subprocess.run(['arecord', '-l'], capture_output=True, text=True)
+                if result.returncode == 0:
+                    lines = result.stdout.split('\n')
+                    for line in lines:
+                        if 'card' in line:
+                            devices['audio'].append({'name': line.strip()})
+            except:
+                devices['audio'].append({'name': 'Default audio device'})
+                
+        except Exception as e:
+            devices['error'] = str(e)
+            
+        return web.json_response(devices)
+    
+    async def get_pipeline_info(self, request):
+        """Get current pipeline information"""
+        info = {
+            'pipeline_state': 'inactive',
+            'pipeline_string': self.client.pipeline if hasattr(self.client, 'pipeline') else 'Not available',
+            'elements': []
+        }
+        
+        if self.client.pipe:
+            state = self.client.pipe.get_state(0)[1]
+            info['pipeline_state'] = state.value_name
+            
+            # Get pipeline elements
+            it = self.client.pipe.iterate_elements()
+            while True:
+                result, elem = it.next()
+                if result != Gst.IteratorResult.OK:
+                    break
+                info['elements'].append({
+                    'name': elem.get_name(),
+                    'type': elem.__class__.__name__
+                })
+                
+        return web.json_response(info)
+    
+    async def get_ice_stats(self, request):
+        """Get ICE connection statistics"""
+        ice_stats = {
+            'connections': [],
+            'stun_server': 'stun://stun.cloudflare.com:3478',
+            'turn_server': None
+        }
+        
+        for uuid, client_data in self.client.clients.items():
+            if client_data.get('webrtc'):
+                conn_info = {
+                    'viewer_id': uuid[:8],
+                    'ice_connection_state': 'unknown',
+                    'ice_gathering_state': 'unknown',
+                    'signaling_state': 'unknown'
+                }
+                
+                try:
+                    webrtc = client_data['webrtc']
+                    conn_info['ice_connection_state'] = webrtc.get_property('ice-connection-state').value_name
+                    conn_info['ice_gathering_state'] = webrtc.get_property('ice-gathering-state').value_name
+                    conn_info['signaling_state'] = webrtc.get_property('signaling-state').value_name
+                except:
+                    pass
+                    
+                ice_stats['connections'].append(conn_info)
+                
+        return web.json_response(ice_stats)
+    
     async def start(self):
         """Start the web server"""
         self.runner = web.AppRunner(self.app)
@@ -992,7 +1238,15 @@ class WebServer:
     async def stop(self):
         """Stop the web server"""
         if self.runner:
-            await self.runner.cleanup()
+            try:
+                await asyncio.wait_for(self.runner.cleanup(), timeout=2.0)
+                printc("🌐 Web server stopped", "77F")
+            except asyncio.TimeoutError:
+                printwarn("Web server cleanup timed out")
+            except Exception as e:
+                printwarn(f"Error stopping web server: {e}")
+            finally:
+                self.runner = None
 
                     
 class WebRTCClient:
@@ -2093,7 +2347,8 @@ class WebRTCClient:
                 if float(stats) > 0.01 or abs(float(stats) - client['_last_packet_loss']) > 0.005:
                     if float(stats) > 0.01:
                         printc(f"📊 Packet loss: {stats} ⚠️", "F77")
-                    else:
+                    elif client['_last_packet_loss'] < 0 or client['_last_packet_loss'] > 0.01:
+                        # Only show excellent message when transitioning from bad to good
                         printc(f"📊 Network quality: excellent", "0F0")
                     client['_last_packet_loss'] = float(stats)
                 if " vp8enc " in self.pipeline: # doesn't support dynamic bitrates? not sure the property to use at least
@@ -2412,21 +2667,22 @@ class WebRTCClient:
                 if UUID in self.clients:
                     del self.clients[UUID]
             elif UUID in self.clients:
+                # In multiviewer mode, unlink from tees
                 atee = self.pipe.get_by_name('audiotee')
                 vtee = self.pipe.get_by_name('videotee')
 
-            # Unlink elements before cleanup to prevent dangling references
-            try:
-                if atee is not None and self.clients[UUID]['qa'] is not None:
-                    atee.unlink(self.clients[UUID]['qa'])
-            except Exception as e:
-                printwarn(f"Failed to unlink audio queue: {e}")
-                
-            try:
-                if vtee is not None and self.clients[UUID]['qv'] is not None:
-                    vtee.unlink(self.clients[UUID]['qv'])
-            except Exception as e:
-                printwarn(f"Failed to unlink video queue: {e}")
+                # Unlink elements before cleanup to prevent dangling references
+                try:
+                    if atee is not None and self.clients[UUID]['qa'] is not None:
+                        atee.unlink(self.clients[UUID]['qa'])
+                except Exception as e:
+                    printwarn(f"Failed to unlink audio queue: {e}")
+                    
+                try:
+                    if vtee is not None and self.clients[UUID]['qv'] is not None:
+                        vtee.unlink(self.clients[UUID]['qv'])
+                except Exception as e:
+                    printwarn(f"Failed to unlink video queue: {e}")
 
             # CRITICAL: Set elements to NULL state BEFORE removing from pipeline
             # This prevents segfaults during cleanup
@@ -2452,7 +2708,8 @@ class WebRTCClient:
                 printwarn(f"Failed to cleanup video queue: {e}")
                 
             # Always remove from clients dict, even if cleanup failed
-            del self.clients[UUID]
+            if UUID in self.clients:
+                del self.clients[UUID]
 
         if len(self.clients)==0:
             enableLEDs(0.1)
@@ -2464,9 +2721,9 @@ class WebRTCClient:
                 # Ensure pipeline is properly cleaned up when no clients remain
                 try:
                     self.pipe.set_state(Gst.State.PAUSED)
-                    self.pipe.get_state(Gst.CLOCK_TIME_NONE)
+                    self.pipe.get_state(Gst.SECOND)  # 1 second timeout
                     self.pipe.set_state(Gst.State.NULL)
-                    self.pipe.get_state(Gst.CLOCK_TIME_NONE)
+                    self.pipe.get_state(Gst.SECOND)  # 1 second timeout
                 except Exception as e:
                     printwarn(f"Error setting pipeline to NULL: {e}")
                     # Force cleanup even if state change failed
@@ -2496,13 +2753,19 @@ class WebRTCClient:
                 try:
                     # First set to PAUSED to stop data flow
                     self.pipe.set_state(Gst.State.PAUSED)
-                    # Wait for state change to complete
-                    self.pipe.get_state(Gst.CLOCK_TIME_NONE)
+                    # Wait for state change with timeout (1 second)
+                    ret = self.pipe.get_state(Gst.SECOND)
+                    if ret[0] != Gst.StateChangeReturn.SUCCESS:
+                        printwarn("Pipeline didn't pause cleanly, forcing NULL state")
+                    
                     # Then set to NULL to release resources
                     self.pipe.set_state(Gst.State.NULL)
-                    # Wait for NULL state
-                    self.pipe.get_state(Gst.CLOCK_TIME_NONE)
-                    printc("   └─ ✅ Pipeline cleaned up successfully", "0F0")
+                    # Wait for NULL state with timeout
+                    ret = self.pipe.get_state(Gst.SECOND)
+                    if ret[0] == Gst.StateChangeReturn.SUCCESS:
+                        printc("   └─ ✅ Pipeline cleaned up successfully", "0F0")
+                    else:
+                        printwarn("Pipeline didn't reach NULL state cleanly")
                 except Exception as e:
                     printwarn(f"Error cleaning up pipeline: {e}")
                     # Force cleanup even if state change failed
@@ -2514,13 +2777,14 @@ class WebRTCClient:
                     # Always clear the pipeline reference to prevent reuse
                     self.pipe = None
             
-            # Close websocket connection
+            # Close websocket connection with timeout
             if self.conn:
                 try:
-                    await self.conn.close()
+                    await asyncio.wait_for(self.conn.close(), timeout=2.0)
                     self.conn = None
-                except Exception as e:
+                except (asyncio.TimeoutError, Exception) as e:
                     printwarn(f"Error closing websocket: {e}")
+                    self.conn = None
 
     async def loop(self):
         assert self.conn
@@ -3379,7 +3643,7 @@ def get_conversion_pipeline(src_format, dst_format="NV12", hw_converter=None):
     else:
         # Default to software conversion with videoconvert
         # Add a queue to prevent blocking the capture (makes it more real-time)
-        return f" ! queue max-size-buffers=2 leaky=downstream ! videoconvert ! video/x-raw,format={dst_format}"
+        return f" ! queue max-size-buffers=2 leaky=upstream ! videoconvert ! video/x-raw,format={dst_format}"
 
 def detect_best_formats(device):
     """
@@ -3599,7 +3863,7 @@ def optimize_pipeline_for_device(device, width, height, framerate, iomode, forma
             best_format = "I420"  # Generic fallback
     
     # Create source pipeline segment with specific format
-    input_pipeline = f'v4l2src device={device} io-mode={str(iomode)} ! queue max-size-buffers=2 leaky=downstream ! video/x-raw,format={best_format},width=(int){width},height=(int){height},framerate=(fraction){framerate}/1'
+    input_pipeline = f'v4l2src device={device} io-mode={str(iomode)} ! queue max-size-buffers=2 leaky=upstream ! video/x-raw,format={best_format},width=(int){width},height=(int){height},framerate=(fraction){framerate}/1'
     
     # Create conversion pipeline segment if needed
     target_format = "NV12"  # Most hardware encoders prefer NV12
@@ -4409,7 +4673,7 @@ async def main():
                 elif h264 == "mpph264enc" and check_plugins('rockchipmpp'):
                     # For Rockchip MPP encoder, ensure we have NV12 input
                     # The pipeline_video_converter should handle this if needed
-                    pipeline_video_input += f'{pipeline_video_converter} ! queue max-size-buffers=4 leaky=downstream ! {h264} qp-init=26 qp-min=10 qp-max=51 gop=30 name="encoder" rc-mode=cbr bps={args.bitrate * 1000} ! video/x-h264,stream-format=(string)byte-stream'
+                    pipeline_video_input += f'{pipeline_video_converter} ! queue max-size-buffers=4 leaky=upstream ! {h264} qp-init=26 qp-min=10 qp-max=51 gop=30 name="encoder" rc-mode=cbr bps={args.bitrate * 1000} ! video/x-h264,stream-format=(string)byte-stream'
                
                 elif h264 == "omxh264enc" and args.rpi and get_raspberry_pi_model() != 5:
                     pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420{timestampOverlay} ! omxh264enc name="encoder" target-bitrate={args.bitrate}000 qos=true control-rate="constant" ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
@@ -4465,14 +4729,14 @@ async def main():
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxvp8enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                 elif args.rpi:
                     # Add leaky queue to handle frame drops and prevent buffer overruns with low latency
-                    pipeline_video_input += f' ! v4l2convert{timestampOverlay} ! video/x-raw,format=I420 ! queue max-size-buffers=30 max-size-time=0 leaky=downstream ! vp8enc deadline=1 name="encoder" target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
+                    pipeline_video_input += f' ! v4l2convert{timestampOverlay} ! video/x-raw,format=I420 ! queue max-size-buffers=30 max-size-time=0 leaky=upstream ! vp8enc deadline=1 name="encoder" target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                 elif check_plugins('mppvp8enc'):
                     # Rockchip hardware VP8 encoder - ensure NV12 input
-                    pipeline_video_input += f'{pipeline_video_converter} ! queue max-size-buffers=4 leaky=downstream ! mppvp8enc qp-init=40 qp-min=10 qp-max=100 gop=30 name="encoder" rc-mode=cbr bps={args.bitrate * 1000} {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
+                    pipeline_video_input += f'{pipeline_video_converter} ! queue max-size-buffers=4 leaky=upstream ! mppvp8enc qp-init=40 qp-min=10 qp-max=100 gop=30 name="encoder" rc-mode=cbr bps={args.bitrate * 1000} {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
 
                 else:
                     # Add leaky queue to handle frame drops and prevent buffer overruns with low latency
-                    pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=30 max-size-time=0 leaky=downstream ! vp8enc deadline=1 target-bitrate={args.bitrate}000 name="encoder" {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
+                    pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=30 max-size-time=0 leaky=upstream ! vp8enc deadline=1 target-bitrate={args.bitrate}000 name="encoder" {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
 
             if args.multiviewer:
                 pipeline_video_input += ' ! tee name=videotee '
@@ -4666,11 +4930,23 @@ async def main():
     # Setup signal handlers for graceful shutdown
     shutdown_event = asyncio.Event()
     
+    # Track if we're already shutting down
+    shutdown_count = [0]
+    
     def signal_handler(signum, frame):
-        if not shutdown_event.is_set():
+        shutdown_count[0] += 1
+        if shutdown_count[0] == 1:
             printc("\n🛑 Received interrupt signal, shutting down gracefully...", "F70")
-            shutdown_event.set()
             c._shutdown_requested = True
+            # Force close the websocket to break out of recv()
+            if c.conn:
+                asyncio.create_task(c.conn.close())
+        elif shutdown_count[0] == 2:
+            printc("\n⚠️  Second interrupt, forcing shutdown...", "F00")
+            os._exit(1)
+        else:
+            printc("\n❌ Force exiting...", "F00")
+            os._exit(1)
     
     # Set up signal handlers
     original_sigint = signal.signal(signal.SIGINT, signal_handler)
@@ -4689,38 +4965,27 @@ async def main():
     # Add shutdown flag to client
     c._shutdown_requested = False
     
-    # Create tasks for main loop and shutdown monitoring
-    async def run_client():
-        while not shutdown_event.is_set():
-            try:
-                await c.connect()
-                res = await c.loop()
-            except Exception as e:
-                if shutdown_event.is_set():
-                    break
-                printc(f"⚠️  Connection error: {e}", "F77")
-                # WebSocket reconnection - peer connections remain active
-                await asyncio.sleep(5)
-    
-    # Run client and wait for shutdown
-    client_task = asyncio.create_task(run_client())
-    
-    try:
-        # Wait for shutdown signal
-        await shutdown_event.wait()
-    except KeyboardInterrupt:
-        printc("\n👋 Shutting down gracefully...", "0FF")
-        shutdown_event.set()
-    
-    # Cancel client task
-    client_task.cancel()
-    try:
-        await client_task
-    except asyncio.CancelledError:
-        pass
+    while not c._shutdown_requested:
+        try:
+            await c.connect()
+            res = await c.loop()
+        except KeyboardInterrupt:
+            printc("\n👋 Shutting down gracefully...", "0FF")
+            await c.cleanup_pipeline()
+            break
+        except Exception as e:
+            if c._shutdown_requested:
+                break
+            printc(f"⚠️  Connection error: {e}", "F77")
+            # WebSocket reconnection - peer connections remain active
+            await asyncio.sleep(5)
     
     # Ensure cleanup is called
     await c.cleanup_pipeline()
+    
+    # Stop web server if running
+    if webserver:
+        await webserver.stop()
     
     # Restore original signal handlers
     signal.signal(signal.SIGINT, original_sigint)
@@ -4734,9 +4999,7 @@ async def main():
         except asyncio.CancelledError:
             pass
     
-    # Stop web server if running
-    if webserver:
-        await webserver.stop()
+    # Web server already stopped above
     
     disableLEDs()
     if c.shared_memory:

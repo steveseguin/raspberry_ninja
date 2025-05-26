@@ -1,0 +1,180 @@
+name: Manual Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: 'Version bump type'
+        required: true
+        default: 'minor'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      release_notes:
+        description: 'Additional release notes (optional)'
+        required: false
+        type: string
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      
+      - name: Configure Git
+        run: |
+          git config --global user.name "GitHub Actions Release Bot"
+          git config --global user.email "actions@github.com"
+      
+      - name: Install GitHub CLI
+        run: |
+          type gh >/dev/null 2>&1 || (
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt install gh -y
+          )
+      
+      - name: Create manual release script
+        run: |
+          cat > manual-release.js << 'EOF'
+          const { exec } = require('child_process');
+          const fs = require('fs').promises;
+          
+          async function runCommand(command) {
+            return new Promise((resolve, reject) => {
+              exec(command, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+                if (error) {
+                  reject(new Error(`Command failed: ${command}\n${stderr}`));
+                  return;
+                }
+                resolve(stdout.trim());
+              });
+            });
+          }
+          
+          async function main() {
+            const bumpType = process.env.BUMP_TYPE;
+            const additionalNotes = process.env.ADDITIONAL_NOTES || '';
+            
+            // Read current version
+            let currentVersion = '1.0.0';
+            try {
+              currentVersion = (await fs.readFile('VERSION', 'utf8')).trim();
+            } catch (error) {
+              console.log('VERSION file not found, using 1.0.0');
+            }
+            
+            // Parse and bump version
+            const [major, minor, patch] = currentVersion.split('.').map(Number);
+            let newVersion;
+            
+            switch (bumpType) {
+              case 'major':
+                newVersion = `${major + 1}.0.0`;
+                break;
+              case 'minor':
+                newVersion = `${major}.${minor + 1}.0`;
+                break;
+              case 'patch':
+                newVersion = `${major}.${minor}.${patch + 1}`;
+                break;
+            }
+            
+            console.log(`Bumping version: ${currentVersion} → ${newVersion}`);
+            
+            // Update VERSION file
+            await fs.writeFile('VERSION', newVersion);
+            
+            // Generate release notes
+            const releaseDate = new Date().toISOString().split('T')[0];
+            let releaseNotes = `# Release ${newVersion}\n\n`;
+            releaseNotes += `**Release Date:** ${releaseDate}\n\n`;
+            releaseNotes += `**Release Type:** Manual ${bumpType} release\n\n`;
+            
+            if (additionalNotes) {
+              releaseNotes += `## Release Notes\n\n${additionalNotes}\n\n`;
+            }
+            
+            // Get recent commits
+            try {
+              const lastTag = await runCommand('git describe --tags --abbrev=0 2>/dev/null || echo ""');
+              if (lastTag) {
+                const commits = await runCommand(`git log ${lastTag}..HEAD --pretty=format:"- %s (%h)" --no-merges`);
+                if (commits) {
+                  releaseNotes += `## Commits since ${lastTag}\n\n${commits}\n\n`;
+                }
+              }
+            } catch (error) {
+              console.log('Could not get commit history');
+            }
+            
+            // Update CHANGELOG
+            let changelog = '# Changelog\n\nAll notable changes to Raspberry Ninja will be documented in this file.\n\n';
+            try {
+              changelog = await fs.readFile('CHANGELOG.md', 'utf8');
+            } catch (error) {
+              console.log('Creating new CHANGELOG.md');
+            }
+            
+            const headerMatch = changelog.match(/^#\s+Changelog.*?\n+/m);
+            if (headerMatch) {
+              const insertPosition = headerMatch.index + headerMatch[0].length;
+              changelog = 
+                changelog.slice(0, insertPosition) +
+                releaseNotes + '\n---\n\n' +
+                changelog.slice(insertPosition);
+            } else {
+              changelog = changelog + '\n\n' + releaseNotes;
+            }
+            
+            await fs.writeFile('CHANGELOG.md', changelog);
+            
+            // Commit changes
+            await runCommand('git add VERSION CHANGELOG.md');
+            await runCommand(`git commit -m "chore: release v${newVersion} [release]"`);
+            await runCommand('git push');
+            
+            // Create tag and release
+            const tagName = `v${newVersion}`;
+            await runCommand(`git tag -a ${tagName} -m "Release ${newVersion}"`);
+            await runCommand(`git push origin ${tagName}`);
+            
+            // Create GitHub release
+            const tempFile = `.release-notes-${Date.now()}.tmp`;
+            await fs.writeFile(tempFile, releaseNotes);
+            
+            try {
+              await runCommand(`gh release create ${tagName} --title "Release ${newVersion}" --notes-file ${tempFile}`);
+              console.log(`GitHub release created: ${tagName}`);
+            } catch (error) {
+              console.log('Could not create GitHub release:', error.message);
+            }
+            
+            await fs.unlink(tempFile);
+          }
+          
+          main().catch(console.error);
+          EOF
+      
+      - name: Run manual release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUMP_TYPE: ${{ inputs.version_bump }}
+          ADDITIONAL_NOTES: ${{ inputs.release_notes }}
+        run: node manual-release.js

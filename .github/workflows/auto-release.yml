@@ -1,0 +1,60 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'publish.py'
+      - 'raspberry_pi/installer.sh'
+      - 'nvidia_jetson/installer.sh'
+      - 'orangepi/installer.sh'
+      - 'ubuntu/installer.sh'
+      - '**/*.service'
+      - 'raspberry_pi/Cargo.toml'
+
+jobs:
+  check-and-release:
+    # Don't run on release commits or auto-enhanced commits
+    if: |
+      !contains(github.event.head_commit.message, '[release]') && 
+      !contains(github.event.head_commit.message, '[skip-release]') &&
+      !contains(github.event.head_commit.message, '[auto-enhanced]') &&
+      github.actor != 'github-actions[bot]' &&
+      github.actor != 'GitHub Actions Release Bot'
+    
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history for version analysis
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      
+      - name: Configure Git
+        run: |
+          git config --global user.name "GitHub Actions Release Bot"
+          git config --global user.email "actions@github.com"
+      
+      - name: Install GitHub CLI
+        run: |
+          type gh >/dev/null 2>&1 || (
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt update
+            sudo apt install gh -y
+          )
+      
+      - name: Run auto-release script
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # For GitHub CLI
+        run: node .github/scripts/auto-release.js
