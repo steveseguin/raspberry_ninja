@@ -1,5 +1,37 @@
 # Changelog
 
+# Release 1.0.1
+
+**Release Date:** 2025-05-26
+
+## 🐛 Patch Release
+
+This release includes bug fixes and minor improvements.
+
+### Commits
+
+- fixes (5d58087)
+- Update README.md (fe78c32)
+- added a webserver (297c5df)
+- better closing /  stats (1b3666c)
+- chore(docs): update TOC (9a94f89)
+- attemps at fixing issues; plus doc updates (b99dd9d)
+- . (8349178)
+- tweaks for rpi5 (b5e0373)
+- tweaks for rpi5 (b7248de)
+- Update publish.py (db535f7)
+
+### Installation
+
+For installation instructions, please refer to the platform-specific guides:
+- [Raspberry Pi](./raspberry_pi/README.md)
+- [NVIDIA Jetson](./nvidia_jetson/README.md)
+- [Orange Pi](./orangepi/README.md)
+- [Ubuntu](./ubuntu/README.md)
+
+
+---
+
 All notable changes to Raspberry Ninja will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
