@@ -3,8 +3,10 @@
     "allow": [
       "Bash(grep:*)",
       "Bash(python3:*)",
-      "Bash(sed:*)"
+      "Bash(sed:*)",
+      "Bash(rg:*)"
     ],
     "deny": []
-  }
+  },
+  "enableAllProjectMcpServers": false
 }
