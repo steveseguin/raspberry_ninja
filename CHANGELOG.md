@@ -1,5 +1,34 @@
 # Changelog
 
+# Release 1.0.3
+
+**Release Date:** 2025-05-30
+
+## 🐛 Patch Release
+
+This release includes bug fixes and minor improvements.
+
+### Commits
+
+- encoder bitrate tweak (40264fb)
+- h264 encoder fix (9f4c5b6)
+- chore: Remove .claude directory (787d3f4)
+- chore: release v1.0.2 [release] (aa30557)
+- race condition clean up (63c8e55)
+- ``` fix(repo): Remove broken WSL2-Linux-Kernel submodule (b2ed98b)
+- Remove broken WSL2-Linux-Kernel submodule reference (8baf5c9)
+
+### Installation
+
+For installation instructions, please refer to the platform-specific guides:
+- [Raspberry Pi](./raspberry_pi/README.md)
+- [NVIDIA Jetson](./nvidia_jetson/README.md)
+- [Orange Pi](./orangepi/README.md)
+- [Ubuntu](./ubuntu/README.md)
+
+
+---
+
 # Release 1.0.2
 
 **Release Date:** 2025-05-26
