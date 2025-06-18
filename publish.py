@@ -16,6 +16,7 @@ import subprocess
 import struct
 import glob
 import signal
+from pathlib import Path
 try:
     import hashlib
     from urllib.parse import urlparse
@@ -50,6 +51,13 @@ gi.require_version('GstWebRTC', '1.0')
 from gi.repository import GstWebRTC
 gi.require_version('GstSdp', '1.0')
 from gi.repository import GstSdp
+
+# Import room recording manager for multi-stream support
+try:
+    from room_recording_manager import RoomRecordingManager
+except ImportError:
+    RoomRecordingManager = None
+    print("Warning: RoomRecordingManager not available. Room recording will use fallback mode.")
 
 try:
     from gi.repository import GLib
@@ -1251,7 +1259,7 @@ class WebServer:
                     
 class WebRTCClient:
     def __init__(self, params):
-
+        self.params = params  # Store params for room recording manager
         self.pipeline = params.pipeline
         self.conn = None
         self.pipe = None
@@ -1302,19 +1310,55 @@ class WebRTCClient:
         self.socketport = params.socketport
         self.socket = None
         
+        # ICE/TURN configuration
+        self.stun_server = getattr(params, 'stun_server', None)
+        self.turn_server = getattr(params, 'turn_server', None)
+        self.ice_transport_policy = getattr(params, 'ice_transport_policy', 'all')
+        
+        # Recording support
+        self.recording_files = []
+        self.recording_enabled = bool(self.record) and bool(self.view)
+        
+        if self.recording_enabled:
+            print(f"Recording mode enabled")
+            print(f"   Stream: {self.view}")
+            print(f"   Output prefix: {self.record}")
+        
         # Room recording parameters
         self.room_recording = getattr(params, 'room_recording', False)
         self.record_room = getattr(params, 'record_room', False)
+        
+        # If record_room is set via command line, enable room_recording
+        if self.record_room:
+            self.room_recording = True
         self.room_ndi = getattr(params, 'room_ndi', False)
         self.stream_filter = getattr(params, 'stream_filter', None)
         self.room_streams = {}  # Track all streams in the room
         self.room_streams_lock = asyncio.Lock()  # Lock for thread-safe access
         
+        # Enable multiviewer when room recording is active
+        if self.room_recording or self.room_ndi:
+            self.multiviewer = True
+        
+        # Multi-peer recording state
+        self.multi_peer_client = None
+        self.room_recorders = {}  # stream_id -> recorder
+        self.room_sessions = {}   # session_id -> stream_id
+        self.ice_queue = asyncio.Queue()  # Thread-safe ICE queue
+        self.ice_processor_task = None
+        self.event_loop = None  # Will be set when event loop is available
+        
         try:
             if self.password:
-                parsed_url = urlparse(self.hostname)
-                hostname_parts = parsed_url.hostname.split(".")
-                self.salt = ".".join(hostname_parts[-2:])
+                # Use hostname or default
+                hostname_to_parse = self.hostname if self.hostname else "wss://wss.vdo.ninja:443"
+                parsed_url = urlparse(hostname_to_parse)
+                if parsed_url.hostname:
+                    hostname_parts = parsed_url.hostname.split(".")
+                    self.salt = ".".join(hostname_parts[-2:])
+                else:
+                    self.salt = "vdo.ninja"  # Default salt
+                    
                 self.hashcode = generateHash(self.password+self.salt, 6)
 
                 if self.room_name:
@@ -1330,45 +1374,142 @@ class WebRTCClient:
             print("RECORDING TO DISK STARTED")
             
     def setup_ice_servers(self, webrtc):
+        """Configure ICE servers including default VDO.Ninja TURN servers"""
         try:
+            # STUN servers
             if hasattr(self, 'stun_server') and self.stun_server:
                 webrtc.set_property('stun-server', self.stun_server)
             elif not hasattr(self, 'no_stun') or not self.no_stun:
-                for server in ["stun://stun.cloudflare.com:3478", "stun://stun.l.google.com:19302"]:
-                    webrtc.set_property('stun-server', server)
+                # Default STUN servers
+                webrtc.set_property('stun-server', 'stun://stun.l.google.com:19302')
                     
+            # TURN servers
+            turn_url = None
+            
             if hasattr(self, 'turn_server') and self.turn_server:
-                webrtc.set_property('turn-server', self.turn_server)
+                # User-specified TURN server
+                turn_url = self.turn_server
+                # If credentials provided, format the URL properly
+                if hasattr(self, 'turn_user') and self.turn_user and hasattr(self, 'turn_pass') and self.turn_pass:
+                    # Parse and add credentials to URL if not already present
+                    if '@' not in turn_url:
+                        # TURN URLs use format: turn:host:port or turns:host:port
+                        if turn_url.startswith('turn:') or turn_url.startswith('turns:'):
+                            # Extract protocol and server parts
+                            if turn_url.startswith('turns:'):
+                                protocol = 'turns://'
+                                server_part = turn_url[6:]  # Remove 'turns:'
+                            else:
+                                protocol = 'turn://'
+                                server_part = turn_url[5:]  # Remove 'turn:'
+                            # Format: turn://username:password@host:port
+                            turn_url = f"{protocol}{self.turn_user}:{self.turn_pass}@{server_part}"
+                printc(f"Using custom TURN server: {turn_url}", "77F")
+            elif self.room_recording or (hasattr(self, 'auto_turn') and self.auto_turn):
+                # Use VDO.Ninja's default TURN servers for room recording or when auto_turn is enabled
+                printc(f"DEBUG: room_recording={self.room_recording}, checking for auto TURN", "FF0")
+                default_turn = self._get_default_turn_server()
+                if default_turn:
+                    # Format with credentials
+                    turn_url = default_turn['url']
+                    if '@' not in turn_url:
+                        # TURN URLs use format: turn:host:port or turns:host:port
+                        if turn_url.startswith('turn:') or turn_url.startswith('turns:'):
+                            # Extract protocol and server parts
+                            if turn_url.startswith('turns:'):
+                                protocol = 'turns://'
+                                server_part = turn_url[6:]  # Remove 'turns:'
+                            else:
+                                protocol = 'turn://'
+                                server_part = turn_url[5:]  # Remove 'turn:'
+                            # Format: turn://username:password@host:port
+                            turn_url = f"{protocol}{default_turn['user']}:{default_turn['pass']}@{server_part}"
+                    printc(f"Using VDO.Ninja TURN: {turn_url} (auto-enabled for room recording)", "77F")
+            
+            if turn_url:
+                # Try both methods - property and signal
+                webrtc.set_property('turn-server', turn_url)
+                try:
+                    # Also emit add-turn-server signal for better compatibility
+                    webrtc.emit('add-turn-server', turn_url)
+                    printc(f"DEBUG: Set TURN server via property and signal: {turn_url}", "0FF")
+                except Exception as e:
+                    printc(f"DEBUG: Set TURN server via property only: {turn_url} (signal failed: {e})", "0FF")
                 
             if hasattr(self, 'ice_transport_policy') and self.ice_transport_policy:
                 webrtc.set_property('ice-transport-policy', self.ice_transport_policy)
+                printc(f"DEBUG: Set ICE transport policy: {self.ice_transport_policy}", "0FF")
                 
         except Exception as E:
             printwarn(get_exception_info(E))
+            
+    def _get_default_turn_server(self):
+        """Get default VDO.Ninja TURN server based on location/preference"""
+        # VDO.Ninja's public TURN servers from the backup list
+        turn_servers = [
+            # North America
+            {
+                'url': 'turn:turn-cae1.vdo.ninja:3478',
+                'user': 'steve',
+                'pass': 'setupYourOwnPlease',
+                'region': 'na-east'
+            },
+            {
+                'url': 'turn:turn-usw2.vdo.ninja:3478',
+                'user': 'vdoninja',
+                'pass': 'theyBeSharksHere',
+                'region': 'na-west'
+            },
+            # Europe
+            {
+                'url': 'turn:turn-eu1.vdo.ninja:3478',
+                'user': 'steve',
+                'pass': 'setupYourOwnPlease',
+                'region': 'eu-central'
+            },
+            # Secure fallback
+            {
+                'url': 'turns:www.turn.obs.ninja:443',
+                'user': 'steve',
+                'pass': 'setupYourOwnPlease',
+                'region': 'global'
+            }
+        ]
+        
+        # For now, return the first one (could be enhanced to select by region)
+        return turn_servers[0]
 
     async def connect(self):
         printc("🔌 Connecting to handshake server...", "0FF")
         
+        # Use hostname if server is not specified
+        server_url = self.server if self.server else self.hostname
+        
+        # Default to VDO.Ninja if neither is specified
+        if not server_url:
+            server_url = "wss://wss.vdo.ninja:443"
+            printc("Using default server: wss://wss.vdo.ninja:443", "FF0")
+        
         # Convert wss:// to ws:// for no-SSL attempt
-        ws_server = self.server.replace('wss://', 'ws://') if self.server.startswith('wss://') else self.server
+        ws_server = server_url.replace('wss://', 'ws://') if server_url.startswith('wss://') else server_url
         
         connection_attempts = [
-            (lambda: ssl.create_default_context(), "standard SSL", self.server),
-            (lambda: ssl._create_unverified_context(), "unverified SSL", self.server),
+            (lambda: ssl.create_default_context(), "standard SSL", server_url),
+            (lambda: ssl._create_unverified_context(), "unverified SSL", server_url),
             (lambda: None, "no SSL", ws_server)  # Use ws:// URL for no-SSL
         ]
         
         last_exception = None
-        for create_ssl_context, context_type, server_url in connection_attempts:
+        for create_ssl_context, context_type, connect_url in connection_attempts:
             try:
-                printc(f"   ├─ Trying {context_type} to {server_url}", "FFF")
+                printc(f"   ├─ Trying {context_type} to {connect_url}", "FFF")
                 ssl_context = create_ssl_context()
                 if ssl_context:
                     ssl_context.check_hostname = False
                     ssl_context.verify_mode = ssl.CERT_NONE
                 
                 self.conn = await websockets.connect(
-                    server_url,
+                    connect_url,
                     ssl=ssl_context,
                     ping_interval=None
                 )
@@ -1476,8 +1617,8 @@ class WebRTCClient:
                     msgJSON = json.dumps(msg)
                     await self.conn.send(msgJSON)
                     printwout("a message was sent via websockets 2: "+msgJSON[:60])
-                except Exception as E:
-                    printwarn(get_exception_info(E))
+                except Exception as e:
+                    printwarn(get_exception_info(e))
 
         else:
             try:
@@ -1765,6 +1906,12 @@ class WebRTCClient:
                     appsink = self.pipe.get_by_name('appsink')
                     appsink.connect("new-sample", self.on_new_socket_sample)
                 elif self.view:
+                    # Check if we're in recording mode
+                    if self.recording_enabled and "video" in name:
+                        if self.setup_recording_pipeline(pad, name):
+                            return  # Recording set up successfully
+                    
+                    # Normal display mode
                     print("DISPLAY OUTPUT MODE BEING SETUP")
                     
                     outsink = "autovideosink"
@@ -1894,10 +2041,16 @@ class WebRTCClient:
                         pad.link(sink)
                     else:
                         if "VP8" in name:
-                            # VP8 recording - save as webm file
-                            out = Gst.parse_bin_from_description("queue ! rtpvp8depay ! webmmux name=mux1 ! "
-            + "filesink name=filesink "
-            + "location=" + "./" + self.streamin + "_"+str(int(time.time()))+".webm", True)
+                            # VP8 recording - use videoscale and caps to handle resolution changes
+                            out = Gst.parse_bin_from_description(
+                                "queue max-size-buffers=0 max-size-time=0 ! "
+                                "rtpvp8depay ! "
+                                "vp8dec ! "
+                                "videoscale ! "
+                                "video/x-raw,width=1280,height=720 ! "
+                                "vp8enc deadline=1 cpu-used=4 ! "
+                                "matroskamux name=mux1 streamable=true ! "
+                                "filesink name=filesink location=" + "./" + self.streamin + "_"+str(int(time.time()))+".webm", True)
 
                         elif "H264" in name:
                             out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! mpegtsmux name=mux1 ! queue ! "
@@ -2148,8 +2301,8 @@ class WebRTCClient:
                     if client.get('_last_ping_logged', 0) < time.time() - 30:
                         printc("💓 Connection healthy (ping/pong active)", "666")
                         client['_last_ping_logged'] = time.time()
-                except Exception as E:
-                    printwarn(get_exception_info(E))
+                except Exception as e:
+                    printwarn(get_exception_info(e))
 
                     print("PING FAILED")
                 client['timer'] = threading.Timer(3, pingTimer)
@@ -2546,6 +2699,101 @@ class WebRTCClient:
             
         self.clients[client["UUID"]] = client
         
+    
+    def setup_recording_pipeline(self, pad, name):
+        """Set up proper recording pipeline for incoming stream"""
+        print("RECORDING MODE ACTIVATED")
+        timestamp = str(int(time.time()))
+        
+        try:
+            # Determine codec and create appropriate pipeline
+            if "VP8" in name or "vp8" in name.lower():
+                # VP8 recording - decode and re-encode to handle resolution changes
+                filename = f"{self.record}_{timestamp}.webm"
+                pipeline_str = (
+                    "queue name=rec_queue max-size-buffers=0 max-size-time=0 ! "
+                    "rtpvp8depay ! "
+                    "vp8dec ! "
+                    "videoscale ! "
+                    "video/x-raw,width=1280,height=720 ! "
+                    "vp8enc deadline=1 cpu-used=4 ! "
+                    "matroskamux name=mux streamable=true ! "
+                    f"filesink location={filename}"
+                )
+                print(f"Recording VP8 to: {filename} (flexible resolution)")
+                
+            elif "H264" in name or "h264" in name.lower():
+                # H264 can go directly to MPEG-TS
+                filename = f"{self.record}_{timestamp}.ts"
+                pipeline_str = (
+                    "queue name=rec_queue ! "
+                    "rtph264depay ! "
+                    "h264parse ! "
+                    "mpegtsmux ! "
+                    f"filesink location={filename}"
+                )
+                print(f"Recording H264 to: {filename}")
+                
+            elif "VP9" in name or "vp9" in name.lower():
+                # VP9 to MKV
+                filename = f"{self.record}_{timestamp}.mkv"
+                pipeline_str = (
+                    "queue name=rec_queue ! "
+                    "rtpvp9depay ! "
+                    "matroskamux ! "
+                    f"filesink location={filename}"
+                )
+                print(f"Recording VP9 to: {filename}")
+                
+            else:
+                print(f"Unsupported codec: {name}")
+                return False
+            
+            # Create recording bin
+            recording_bin = Gst.parse_bin_from_description(pipeline_str, True)
+            
+            # Add to pipeline
+            self.pipe.add(recording_bin)
+            
+            # Sync state
+            recording_bin.sync_state_with_parent()
+            
+            # Link pad to recording bin
+            sink_pad = recording_bin.get_static_pad('sink')
+            if not sink_pad:
+                print("Failed to get sink pad from recording bin")
+                return False
+                
+            link_result = pad.link(sink_pad)
+            if link_result != Gst.PadLinkReturn.OK:
+                print(f"Failed to link pad: {link_result}")
+                return False
+            
+            # Track recording file
+            self.recording_files.append(filename)
+            print(f"Recording pipeline set up successfully")
+            
+            # Set up status monitoring
+            self.setup_recording_monitor(filename)
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error setting up recording pipeline: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def setup_recording_monitor(self, filename):
+        """Monitor recording progress"""
+        def check_file():
+            if os.path.exists(filename):
+                size = os.path.getsize(filename)
+                print(f"Recording progress: {filename} ({size:,} bytes)")
+            return True  # Continue monitoring
+        
+        # Check file size periodically
+        GLib.timeout_add_seconds(5, check_file)
 
     def handle_sdp_ice(self, msg, UUID):
         client = self.clients[UUID]
@@ -2749,10 +2997,637 @@ class WebRTCClient:
                     # Always clear the pipeline reference to prevent reuse
                     self.pipe = None
 
+    async def _add_room_stream(self, stream_id):
+        """Add a stream for room recording"""
+        if stream_id in self.room_recorders:
+            printc(f"Stream {stream_id} already being recorded", "FF0")
+            return
+            
+        printc(f"\n📹 Adding recorder for stream: {stream_id}", "0F0")
+        
+        # Create recorder
+        recorder = self._create_stream_recorder(stream_id)
+        if not recorder:
+            return
+            
+        self.room_recorders[stream_id] = recorder
+        
+        # Request to play this stream
+        printc(f"[{stream_id}] Requesting stream playback", "77F")
+        await self.sendMessageAsync({
+            "request": "play",
+            "streamID": stream_id
+        })
+    
+    def _create_stream_recorder(self, stream_id):
+        """Create a recorder for a single stream"""
+        # Ensure GStreamer is initialized
+        if not Gst.is_initialized():
+            Gst.init(None)
+            
+        recorder = {
+            'stream_id': stream_id,
+            'session_id': None,
+            'pipe': None,
+            'webrtc': None,
+            'filesink': None,
+            'recording': False,
+            'recording_file': None,
+            'start_time': None,
+            'ice_candidates': []  # Store candidates to send later
+        }
+        
+        # Create pipeline
+        pipe = Gst.Pipeline.new(f'pipe_{stream_id}')
+        webrtc = Gst.ElementFactory.make('webrtcbin', 'webrtc')
+        
+        if not webrtc:
+            printc(f"[{stream_id}] ERROR: Failed to create webrtcbin", "F00")
+            return None
+            
+        # Configure webrtcbin
+        webrtc.set_property('bundle-policy', GstWebRTC.WebRTCBundlePolicy.MAX_BUNDLE)
+        webrtc.set_property('latency', 0)
+        
+        # Use the same ICE server configuration as main connection
+        # First ensure we have the attributes setup_ice_servers expects
+        if not hasattr(self, 'stun_server'):
+            self.stun_server = None
+        if not hasattr(self, 'turn_server'):
+            self.turn_server = None
+        if not hasattr(self, 'no_stun'):
+            self.no_stun = False
+        if not hasattr(self, 'ice_transport_policy'):
+            self.ice_transport_policy = None
+            
+        self.setup_ice_servers(webrtc)
+        
+        pipe.add(webrtc)
+        
+        # Don't add transceivers here - wait for the offer to determine what's needed
+        # This matches how single-stream recording works
+        printc(f"[{stream_id}] WebRTC element created, waiting for offer...", "77F")
+        
+        # Connect signals
+        webrtc.connect('on-ice-candidate', self._on_room_ice_candidate, recorder)
+        webrtc.connect('pad-added', self._on_room_pad_added, recorder)
+        webrtc.connect('notify::connection-state', self._on_room_connection_state, recorder)
+        webrtc.connect('notify::ice-connection-state', self._on_room_ice_connection_state, recorder)
+        webrtc.connect('notify::ice-gathering-state', self._on_room_ice_gathering_state, recorder)
+        
+        # Add data channel support (VDO.Ninja uses this for signaling)
+        webrtc.connect('on-data-channel', self._on_room_data_channel, recorder)
+        
+        # Start pipeline
+        ret = pipe.set_state(Gst.State.PLAYING)
+        if ret == Gst.StateChangeReturn.FAILURE:
+            printc(f"[{stream_id}] ERROR: Failed to start pipeline", "F00")
+            return None
+        
+        # Wait for pipeline to reach PLAYING state
+        ret = pipe.get_state(Gst.SECOND)
+        if ret[0] != Gst.StateChangeReturn.SUCCESS:
+            printc(f"[{stream_id}] WARNING: Pipeline didn't reach PLAYING state", "FF0")
+            
+        recorder['pipe'] = pipe
+        recorder['webrtc'] = webrtc
+        
+        printc(f"[{stream_id}] Pipeline created successfully (state: {pipe.get_state(0)[1].value_name})", "0F0")
+        return recorder
+    
+    def _on_room_ice_candidate(self, webrtc, mlineindex, candidate, recorder):
+        """Handle ICE candidate for room recording"""
+        # Queue the candidate
+        recorder['ice_candidates'].append((candidate, mlineindex))
+        # Put in async queue for sending using thread-safe method
+        if self.event_loop:
+            asyncio.run_coroutine_threadsafe(
+                self.ice_queue.put((recorder['stream_id'], recorder['session_id'], candidate, mlineindex)),
+                self.event_loop
+            )
+        else:
+            # Fallback: just store it
+            printc(f"[{recorder['stream_id']}] Warning: No event loop for ICE candidate", "FF0")
+    
+    def _on_room_pad_added(self, webrtc, pad, recorder):
+        """Handle new pad for room recording"""
+        stream_id = recorder['stream_id']
+        printc(f"[{stream_id}] New pad added: {pad.get_name()}", "77F")
+        
+        caps = pad.get_current_caps()
+        if not caps:
+            printc(f"[{stream_id}] No caps on pad yet", "FF0")
+            return
+            
+        printc(f"[{stream_id}] Pad caps: {caps.to_string()}", "77F")
+        
+        structure = caps.get_structure(0)
+        name = structure.get_name()
+        
+        if name.startswith('application/x-rtp'):
+            media = structure.get_string('media')
+            printc(f"[{stream_id}] Media type: {media}", "77F")
+            
+            if media != 'video':
+                printc(f"[{stream_id}] Ignoring non-video media", "77F")
+                return
+                
+            encoding_name = structure.get_string('encoding-name')
+            printc(f"[{stream_id}] Video codec: {encoding_name}", "0F0")
+            
+            self._setup_room_recording(pad, encoding_name, recorder)
+        else:
+            printc(f"[{stream_id}] Ignoring non-RTP pad: {name}", "77F")
+    
+    def _on_room_connection_state(self, webrtc, pspec, recorder):
+        """Monitor connection state for room recording"""
+        state = webrtc.get_property('connection-state')
+        stream_id = recorder['stream_id']
+        printc(f"[{stream_id}] Connection state: {state.value_name}", "77F")
+        
+        if state == GstWebRTC.WebRTCPeerConnectionState.FAILED:
+            ice_state = webrtc.get_property('ice-connection-state')
+            ice_gathering_state = webrtc.get_property('ice-gathering-state')
+            printc(f"[{stream_id}] ICE connection state: {ice_state.value_name}", "F00")
+            printc(f"[{stream_id}] ICE gathering state: {ice_gathering_state.value_name}", "F00")
+            printc(f"[{stream_id}] Connection failed - check STUN/TURN connectivity", "F00")
+            # Schedule cleanup using the stored event loop
+            if hasattr(self, 'event_loop') and self.event_loop:
+                asyncio.run_coroutine_threadsafe(
+                    self._cleanup_room_stream(stream_id),
+                    self.event_loop
+                )
+            else:
+                printc(f"[{stream_id}] Warning: Cannot cleanup - no event loop", "FF0")
+        elif state == GstWebRTC.WebRTCPeerConnectionState.DISCONNECTED:
+            printc(f"[{stream_id}] Peer disconnected", "F77")
+            # Schedule cleanup using the stored event loop
+            if hasattr(self, 'event_loop') and self.event_loop:
+                asyncio.run_coroutine_threadsafe(
+                    self._cleanup_room_stream(stream_id),
+                    self.event_loop
+                )
+        elif state == GstWebRTC.WebRTCPeerConnectionState.CLOSED:
+            printc(f"[{stream_id}] Connection closed", "F77")
+            # Schedule cleanup using the stored event loop
+            if hasattr(self, 'event_loop') and self.event_loop:
+                asyncio.run_coroutine_threadsafe(
+                    self._cleanup_room_stream(stream_id),
+                    self.event_loop
+                )
+    
+    def _on_room_ice_connection_state(self, webrtc, pspec, recorder):
+        """Monitor ICE connection state"""
+        state = webrtc.get_property('ice-connection-state')
+        stream_id = recorder['stream_id']
+        printc(f"[{stream_id}] ICE connection state: {state.value_name}", "77F")
+        
+        # More debugging for NEW state
+        if state == GstWebRTC.WebRTCICEConnectionState.NEW:
+            # Get more details
+            ice_agent = webrtc.get_property('ice-agent')
+            if ice_agent:
+                gathering_state = webrtc.get_property('ice-gathering-state')
+                printc(f"[{stream_id}] ICE gathering state: {gathering_state.value_name}", "FF0")
+                
+                # Check if we have local/remote descriptions
+                local_desc = webrtc.get_property('local-description')
+                remote_desc = webrtc.get_property('remote-description')
+                printc(f"[{stream_id}] Has local desc: {local_desc is not None}, Has remote desc: {remote_desc is not None}", "FF0")
+                
+                # Check ICE agent state
+                if hasattr(ice_agent, 'get_property'):
+                    try:
+                        # Try to get more ICE agent info
+                        controlling = ice_agent.get_property('controlling-mode')
+                        printc(f"[{stream_id}] ICE controlling mode: {controlling}", "FF0")
+                    except:
+                        pass
+        
+        # Debug why ICE might be stuck in NEW state
+        if state == GstWebRTC.WebRTCICEConnectionState.NEW:
+            # Check if we have remote description
+            remote_desc = webrtc.get_property('remote-description')
+            local_desc = webrtc.get_property('local-description')
+            printc(f"[{recorder['stream_id']}] Has remote desc: {remote_desc is not None}, Has local desc: {local_desc is not None}", "FF0")
+    
+    def _on_room_ice_gathering_state(self, webrtc, pspec, recorder):
+        """Monitor ICE gathering state"""
+        state = webrtc.get_property('ice-gathering-state')
+        printc(f"[{recorder['stream_id']}] ICE gathering state: {state.value_name}", "77F")
+    
+    def _on_room_data_channel(self, webrtc, channel, recorder):
+        """Handle data channel for room recording"""
+        stream_id = recorder['stream_id']
+        printc(f"[{stream_id}] Data channel received: {channel.get_property('label')}", "0F0")
+        
+        # Connect to data channel signals for debugging
+        channel.connect('on-open', lambda ch: printc(f"[{stream_id}] Data channel opened", "0F0"))
+        channel.connect('on-close', lambda ch: printc(f"[{stream_id}] Data channel closed", "F77"))
+        channel.connect('on-message-string', lambda ch, msg: printc(f"[{stream_id}] Data message: {msg}", "77F"))
+        channel.connect('on-error', lambda ch: printc(f"[{stream_id}] Data channel error", "F00"))
+    
+    def _setup_room_recording(self, pad, encoding_name, recorder):
+        """Set up recording pipeline for a room stream"""
+        if recorder['recording']:
+            return
+            
+        stream_id = recorder['stream_id']
+        
+        # Generate filename
+        timestamp = int(time.time())
+        
+        # Create recording pipeline using parse_bin_from_description (like single-stream does)
+        if encoding_name == 'H264':
+            recording_file = f"{self.record}_{stream_id}_{timestamp}.ts"
+            # Match single-stream H264 recording pattern
+            pipeline_str = (
+                f"queue ! rtph264depay ! h264parse ! mpegtsmux ! "
+                f"filesink name=filesink_{stream_id} location={recording_file}"
+            )
+        elif encoding_name == 'VP8':
+            # VP8 recording - decode and re-encode to handle resolution changes
+            recording_file = f"{self.record}_{stream_id}_{timestamp}.webm"
+            pipeline_str = (
+                f"queue max-size-buffers=0 max-size-time=0 ! "
+                f"rtpvp8depay ! "
+                f"vp8dec ! "
+                f"videoscale ! "
+                f"video/x-raw,width=1280,height=720 ! "
+                f"vp8enc deadline=1 cpu-used=4 ! "
+                f"matroskamux streamable=true ! "
+                f"filesink name=filesink_{stream_id} location={recording_file}"
+            )
+        elif encoding_name == 'VP9':
+            recording_file = f"{self.record}_{stream_id}_{timestamp}.mkv"
+            pipeline_str = (
+                f"queue ! rtpvp9depay ! matroskamux ! "
+                f"filesink name=filesink_{stream_id} location={recording_file}"
+            )
+        else:
+            printc(f"[{stream_id}] Unknown codec: {encoding_name}", "F00")
+            return
+            
+        printc(f"[{stream_id}] Recording to: {recording_file}", "0F0")
+        printc(f"[{stream_id}] Pipeline: {pipeline_str}", "77F")
+        
+        # Create bin from description
+        try:
+            out = Gst.parse_bin_from_description(pipeline_str, True)
+            if not out:
+                printc(f"[{stream_id}] ❌ Failed to create recording bin", "F00")
+                return
+        except Exception as e:
+            printc(f"[{stream_id}] ❌ Error creating recording bin: {e}", "F00")
+            return
+            
+        # Add to pipeline
+        pipe = recorder['pipe']
+        pipe.add(out)
+        out.sync_state_with_parent()
+        
+        # Get the sink pad from the bin
+        sink = out.get_static_pad('sink')
+        if not sink:
+            printc(f"[{stream_id}] ❌ Failed to get sink pad from recording bin", "F00")
+            return
+            
+        # Check if pad is already linked
+        if pad.is_linked():
+            printc(f"[{stream_id}] ⚠️  Pad already linked", "FF0")
+            return
+            
+        # Link pad to bin
+        link_result = pad.link(sink)
+        
+        if link_result == Gst.PadLinkReturn.OK:
+            recorder['recording'] = True
+            recorder['recording_file'] = recording_file
+            recorder['filesink'] = pipe.get_by_name(f'filesink_{stream_id}')
+            recorder['start_time'] = time.time()
+            printc(f"[{stream_id}] ✅ Recording started", "0F0")
+            
+            # Update room_streams to show recording status
+            async def update_status():
+                async with self.room_streams_lock:
+                    for uuid, stream_info in self.room_streams.items():
+                        if stream_info.get('streamID') == stream_id:
+                            stream_info['recording'] = True
+                            break
+            asyncio.create_task(update_status())
+        else:
+            printc(f"[{stream_id}] ❌ Failed to link recording pipeline: {link_result}", "F00")
+            # Debug info
+            pad_caps = pad.get_current_caps()
+            sink_caps = sink.get_pad_template_caps()
+            printc(f"[{stream_id}] Pad caps: {pad_caps.to_string() if pad_caps else 'None'}", "F00")
+            printc(f"[{stream_id}] Sink caps: {sink_caps.to_string() if sink_caps else 'None'}", "F00")
+    
+    async def _cleanup_room_stream(self, stream_id):
+        """Clean up a disconnected room stream"""
+        printc(f"[{stream_id}] 🧹 Cleaning up disconnected stream", "F77")
+        
+        # Remove from room_recorders
+        if stream_id in self.room_recorders:
+            recorder = self.room_recorders[stream_id]
+            
+            # Stop the pipeline if it exists
+            if recorder.get('pipe'):
+                printc(f"[{stream_id}] Stopping pipeline", "F77")
+                recorder['pipe'].set_state(Gst.State.NULL)
+            
+            # Remove from recorders
+            del self.room_recorders[stream_id]
+            printc(f"[{stream_id}] Removed from recorders", "F77")
+        
+        # Remove from room_streams
+        async with self.room_streams_lock:
+            # Find UUID by stream_id
+            uuid_to_remove = None
+            for uuid, stream_info in self.room_streams.items():
+                if stream_info.get('streamID') == stream_id:
+                    uuid_to_remove = uuid
+                    break
+            
+            if uuid_to_remove:
+                del self.room_streams[uuid_to_remove]
+                printc(f"[{stream_id}] Removed from room streams", "F77")
+    
+    async def _process_ice_candidates(self):
+        """Process ICE candidates from room recorders"""
+        while True:
+            try:
+                stream_id, session_id, candidate, mlineindex = await self.ice_queue.get()
+                
+                # If no session yet, get it from recorder
+                if not session_id and stream_id in self.room_recorders:
+                    session_id = self.room_recorders[stream_id].get('session_id')
+                
+                if session_id:  # Only send if we have a session
+                    await self.sendMessageAsync({
+                        'candidates': [{
+                            'candidate': candidate,
+                            'sdpMLineIndex': mlineindex
+                        }],
+                        'session': session_id,
+                        'type': 'local',  # We're sending OUR candidates, so type is 'local'
+                        'UUID': self.puuid
+                    })
+                    printc(f"[{stream_id}] Sent ICE candidate with session {session_id[:10]}...", "77F")
+                else:
+                    # Re-queue if no session yet
+                    printc(f"[{stream_id}] No session yet, re-queueing ICE candidate", "FF0")
+                    await asyncio.sleep(0.1)
+                    await self.ice_queue.put((stream_id, session_id, candidate, mlineindex))
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                printwarn(f"Error processing ICE candidate: {e}")
+    
+    async def _handle_room_message(self, msg):
+        """Handle messages for room recording"""
+        # Debug what message types we're getting
+        msg_type = None
+        if 'description' in msg:
+            msg_type = f"description/{msg['description'].get('type', 'unknown')}"
+        elif 'candidates' in msg:
+            msg_type = f"candidates({len(msg['candidates'])})"
+        elif 'candidate' in msg:
+            msg_type = "single-candidate"
+        elif 'request' in msg:
+            msg_type = f"request/{msg['request']}"
+        else:
+            msg_type = "unknown"
+            
+        if msg_type not in ['request/ping', 'unknown']:  # Don't log pings
+            printc(f"[Room Recording] Handling message type: {msg_type}, session: {msg.get('session', 'none')[:20]}...", "77F")
+        
+        # Check if this is an offer for a room stream
+        if 'description' in msg and msg['description'].get('type') == 'offer':
+            session = msg.get('session')
+            # Find which stream this is for
+            stream_id = None
+            
+            # Check by session
+            if session in self.room_sessions:
+                stream_id = self.room_sessions[session]
+            else:
+                # Check by matching to recorder without session
+                for sid, recorder in self.room_recorders.items():
+                    if not recorder['session_id']:
+                        stream_id = sid
+                        break
+            
+            if stream_id:
+                answer_sdp = await self._handle_room_offer(
+                    msg['description']['sdp'],
+                    session,
+                    stream_id
+                )
+                
+                if answer_sdp:
+                    await self.sendMessageAsync({
+                        'description': {
+                            'type': 'answer',
+                            'sdp': answer_sdp
+                        },
+                        'session': session,
+                        'UUID': self.puuid
+                    })
+                return True
+        
+        # Handle ICE candidates
+        elif 'candidates' in msg:
+            session = msg.get('session')
+            stream_id = None
+            
+            # Try to find stream by session
+            if session in self.room_sessions:
+                stream_id = self.room_sessions[session]
+            else:
+                # Try to match by 'from' field or other identifiers
+                from_id = msg.get('from')
+                if from_id:
+                    for sid, recorder in self.room_recorders.items():
+                        # Match if session matches or if this is the only active recorder
+                        if (recorder.get('session_id') == session or 
+                            (not recorder.get('session_id') and len(self.room_recorders) == 1)):
+                            stream_id = sid
+                            # Update session mapping
+                            if session and not recorder.get('session_id'):
+                                recorder['session_id'] = session
+                                self.room_sessions[session] = sid
+                            break
+            
+            if stream_id:
+                recorder = self.room_recorders.get(stream_id)
+                if recorder and recorder['webrtc']:
+                    added_count = 0
+                    for candidate in msg['candidates']:
+                        if 'candidate' in candidate:
+                            try:
+                                # Debug candidate format
+                                cand_str = candidate['candidate']
+                                mline = candidate.get('sdpMLineIndex', 0)
+                                
+                                # Add the candidate
+                                recorder['webrtc'].emit('add-ice-candidate', mline, cand_str)
+                                added_count += 1
+                                
+                                # Log TURN candidates specifically
+                                if 'typ relay' in cand_str:
+                                    printc(f"[{stream_id}] Added TURN candidate: {cand_str[:60]}...", "0F0")
+                            except Exception as e:
+                                printc(f"[{stream_id}] Error adding ICE candidate: {e}", "F00")
+                                printc(f"[{stream_id}] Candidate was: {candidate}", "F00")
+                    printc(f"[{stream_id}] Added {added_count}/{len(msg['candidates'])} remote ICE candidates", "77F")
+                    return True
+            else:
+                printc(f"Warning: Received ICE candidates for unknown session: {session}", "FF0")
+                return True
+        
+        # Handle single ICE candidate (some implementations send one at a time)
+        elif 'candidate' in msg:
+            session = msg.get('session')
+            stream_id = None
+            
+            # Try to find stream by session
+            if session in self.room_sessions:
+                stream_id = self.room_sessions[session]
+            else:
+                # For single recorder, assume it's for that one
+                if len(self.room_recorders) == 1:
+                    stream_id = list(self.room_recorders.keys())[0]
+                    
+            if stream_id:
+                recorder = self.room_recorders.get(stream_id)
+                if recorder and recorder['webrtc']:
+                    try:
+                        recorder['webrtc'].emit('add-ice-candidate',
+                                              msg.get('sdpMLineIndex', 0),
+                                              msg['candidate'])
+                        printc(f"[{stream_id}] Added single remote ICE candidate", "77F")
+                    except Exception as e:
+                        printc(f"[{stream_id}] Error adding single ICE candidate: {e}", "F00")
+                    return True
+        
+        return False
+    
+    async def _handle_room_offer(self, offer_sdp, session_id, stream_id):
+        """Handle SDP offer for room recording"""
+        recorder = self.room_recorders.get(stream_id)
+        if not recorder:
+            printc(f"[{stream_id}] No recorder found for offer", "F00")
+            return None
+            
+        recorder['session_id'] = session_id
+        self.room_sessions[session_id] = stream_id
+        
+        webrtc = recorder['webrtc']
+        if not webrtc:
+            return None
+            
+        printc(f"[{stream_id}] Setting remote description", "77F")
+        
+        # Parse SDP
+        res, sdp_msg = GstSdp.SDPMessage.new_from_text(offer_sdp)
+        if res != GstSdp.SDPResult.OK:
+            printc(f"[{stream_id}] ERROR: Failed to parse SDP", "F00")
+            return None
+            
+        offer = GstWebRTC.WebRTCSessionDescription.new(
+            GstWebRTC.WebRTCSDPType.OFFER,
+            sdp_msg
+        )
+        
+        # Ensure pipeline is playing before negotiation
+        pipe = recorder.get('pipe')
+        if pipe:
+            state = pipe.get_state(0)[1]
+            if state != Gst.State.PLAYING:
+                printc(f"[{stream_id}] WARNING: Pipeline not in PLAYING state before negotiation: {state.value_name}", "FF0")
+        
+        # Set remote description (match main handler pattern)
+        promise = Gst.Promise.new()
+        webrtc.emit('set-remote-description', offer, promise)
+        promise.interrupt()  # Don't wait, let it complete asynchronously
+        
+        # Create answer with callback
+        answer_ready = asyncio.Event()
+        answer_sdp = None
+        
+        def on_answer_ready(promise, webrtc):
+            nonlocal answer_sdp
+            promise.wait()
+            reply = promise.get_reply()
+            if reply:
+                answer = reply.get_value('answer')
+                if answer:
+                    # Set local description
+                    promise2 = Gst.Promise.new()
+                    webrtc.emit('set-local-description', answer, promise2)
+                    promise2.interrupt()
+                    
+                    answer_sdp = answer.sdp.as_text()
+                    printc(f"[{stream_id}] Answer created successfully", "0F0")
+                else:
+                    printc(f"[{stream_id}] ERROR: No answer in reply", "F00")
+            else:
+                printc(f"[{stream_id}] ERROR: No reply when creating answer", "F00")
+            answer_ready.set()
+        
+        # Create answer with callback
+        promise = Gst.Promise.new_with_change_func(on_answer_ready, webrtc)
+        webrtc.emit('create-answer', None, promise)
+        
+        # Wait for answer to be ready
+        await answer_ready.wait()
+        
+        if not answer_sdp:
+            return None
+        
+        # Send any pending ICE candidates now that we have a session
+        pending = recorder.get('ice_candidates', [])
+        if pending:
+            printc(f"[{stream_id}] Sending {len(pending)} pending ICE candidates", "77F")
+            for candidate, mlineindex in pending:
+                if self.event_loop:
+                    asyncio.run_coroutine_threadsafe(
+                        self.ice_queue.put((stream_id, session_id, candidate, mlineindex)),
+                        self.event_loop
+                    )
+            # Clear the pending list
+            recorder['ice_candidates'] = []
+        
+        return answer_sdp
+
     async def cleanup_pipeline(self):
         """Safely cleanup pipeline and all resources"""
         async with self.cleanup_lock:
-            printc("🧹 Cleaning up pipeline and resources...", "FF0")
+            printc("Cleaning up pipeline and resources...", "FF0")
+            
+            # Stop multi-peer client if active
+            if self.multi_peer_client:
+                try:
+                    self.multi_peer_client.cleanup()
+                except Exception as e:
+                    printwarn(f"Error stopping multi-peer client: {e}")
+            
+            # Report recorded files if any
+            if self.recording_files:
+                print("\n" + "="*60)
+                print("Recording Summary:")
+                total_size = 0
+                for f in self.recording_files:
+                    if os.path.exists(f):
+                        size = os.path.getsize(f)
+                        total_size += size
+                        print(f"  - {f} ({size:,} bytes)")
+                    else:
+                        print(f"  - {f} (not found)")
+                print(f"\n  Total size: {total_size:,} bytes")
+                print("="*60)
             
             # Stop all client connections first
             client_uuids = list(self.clients.keys())
@@ -2849,6 +3724,12 @@ class WebRTCClient:
                                 else:
                                     printwout("seed start")
                                     await self.sendMessageAsync({"request":"seed","streamID":self.stream_id+self.hashcode})
+                        continue
+                    else:
+                        # For other requests without UUID, we might need to handle them
+                        # especially for room recording mode
+                        if self.room_recording:
+                            await self._handle_room_message(msg)
                     continue
 
                 if UUID not in self.clients:
@@ -2864,10 +3745,40 @@ class WebRTCClient:
                     if not self.clients[UUID]['session']:
                         self.clients[UUID]['session'] = msg['session']
                     elif self.clients[UUID]['session'] != msg['session']:
-                        print("sessions don't match")
+                        # In room recording mode, different streams may have different sessions
+                        if self.room_recording:
+                            # Accept different sessions for different streams
+                            print(f"New session for room recording: {msg['session']}")
+                            # Create a new UUID entry for this session to avoid conflicts
+                            new_uuid = f"{UUID}_{msg['session']}"
+                            if new_uuid not in self.clients:
+                                self.clients[new_uuid] = {
+                                    "UUID": new_uuid,
+                                    "session": msg['session'],
+                                    "send_channel": None,
+                                    "timer": None,
+                                    "ping": 0,
+                                    "webrtc": None,
+                                    "original_uuid": UUID
+                                }
+                            UUID = new_uuid  # Use the new UUID for this session
+                        else:
+                            print("sessions don't match")
+                            continue
 
+                # Handle room recording messages
+                if self.room_recording:
+                    handled = await self._handle_room_message(msg)
+                    if handled:
+                        continue
+                
                 if 'description' in msg:
                     print("description via WSS")
+                    
+                    # In room recording mode, check if this UUID corresponds to a stream we're tracking
+                    original_uuid = self.clients[UUID].get('original_uuid', UUID) if UUID in self.clients else UUID
+                    if self.room_recording and original_uuid in self.room_streams:
+                        printc(f"Offer for room stream: {self.room_streams[original_uuid]['streamID']}", "7F7")
                     
                     if 'vector' in msg:
                         decryptedJson = decrypt_message(msg['description'], msg['vector'], self.password+self.salt)
@@ -2877,6 +3788,11 @@ class WebRTCClient:
                         
                     if 'type' in msg:
                         if msg['type'] == "offer":
+                            # Skip if multi-peer client is handling this stream
+                            if self.multi_peer_client and original_uuid in self.room_streams:
+                                # This offer is for a multi-peer client, skip main processing
+                                continue
+                            
                             if self.streamin:
                                 printc("📥 Incoming connection offer", "0FF")
                                 await self.start_pipeline(UUID)
@@ -2889,6 +3805,11 @@ class WebRTCClient:
                             self.handle_sdp_ice(msg, UUID)
                 elif 'candidates' in msg:
                     # Processing ICE candidates bundle via websocket
+                    
+                    # Skip if multi-peer client is handling room recording
+                    if self.multi_peer_client and self.room_recording:
+                        # These candidates are for the multi-peer client, already handled
+                        continue
                     
                     if 'vector' in msg:
                         decryptedJson = decrypt_message(msg['candidates'], msg['vector'], self.password+self.salt)
@@ -2977,31 +3898,96 @@ class WebRTCClient:
             
         printc(f"Room has {len(room_list)} members", "7F7")
         
+        # Debug: print room members
         for member in room_list:
-            if 'UUID' in member and 'streamID' in member:
-                stream_id = member['streamID']
-                uuid = member['UUID']
-                
-                # Check if we should record this stream
-                if self.stream_filter and stream_id not in self.stream_filter:
-                    continue
+            if 'streamID' in member:
+                printc(f"  - Stream: {member.get('streamID', 'unknown')}", "77F")
+        
+        # In room recording mode, we need to handle this differently
+        printc(f"Room recording mode: {self.room_recording}", "FF0")
+        if self.room_recording:
+            printc("🚀 Room recording mode - will record all streams", "0F0")
+            
+            # Start ICE processor if not running
+            if not self.ice_processor_task:
+                # Store event loop reference
+                try:
+                    self.event_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    self.event_loop = None
                     
-                # Track this stream (thread-safe)
-                async with self.room_streams_lock:
-                    self.room_streams[uuid] = {
-                        'streamID': stream_id,
-                        'recording': False,
-                        'stats': {}
-                    }
-                
-                if self.room_recording:
-                    printc(f"Found stream to record: {stream_id}", "7FF")
-                    # Request to play this stream
-                    await self.sendMessageAsync({
-                        "request": "play",
-                        "streamID": stream_id,
-                        "UUID": uuid
-                    })
+                if self.event_loop:
+                    self.ice_processor_task = asyncio.create_task(self._process_ice_candidates())
+            
+            # Add streams to record
+            streams_to_record = []
+            for member in room_list:
+                if 'streamID' in member:
+                    stream_id = member['streamID']
+                    
+                    # Apply filter if configured
+                    if self.stream_filter and stream_id not in self.stream_filter:
+                        continue
+                        
+                    streams_to_record.append(stream_id)
+                    
+            printc(f"Found {len(streams_to_record)} streams to record", "7FF")
+            
+            # Start recording each stream
+            for stream_id in streams_to_record:
+                await self._add_room_stream(stream_id)
+        else:
+            # Original single-stream handling
+            for member in room_list:
+                if 'UUID' in member and 'streamID' in member:
+                    stream_id = member['streamID']
+                    uuid = member['UUID']
+                    
+                    # Check if we should record this stream
+                    if self.stream_filter and stream_id not in self.stream_filter:
+                        continue
+                        
+                    # Track this stream (thread-safe)
+                    async with self.room_streams_lock:
+                        # Check if stream already exists
+                        existing_stream = False
+                        for existing_uuid, stream_info in self.room_streams.items():
+                            if stream_info.get('streamID') == stream_id:
+                                printc(f"⚠️  Stream {stream_id} already tracked (uuid: {existing_uuid})", "FF0")
+                                existing_stream = True
+                                break
+                        
+                        if not existing_stream:
+                            self.room_streams[uuid] = {
+                                'streamID': stream_id,
+                                'recording': False,
+                                'stats': {}
+                            }
+                    
+                    # For non-room-recording mode, just play the first stream
+                    if self.streamin and not self.room_recording:
+                        printc(f"Found stream to play: {stream_id}", "7FF")
+                        await self.sendMessageAsync({
+                            "request": "play",
+                            "streamID": stream_id
+                        })
+                        break
+    
+    async def create_isolated_connection(self, stream_id, stream_uuid):
+        """Create an isolated WebRTC connection for a specific stream in room recording mode"""
+        printc(f"Creating isolated connection for stream: {stream_id}", "7FF")
+        
+        # For now, we'll request each stream sequentially
+        # In a future enhancement, we could spawn separate WebRTC instances
+        await self.sendMessageAsync({
+            "request": "play",
+            "streamID": stream_id
+        })
+        
+        # Mark this stream as pending connection
+        async with self.room_streams_lock:
+            if stream_uuid in self.room_streams:
+                self.room_streams[stream_uuid]['connection_requested'] = True
     
     async def handle_new_room_stream(self, stream_id, uuid):
         """Handle a new stream that joined the room"""
@@ -3013,25 +3999,40 @@ class WebRTCClient:
         
         # Track this stream (thread-safe)
         async with self.room_streams_lock:
-            self.room_streams[uuid] = {
-                'streamID': stream_id,
-                'recording': False,
-                'stats': {}
-            }
+            # Check if stream already exists
+            existing_stream = False
+            for existing_uuid, stream_info in self.room_streams.items():
+                if stream_info.get('streamID') == stream_id:
+                    printc(f"⚠️  Stream {stream_id} already tracked (uuid: {existing_uuid})", "FF0")
+                    existing_stream = True
+                    break
+            
+            if not existing_stream:
+                self.room_streams[uuid] = {
+                    'streamID': stream_id,
+                    'recording': False,
+                    'stats': {},
+                    'client': None  # For future isolated client
+                }
         
         if self.room_recording:
-            # Request to play this stream
-            await self.sendMessageAsync({
-                "request": "play",
-                "streamID": stream_id,
-                "UUID": uuid
-            })
+            # Use multi-peer client if available
+            if self.multi_peer_client:
+                printc(f"Adding new stream to multi-peer client: {stream_id}", "0F0")
+                await self.multi_peer_client.add_stream(stream_id)
+            else:
+                # Fallback to isolated connection
+                await self.create_isolated_connection(stream_id, uuid)
     
     def on_new_stream_room(self, client, pad):
         """Handle new stream pad for room recording"""
         try:
-            name = pad.get_current_caps().get_structure(0).get_name()
-            print(f"New stream pad for {client['streamID']}: {name}")
+            caps = pad.get_current_caps()
+            if not caps:
+                printc(f"No caps available for pad yet", "F77")
+                return
+            name = caps.get_structure(0).get_name()
+            print(f"New stream pad for {client.get('streamID', 'unknown')}: {name}")
             
             if self.room_ndi:
                 # Setup NDI output for this stream
@@ -3052,7 +4053,7 @@ class WebRTCClient:
         timestamp = str(int(time.time()))
         
         # Create recording pipeline without transcoding
-        if "H264" in name:
+        if "h264" in name.lower():
             # Direct mux H264 to MPEG-TS
             # Add counter to prevent file collisions
             filename = f"{self.room_name}_{stream_id}_{timestamp}_{client['UUID'][:8]}.ts"
@@ -3061,7 +4062,8 @@ class WebRTCClient:
                 f"mpegtsmux name=mux_{client['UUID']} ! "
                 f"filesink location={filename}"
             )
-        elif "VP8" in name:
+            printc(f"Recording H264 video to: {filename}", "7F7")
+        elif "vp8" in name.lower():
             # Direct mux VP8 to MPEG-TS
             # Add counter to prevent file collisions
             filename = f"{self.room_name}_{stream_id}_{timestamp}_{client['UUID'][:8]}.ts"
@@ -3070,6 +4072,7 @@ class WebRTCClient:
                 f"mpegtsmux name=mux_{client['UUID']} ! "
                 f"filesink location={filename}"
             )
+            printc(f"Recording VP8 video to: {filename}", "7F7")
         else:
             printc(f"Unknown video codec: {name}", "F00")
             return
@@ -3226,24 +4229,37 @@ class WebRTCClient:
             if not hasattr(self, 'conn') or not self.conn or self.conn.closed:
                 break
                 
-            if not self.room_recording or not self.room_streams:
+            if not self.room_recording or not self.room_recorders:
                 continue
                 
             print("\n" + "="*60)
-            printc(f"Room Recording Status - {len(self.room_streams)} streams", "7FF")
+            printc(f"Room Recording Status - {len(self.room_recorders)} active recorders", "7FF")
             print("="*60)
             
-            for uuid, stream_info in self.room_streams.items():
-                stream_id = stream_info['streamID']
-                status = "Recording" if stream_info.get('recording', False) else "Waiting"
-                
-                # Get stats if available
-                if uuid in self.clients and self.clients[uuid].get('webrtc'):
-                    webrtc = self.clients[uuid]['webrtc']
-                    # TODO: Get actual bitrate/resolution from GStreamer
-                    print(f"  {stream_id}: {status}")
+            for stream_id, recorder in self.room_recorders.items():
+                # Determine status
+                if recorder['recording']:
+                    duration = int(time.time() - recorder['start_time'])
+                    status = f"Recording ({duration}s)"
+                    
+                    # Get file size if available
+                    if recorder.get('recording_file') and os.path.exists(recorder['recording_file']):
+                        size = os.path.getsize(recorder['recording_file'])
+                        status += f" - {size:,} bytes"
                 else:
-                    print(f"  {stream_id}: {status}")
+                    status = "Connecting..."
+                
+                # Show connection state
+                if recorder.get('webrtc'):
+                    conn_state = recorder['webrtc'].get_property('connection-state')
+                    ice_state = recorder['webrtc'].get_property('ice-connection-state')
+                    if conn_state == GstWebRTC.WebRTCPeerConnectionState.CONNECTED:
+                        if not recorder['recording']:
+                            status = "Connected (waiting for video)"
+                    else:
+                        status += f" [{conn_state.value_name}]"
+                
+                print(f"  {stream_id}: {status}")
             
             print("="*60 + "\n")
     
@@ -3991,11 +5007,17 @@ async def main():
         args.buffer = 10
 
     Gst.init(None)
-    Gst.debug_set_active(False)
 
     if args.debug:
-        Gst.debug_set_default_threshold(2)
+        Gst.debug_set_active(True)
+        Gst.debug_set_default_threshold(3)  # More verbose
+        # Also set specific categories for WebRTC debugging
+        Gst.debug_set_threshold_for_name("webrtcbin", 5)
+        Gst.debug_set_threshold_for_name("webrtcice", 5)
+        Gst.debug_set_threshold_for_name("nice", 4)
+        printc("🐛 GStreamer debug output enabled", "FF0")
     else:
+        Gst.debug_set_active(False)
         Gst.debug_set_default_threshold(0)
     if args.led:
         try:
@@ -4053,10 +5075,8 @@ async def main():
             print("You must install Numpy for this to work.\npip3 install numpy")
             sys.exit()
         args.streamin = args.framebuffer
-    elif args.record:
-        args.streamin = args.record
     elif args.record_room or args.room_ndi:
-        # Room recording mode
+        # Room recording mode (check this first before regular record)
         args.streamin = "room_recording"  # Special value to indicate room recording mode
         args.room_recording = True
         
@@ -4070,13 +5090,23 @@ async def main():
             printc("Warning: Room recording may not work with custom websocket servers", "F77")
             printc("This feature requires a server that tracks room membership and sends notifications", "F77")
             
+        # If --record is also specified, use it as the prefix
+        if not args.record:
+            args.record = args.room  # Default to room name if no prefix specified
+            
         # Parse stream filter if provided
         if args.record_streams:
             args.stream_filter = [s.strip() for s in args.record_streams.split(',')]
         else:
             args.stream_filter = None
+    elif args.record:
+        args.streamin = args.record
     else:
         args.streamin = False
+
+    # Ensure stream_filter is always defined
+    if not hasattr(args, 'stream_filter'):
+        args.stream_filter = None
 
     audiodevices = []
     if not (args.test or args.noaudio or args.streamin):
@@ -4925,7 +5955,165 @@ async def main():
 
     args.pipeline = PIPELINE_DESC
     
+    # For room recording, spawn separate viewers for each stream
+    # Check if we should use multi-peer client instead
+    use_multi_peer = args.record_room and args.room and args.record
+    
+    # Check if multi_peer_client is available
+    try:
+        from multi_peer_client import MultiPeerClient
+        multi_peer_available = True
+    except ImportError:
+        multi_peer_available = False
+    
+    if use_multi_peer and multi_peer_available:
+        # Use multi-peer client instead of spawning processes
+        printc("\n🎬 Room Recording Mode (Multi-Peer Single WebSocket)", "0F0")
+        printc("   Using shared WebSocket with multiple WebRTC peer connections", "0F0")
+        printc("   This is more efficient than spawning separate processes", "77F")
+        # Continue to WebRTCClient creation below
+    elif use_multi_peer and not multi_peer_available:
+        # Fall back to process spawning if multi-peer client is not available
+        printc("\n🎬 Room Recording Mode (Process Spawning)", "0FF")
+        printc("   This will spawn separate recorder processes for each stream in the room", "77F")
+        
+        # First, connect to discover room members
+        printc("\n🔍 Discovering room members...", "0FF")
+        printc(f"   Room: {args.room}", "77F")
+        
+        # Create a temporary client just for discovery
+        discovery_args = argparse.Namespace(**vars(args))
+        discovery_args.streamin = False  # Don't start recording yet
+        discovery_args.record = None  # No recording during discovery
+        discovery_args.room_recording = False
+        discovery_args.pipeline = PIPELINE_DESC
+        
+        discovery_client = WebRTCClient(discovery_args)
+        room_members = []
+        
+        async def discover_room():
+            await discovery_client.connect()
+            
+            # Wait for room listing
+            timeout = 10
+            start_time = time.time()
+            
+            while time.time() - start_time < timeout:
+                await asyncio.sleep(0.5)
+                
+                # Check if we got room members
+                if discovery_client.room_streams:
+                    for uuid, info in discovery_client.room_streams.items():
+                        if 'streamID' in info:
+                            room_members.append(info['streamID'])
+                    break
+                    
+            await discovery_client.cleanup_pipeline()
+            
+        # Run discovery with retries
+        max_retries = 3
+        for retry in range(max_retries):
+            try:
+                room_members = []  # Clear before each attempt
+                discovery_client.room_streams = {}  # Reset room streams
+                await discover_room()
+                if room_members:
+                    break
+                    
+                if retry < max_retries - 1:
+                    printc(f"   No streams found, retrying ({retry + 1}/{max_retries})...", "FF0")
+                    await asyncio.sleep(3)
+                    
+            except Exception as e:
+                printc(f"Error during discovery: {e}", "F00")
+                if retry < max_retries - 1:
+                    await asyncio.sleep(2)
+                    
+        if not room_members:
+            printc("❌ No streams found in room after retries", "F00")
+            printc("   Make sure publishers are connected before starting the recorder", "FF0")
+            return
+            
+        printc(f"\n✅ Found {len(room_members)} streams: {', '.join(room_members)}", "0F0")
+        
+        # Now spawn recorders
+        printc("\n🚀 Starting individual recorders...", "0FF")
+        
+        processes = []
+        for stream_id in room_members:
+            cmd = [
+                sys.executable, sys.argv[0],  # Use same script
+                "--room", args.room,
+                "--view", stream_id,
+                "--record", f"{args.record}_{stream_id}",
+                "--bitrate", str(args.bitrate)
+            ]
+            
+            if args.noaudio:
+                cmd.append("--noaudio")
+            if args.server:
+                cmd.extend(["--server", args.server])
+            if hasattr(args, 'password') and args.password:
+                cmd.extend(["--password", args.password])
+                
+            log_file = f"{args.record}_{stream_id}.log"
+            printc(f"\n   Starting recorder for '{stream_id}'...", "77F")
+            
+            with open(log_file, "w") as log:
+                proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
+                
+            processes.append((stream_id, proc))
+            printc(f"   ✅ Started (PID: {proc.pid})", "0F0")
+            time.sleep(1)
+            
+        printc(f"\n📊 Recording {len(processes)} streams (press Ctrl+C to stop)...", "0FF")
+        
+        # Monitor processes
+        try:
+            while True:
+                active = sum(1 for _, p in processes if p.poll() is None)
+                print(f"\r   Active: {active}/{len(processes)} recorders", end="", flush=True)
+                
+                if active == 0:
+                    print("\n   All recorders stopped")
+                    break
+                    
+                await asyncio.sleep(2)
+                
+        except KeyboardInterrupt:
+            printc("\n\n🛑 Stopping recorders...", "FF0")
+            
+        # Stop all processes
+        for stream_id, proc in processes:
+            if proc.poll() is None:
+                proc.terminate()
+                printc(f"   Stopped {stream_id}", "77F")
+                
+        # Summary
+        printc("\n" + "="*60, "FFF")
+        printc("📹 Room Recording Summary", "0FF")
+        printc("="*60, "FFF")
+        
+        for stream_id, _ in processes:
+            files = list(Path(".").glob(f"{args.record}_{stream_id}_*.ts"))
+            files.extend(list(Path(".").glob(f"{args.record}_{stream_id}_*.mkv")))
+            
+            if files:
+                printc(f"\n{stream_id}:", "0F0")
+                for f in files:
+                    printc(f"  ✅ {f.name} ({f.stat().st_size:,} bytes)", "0F0")
+            else:
+                printc(f"\n{stream_id}: ❌ No recordings", "F00")
+                
+        printc("="*60, "FFF")
+        
+        # Return early without running the rest of main()
+        return  # End of process spawning block
+    
     c = WebRTCClient(args)
+    
+    # Set the event loop reference for thread-safe operations
+    c.event_loop = asyncio.get_running_loop()
     
     if args.socketout:
         c.setup_socket()

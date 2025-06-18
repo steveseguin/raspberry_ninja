@@ -534,6 +534,12 @@ midi demo video: https://youtu.be/Gry9UFtOTmQ
 - Have gstreamer/python automatically detect the input devices, settings, system, and configure things automatically.  Allowing for burn, plug, and boot, without needing to log in via SSH at all.
 
 
+## Recent Changes
+
+### December 2024
+- **Fixed VP8 recording resolution change issue**: Added video decoding/re-encoding pipeline to handle dynamic resolution changes during recording. This prevents "Caps changes are not supported by Matroska" errors that were causing recording failures.
+- **Increased heartbeat timeout**: Extended ping timeout from 30 seconds (10 pings) to 60 seconds (20 pings) to improve connection stability and prevent premature disconnections.
+
 ## Contributors of this repo
 <a href="https://github.com/steveseguin/raspberry_ninja/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=steveseguin/raspberry_ninja" />
