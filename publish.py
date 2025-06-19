@@ -1282,6 +1282,7 @@ class WebRTCSubprocessManager:
             'pipeline': self.config.get('pipeline', ''),
             'stun_server': self.config.get('stun_server', 'stun://stun.l.google.com:19302'),
             'turn_server': self.config.get('turn_server'),
+            'ice_transport_policy': self.config.get('ice_transport_policy', 'all'),
             'bitrate': self.config.get('bitrate', 2500),
         }
         
@@ -4284,7 +4285,7 @@ class WebRTCClient:
             'bitrate': self.bitrate,
             'stun_server': self.stun_server if hasattr(self, 'stun_server') else 'stun://stun.cloudflare.com:3478',
             'turn_server': self.turn_server if hasattr(self, 'turn_server') and self.turn_server else default_turn,
-            'ice_transport_policy': 'all',  # Allow both direct and relay connections
+            'ice_transport_policy': self.ice_transport_policy,  # Use policy from command line args
         }
         
         # Create subprocess manager

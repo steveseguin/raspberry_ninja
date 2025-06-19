@@ -44,6 +44,8 @@ class IPCWebRTCHandler:
         
         # ICE candidates queue
         self.ice_candidates = []
+        self.generated_ice_candidates = []  # Track our generated candidates
+        self.pipeline_start_time = None
         
     def send_message(self, msg: Dict[str, Any]):
         """Send message to parent process via stdout"""
@@ -61,6 +63,22 @@ class IPCWebRTCHandler:
             "message": f"[{self.stream_id}] {message}"
         })
     
+    def _process_queued_ice_candidates(self):
+        """Process queued ICE candidates - called via GObject.timeout_add"""
+        if self.ice_candidates and self.webrtc:
+            # Check pipeline state
+            state_ret, state, pending = self.pipe.get_state(0)
+            if state_ret == Gst.StateChangeReturn.SUCCESS and state == Gst.State.PLAYING:
+                self.log(f"Processing {len(self.ice_candidates)} queued ICE candidates (pipeline in {state.value_name} state)")
+                for sdpMLineIndex, candidate in self.ice_candidates:
+                    self.webrtc.emit('add-ice-candidate', sdpMLineIndex, candidate)
+                self.ice_candidates.clear()
+            else:
+                self.log(f"Pipeline not ready yet (state: {state.value_name}), will retry queued ICE candidates")
+                # Retry in a moment
+                GObject.timeout_add(100, self._process_queued_ice_candidates)
+        return False  # Don't repeat
+        
     def create_pipeline(self):
         """Create the GStreamer pipeline based on config"""
         self.log("Creating pipeline...")
@@ -124,7 +142,16 @@ class IPCWebRTCHandler:
             self.log("Failed to start pipeline", "error")
             return False
             
+        # Track pipeline start time for debugging
+        self.pipeline_start_time = time.time()
         self.log("Pipeline started successfully")
+        
+        # Process any queued ICE candidates now that pipeline is ready
+        if self.ice_candidates:
+            self.log(f"Processing {len(self.ice_candidates)} queued ICE candidates")
+            # Give the pipeline a moment to stabilize
+            GObject.timeout_add(100, self._process_queued_ice_candidates)
+            
         return True
         
     def on_negotiation_needed(self, webrtc):
@@ -137,19 +164,44 @@ class IPCWebRTCHandler:
         """Handle created offer"""
         promise.wait()
         reply = promise.get_reply()
+        
+        if not reply:
+            self.log("Failed to get promise reply for offer creation", "error")
+            return
+            
         offer = reply.get_value('offer')
         
         if not offer:
-            self.log("Failed to create offer", "error")
+            self.log("Failed to create offer - no offer in promise reply", "error")
+            # Log current state for debugging
+            signaling_state = webrtc.get_property('signaling-state')
+            self.log(f"Current signaling state: {signaling_state.value_name}", "error")
             return
+        
+        self.log("Offer created successfully")
+        
+        # Get offer text and log key details
+        text = offer.sdp.as_text()
+        self.log(f"Offer SDP length: {len(text)} chars")
+        
+        # Parse offer to log media details
+        res, sdp_msg = GstSdp.SDPMessage.new_from_text(text)
+        if res == GstSdp.SDPResult.OK:
+            num_media = sdp_msg.medias_len()
+            self.log(f"Offer contains {num_media} media section(s)")
             
         # Set local description
+        self.log("Setting local description (offer)...")
         promise = Gst.Promise.new()
         webrtc.emit('set-local-description', offer, promise)
         promise.interrupt()
         
+        # Log signaling state after setting local description
+        signaling_state = webrtc.get_property('signaling-state')
+        self.log(f"Signaling state after setting local offer: {signaling_state.value_name}")
+        
         # Send offer to parent
-        text = offer.sdp.as_text()
+        self.log("Sending offer to parent process...")
         self.send_message({
             "type": "sdp",
             "sdp_type": "offer",
@@ -159,6 +211,9 @@ class IPCWebRTCHandler:
         
     def on_ice_candidate(self, webrtc, mlineindex, candidate):
         """Send ICE candidate to parent"""
+        # Track generated candidates
+        self.generated_ice_candidates.append((mlineindex, candidate))
+        
         # Log candidate type
         if 'typ host' in candidate:
             self.log(f"Generated host candidate: {candidate[:60]}...")
@@ -263,6 +318,24 @@ class IPCWebRTCHandler:
             gathering_state = webrtc.get_property('ice-gathering-state')
             self.log(f"ICE gathering state: {gathering_state.value_name}", "error")
             
+            # Get statistics about ICE candidates
+            num_local_candidates = len(self.generated_ice_candidates)
+            self.log(f"Number of local candidates generated: {num_local_candidates}", "error")
+            
+            # Check if we have any relay candidates
+            has_relay = any('typ relay' in str(c[1]) for c in self.generated_ice_candidates if len(c) > 1 and c[1])
+            if not has_relay and self.config.get('turn_server'):
+                self.log("No TURN relay candidates were generated - TURN server may be unreachable", "error")
+            
+            # Log time since pipeline started
+            if hasattr(self, 'pipeline_start_time'):
+                elapsed = time.time() - self.pipeline_start_time
+                self.log(f"ICE failed after {elapsed:.1f} seconds", "error")
+                
+            # Log current signaling state
+            signaling_state = webrtc.get_property('signaling-state')
+            self.log(f"Signaling state at failure: {signaling_state.value_name}", "error")
+            
         self.send_message({
             "type": "ice_state",
             "state": state.value_name
@@ -271,7 +344,16 @@ class IPCWebRTCHandler:
     def on_connection_state_changed(self, webrtc, pspec):
         """WebRTC connection state changed"""
         state = webrtc.get_property('connection-state')
-        self.log(f"Connection state: {state.value_name}")
+        
+        # Track previous state for better logging
+        prev_state = getattr(self, 'last_connection_state', None)
+        self.last_connection_state = state
+        
+        if prev_state:
+            self.log(f"Connection state: {prev_state.value_name} -> {state.value_name}")
+        else:
+            self.log(f"Connection state: {state.value_name}")
+            
         self.send_message({
             "type": "connection_state",
             "state": state.value_name
@@ -280,23 +362,85 @@ class IPCWebRTCHandler:
         # If connected, we should start seeing pads
         if state == GstWebRTC.WebRTCPeerConnectionState.CONNECTED:
             self.log("WebRTC connected successfully!")
+            if hasattr(self, 'pipeline_start_time'):
+                elapsed = time.time() - self.pipeline_start_time
+                self.log(f"Connection established in {elapsed:.1f} seconds")
             self.send_message({
                 "type": "recording_started",
                 "file": self.record_file or "pending",
                 "codec": "pending"
             })
+            
+        # Log additional details for failure states
+        elif state == GstWebRTC.WebRTCPeerConnectionState.FAILED:
+            self.log("WebRTC connection failed!", "error")
+            
+            # Get ICE connection state
+            ice_state = webrtc.get_property('ice-connection-state')
+            self.log(f"ICE connection state at failure: {ice_state.value_name}", "error")
+            
+            # Get signaling state
+            signaling_state = webrtc.get_property('signaling-state')
+            self.log(f"Signaling state at failure: {signaling_state.value_name}", "error")
+            
+            # Log timing information
+            if hasattr(self, 'pipeline_start_time'):
+                elapsed = time.time() - self.pipeline_start_time
+                self.log(f"Connection failed after {elapsed:.1f} seconds", "error")
+                
+        elif state == GstWebRTC.WebRTCPeerConnectionState.DISCONNECTED:
+            self.log("WebRTC disconnected - connection lost", "warning")
+            
+        elif state == GstWebRTC.WebRTCPeerConnectionState.CLOSED:
+            self.log("WebRTC connection closed", "warning")
         
     def on_bus_message(self, bus, message):
         """Handle GStreamer bus messages"""
         t = message.type
         if t == Gst.MessageType.ERROR:
             err, debug = message.parse_error()
-            self.log(f"Pipeline error: {err.message}", "error")
+            element = message.src.get_name() if message.src else "unknown"
+            self.log(f"Pipeline error from {element}: {err.message}", "error")
+            if debug:
+                self.log(f"Debug info: {debug}", "error")
+                
+            # Log element state
+            if message.src:
+                state = message.src.get_state(0)
+                if state[0] == Gst.StateChangeReturn.SUCCESS:
+                    current_state = state[1].value_name
+                    pending_state = state[2].value_name
+                    self.log(f"Element {element} state: current={current_state}, pending={pending_state}", "error")
+                    
             self.send_message({
                 "type": "error",
                 "error": err.message,
-                "debug": debug
+                "debug": debug,
+                "element": element
             })
+            
+        elif t == Gst.MessageType.WARNING:
+            err, debug = message.parse_warning()
+            element = message.src.get_name() if message.src else "unknown"
+            self.log(f"Pipeline warning from {element}: {err.message}", "warning")
+            
+        elif t == Gst.MessageType.INFO:
+            err, debug = message.parse_info()
+            element = message.src.get_name() if message.src else "unknown"
+            self.log(f"Pipeline info from {element}: {err.message}")
+            
+        elif t == Gst.MessageType.STATE_CHANGED:
+            # Only log state changes from the pipeline itself
+            if message.src == self.pipe:
+                old_state, new_state, pending_state = message.parse_state_changed()
+                if old_state != new_state:
+                    self.log(f"Pipeline state changed: {old_state.value_name} -> {new_state.value_name}")
+                    
+        elif t == Gst.MessageType.LATENCY:
+            self.log("Pipeline latency needs recalculation")
+            if self.pipe:
+                self.pipe.recalculate_latency()
+                
         elif t == Gst.MessageType.EOS:
             self.log("End of stream")
             self.send_message({"type": "eos"})
@@ -319,34 +463,82 @@ class IPCWebRTCHandler:
             sdp_type = msg.get('sdp_type')
             sdp_text = msg.get('sdp')
             
+            self.log(f"Received SDP {sdp_type} (length: {len(sdp_text)} chars)")
+            
+            # Parse SDP and extract key info
             res, sdp_msg = GstSdp.SDPMessage.new_from_text(sdp_text)
             if res != GstSdp.SDPResult.OK:
-                self.log("Failed to parse SDP", "error")
+                self.log(f"Failed to parse SDP: result={res}", "error")
                 return
+            
+            # Log media information
+            num_media = sdp_msg.medias_len()
+            self.log(f"SDP contains {num_media} media section(s)")
+            
+            for i in range(num_media):
+                media = sdp_msg.get_media(i)
+                media_type = media.get_media()
+                num_formats = media.formats_len()
+                self.log(f"  Media {i}: type={media_type}, formats={num_formats}")
+                
+                # Log codec information
+                for j in range(media.attributes_len()):
+                    attr = media.get_attribute(j)
+                    if attr.key == 'rtpmap':
+                        self.log(f"    Codec: {attr.value}")
                 
             if sdp_type == 'offer':
+                self.log("Processing SDP offer...")
+                
                 # Set remote description
                 offer = GstWebRTC.WebRTCSessionDescription.new(
                     GstWebRTC.WebRTCSDPType.OFFER,
                     sdp_msg
                 )
+                
+                self.log("Setting remote description (offer)...")
                 promise = Gst.Promise.new()
                 self.webrtc.emit('set-remote-description', offer, promise)
                 promise.interrupt()
                 
+                # Log current signaling state
+                signaling_state = self.webrtc.get_property('signaling-state')
+                self.log(f"Signaling state after setting remote offer: {signaling_state.value_name}")
+                
+                # Process any queued ICE candidates after setting remote description
+                if self.ice_candidates:
+                    self.log(f"Found {len(self.ice_candidates)} queued ICE candidates after setting remote description")
+                    # Give the webrtc element a moment to process the remote description
+                    GObject.timeout_add(50, self._process_queued_ice_candidates)
+                
                 # Create answer
+                self.log("Creating answer...")
                 promise = Gst.Promise.new_with_change_func(self.on_answer_created, self.webrtc, None)
                 self.webrtc.emit('create-answer', None, promise)
                 
             elif sdp_type == 'answer':
+                self.log("Processing SDP answer...")
+                
                 # Set remote description
                 answer = GstWebRTC.WebRTCSessionDescription.new(
                     GstWebRTC.WebRTCSDPType.ANSWER,
                     sdp_msg
                 )
+                
+                self.log("Setting remote description (answer)...")
                 promise = Gst.Promise.new()
                 self.webrtc.emit('set-remote-description', answer, promise)
                 promise.interrupt()
+                
+                # Log final signaling state
+                signaling_state = self.webrtc.get_property('signaling-state')
+                self.log(f"Signaling state after setting remote answer: {signaling_state.value_name}")
+                
+                # Process any queued ICE candidates after setting remote description
+                if self.ice_candidates:
+                    self.log(f"Found {len(self.ice_candidates)} queued ICE candidates after setting remote description")
+                    # Give the webrtc element a moment to process the remote description
+                    GObject.timeout_add(50, self._process_queued_ice_candidates)
                 
         elif msg_type == 'ice':
             # Add ICE candidate
@@ -363,10 +555,24 @@ class IPCWebRTCHandler:
                     self.log(f"Received remote TURN relay candidate")
             
             if self.webrtc:
-                self.webrtc.emit('add-ice-candidate', sdpMLineIndex, candidate)
+                # Check if we have a remote description set
+                signaling_state = self.webrtc.get_property('signaling-state')
+                if signaling_state in [GstWebRTC.WebRTCSignalingState.HAVE_REMOTE_OFFER, 
+                                     GstWebRTC.WebRTCSignalingState.HAVE_LOCAL_PRANSWER,
+                                     GstWebRTC.WebRTCSignalingState.HAVE_REMOTE_PRANSWER,
+                                     GstWebRTC.WebRTCSignalingState.HAVE_LOCAL_OFFER,
+                                     GstWebRTC.WebRTCSignalingState.STABLE]:
+                    # Safe to add ICE candidate
+                    self.webrtc.emit('add-ice-candidate', sdpMLineIndex, candidate)
+                    self.log(f"Added ICE candidate immediately (signaling state: {signaling_state.value_name})")
+                else:
+                    # Queue for later - remote description not set yet
+                    self.ice_candidates.append((sdpMLineIndex, candidate))
+                    self.log(f"Queued ICE candidate - signaling state not ready: {signaling_state.value_name}")
             else:
-                # Queue for later
+                # Queue for later - webrtc element doesn't exist yet
                 self.ice_candidates.append((sdpMLineIndex, candidate))
+                self.log("Queued ICE candidate - webrtc element not created yet")
                 
         elif msg_type == 'stop':
             # Stop pipeline
@@ -379,19 +585,44 @@ class IPCWebRTCHandler:
         """Handle created answer"""
         promise.wait()
         reply = promise.get_reply()
+        
+        if not reply:
+            self.log("Failed to get promise reply for answer creation", "error")
+            return
+            
         answer = reply.get_value('answer')
         
         if not answer:
-            self.log("Failed to create answer", "error")
+            self.log("Failed to create answer - no answer in promise reply", "error")
+            # Log current state for debugging
+            signaling_state = webrtc.get_property('signaling-state')
+            self.log(f"Current signaling state: {signaling_state.value_name}", "error")
             return
+        
+        self.log("Answer created successfully")
+        
+        # Get answer text and log key details
+        text = answer.sdp.as_text()
+        self.log(f"Answer SDP length: {len(text)} chars")
+        
+        # Parse answer to log media details
+        res, sdp_msg = GstSdp.SDPMessage.new_from_text(text)
+        if res == GstSdp.SDPResult.OK:
+            num_media = sdp_msg.medias_len()
+            self.log(f"Answer contains {num_media} media section(s)")
             
         # Set local description
+        self.log("Setting local description (answer)...")
         promise = Gst.Promise.new()
         webrtc.emit('set-local-description', answer, promise)
         promise.interrupt()
         
+        # Log signaling state after setting local description
+        signaling_state = webrtc.get_property('signaling-state')
+        self.log(f"Signaling state after setting local answer: {signaling_state.value_name}")
+        
         # Send answer to parent
-        text = answer.sdp.as_text()
+        self.log("Sending answer to parent process...")
         self.send_message({
             "type": "sdp",
             "sdp_type": "answer",
