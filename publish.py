@@ -3937,24 +3937,29 @@ class WebRTCClient:
                             # Check if this is for a subprocess recorder
                             if self.room_recording:
                                 printc(f"[Room Recording] Received offer for UUID: {UUID}", "77F")
-                                # First check if we have a session mapping
                                 session_id = self.clients[UUID].get('session') if UUID in self.clients else None
-                                stream_id = self.session_to_stream.get(session_id) if session_id else None
+                                stream_id = None
                                 
-                                # If not found by session, try by UUID in room_streams
-                                if not stream_id and original_uuid in self.room_streams:
-                                    stream_info = self.room_streams[original_uuid]
-                                    stream_id = stream_info.get('streamID')
+                                # Primary method: Check if this UUID is already mapped to a stream
+                                for sid, uid in self.stream_id_to_uuid.items():
+                                    if uid == UUID:
+                                        stream_id = sid
+                                        printc(f"[Room Recording] Found existing mapping: UUID {UUID} -> stream {stream_id}", "77F")
+                                        break
                                 
-                                # Try to match by checking all subprocess managers
+                                # Secondary method: For first offer after play request, match unmapped streams
                                 if not stream_id:
-                                    printc(f"[Room Recording] Checking {len(self.subprocess_managers)} subprocess managers", "77F")
+                                    printc(f"[Room Recording] No existing UUID mapping, checking {len(self.subprocess_managers)} subprocess managers", "77F")
                                     
-                                    # Check if this is the first offer after a play request
-                                    # We can match based on which subprocesses don't have a UUID mapping yet
+                                    # Find subprocesses that don't have a UUID mapping yet
                                     unmapped_streams = []
                                     for sid in self.subprocess_managers.keys():
-                                        if sid not in self.stream_id_to_uuid:
+                                        mapped = False
+                                        for mapped_sid, mapped_uid in self.stream_id_to_uuid.items():
+                                            if mapped_sid == sid:
+                                                mapped = True
+                                                break
+                                        if not mapped:
                                             unmapped_streams.append(sid)
                                     
                                     if unmapped_streams:
@@ -3969,11 +3974,15 @@ class WebRTCClient:
                                 # If we have a stream_id and a subprocess for it
                                 if stream_id and stream_id in self.subprocess_managers:
                                     printc(f"[Room Recording] Routing offer to subprocess: {stream_id}", "0F0")
-                                    # Update mappings
+                                    # Update UUID mapping - this is the key!
                                     self.stream_id_to_uuid[stream_id] = UUID
+                                    printc(f"[Room Recording] Mapped UUID {UUID} to stream {stream_id}", "0F0")
+                                    
+                                    # Also map session if available
                                     if session_id:
                                         self.session_to_stream[session_id] = stream_id
-                                        printc(f"[Room Recording] Mapped session {session_id} to stream {stream_id}", "77F")
+                                        printc(f"[Room Recording] Also mapped session {session_id} to stream {stream_id}", "77F")
+                                        
                                     # Route to subprocess
                                     await self.handle_subprocess_offer(stream_id, msg['sdp'], session_id or str(time.time()))
                                     continue
@@ -3995,23 +4004,30 @@ class WebRTCClient:
                     
                     # Check if this is for a subprocess recorder
                     if self.room_recording:
-                        # First check if we have a session mapping
                         session_id = self.clients[UUID].get('session') if UUID in self.clients else None
-                        stream_id = self.session_to_stream.get(session_id) if session_id else None
+                        stream_id = None
                         
-                        if stream_id:
-                            printc(f"[Room Recording] ICE candidates for session {session_id} -> stream {stream_id}", "77F")
+                        # Primary method: Check UUID mapping
+                        for sid, uid in self.stream_id_to_uuid.items():
+                            if uid == UUID:
+                                stream_id = sid
+                                printc(f"[Room Recording] ICE candidates for UUID {UUID} -> stream {stream_id}", "77F")
+                                break
                         
-                        # If not found by session, try by UUID
-                        if not stream_id:
-                            # Check if this UUID maps to a stream
-                            for sid, uid in self.stream_id_to_uuid.items():
-                                if uid == UUID:
-                                    stream_id = sid
-                                    printc(f"[Room Recording] ICE candidates for UUID {UUID} -> stream {stream_id}", "77F")
-                                    break
+                        # Secondary method: Try session mapping if no UUID match
+                        if not stream_id and session_id:
+                            stream_id = self.session_to_stream.get(session_id)
+                            if stream_id:
+                                printc(f"[Room Recording] ICE candidates for session {session_id} -> stream {stream_id} (fallback)", "77F")
                         
                         if stream_id and stream_id in self.subprocess_managers:
+                            # Validate session if we have one
+                            if session_id:
+                                expected_session = self.session_to_stream.get(session_id)
+                                if expected_session and expected_session != stream_id:
+                                    printc(f"[Room Recording] WARNING: Session mismatch - expected stream {expected_session}, got {stream_id}", "F00")
+                                    # Continue anyway with UUID-based routing
+                                    
                             # Route to subprocess
                             if 'vector' in msg:
                                 decryptedJson = decrypt_message(msg['candidates'], msg['vector'], self.password+self.salt)
@@ -4024,7 +4040,8 @@ class WebRTCClient:
                             continue
                         else:
                             printc(f"[Room Recording] No subprocess found for ICE. UUID: {UUID}, session: {session_id}", "F00")
-                            printc(f"[Room Recording] Current mappings: {self.session_to_stream}", "F00")
+                            printc(f"[Room Recording] UUID mappings: {self.stream_id_to_uuid}", "F00")
+                            printc(f"[Room Recording] Session mappings: {self.session_to_stream}", "F00")
                     
                     if 'vector' in msg:
                         decryptedJson = decrypt_message(msg['candidates'], msg['vector'], self.password+self.salt)
@@ -4040,17 +4057,18 @@ class WebRTCClient:
                     
                     # Check if this is for a subprocess recorder
                     if self.room_recording:
-                        # First check if we have a session mapping
                         session_id = self.clients[UUID].get('session') if UUID in self.clients else None
-                        stream_id = self.session_to_stream.get(session_id) if session_id else None
+                        stream_id = None
                         
-                        # If not found by session, try by UUID
-                        if not stream_id:
-                            # Check if this UUID maps to a stream
-                            for sid, uid in self.stream_id_to_uuid.items():
-                                if uid == UUID:
-                                    stream_id = sid
-                                    break
+                        # Primary method: Check UUID mapping
+                        for sid, uid in self.stream_id_to_uuid.items():
+                            if uid == UUID:
+                                stream_id = sid
+                                break
+                        
+                        # Secondary method: Try session mapping if no UUID match
+                        if not stream_id and session_id:
+                            stream_id = self.session_to_stream.get(session_id)
                         
                         if stream_id and stream_id in self.subprocess_managers:
                             # Route to subprocess
