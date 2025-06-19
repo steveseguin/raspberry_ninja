@@ -17,6 +17,7 @@ import struct
 import glob
 import signal
 from pathlib import Path
+from typing import Dict, Any, Optional
 try:
     import hashlib
     from urllib.parse import urlparse
@@ -1256,7 +1257,142 @@ class WebServer:
             finally:
                 self.runner = None
 
+class WebRTCSubprocessManager:
+    """Manages WebRTC subprocesses with IPC communication"""
+    
+    def __init__(self, stream_id: str, config: Dict[str, Any]):
+        self.stream_id = stream_id
+        self.config = config
+        self.process = None
+        self.stdin = None
+        self.stdout = None
+        self.reader_task = None
+        self.session_id = None
+        self.message_handlers = {}
+        self.running = False
+        
+    async def start(self):
+        """Start the WebRTC subprocess"""
+        # Prepare configuration
+        config = {
+            'stream_id': self.stream_id,
+            'mode': self.config.get('mode', 'view'),
+            'room': self.config.get('room'),
+            'record_file': self.config.get('record_file'),
+            'pipeline': self.config.get('pipeline', ''),
+            'stun_server': self.config.get('stun_server', 'stun://stun.l.google.com:19302'),
+            'turn_server': self.config.get('turn_server'),
+            'bitrate': self.config.get('bitrate', 2500),
+        }
+        
+        # Start subprocess
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        subprocess_script = os.path.join(script_dir, 'webrtc_subprocess.py')
+        cmd = [sys.executable, subprocess_script]
+        self.process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        self.stdin = self.process.stdin
+        self.stdout = self.process.stdout
+        self.running = True
+        
+        # Send configuration as first message (expected by subprocess)
+        config_line = json.dumps(config) + '\n'
+        self.stdin.write(config_line.encode())
+        await self.stdin.drain()
+        
+        # Start reading messages
+        self.reader_task = asyncio.create_task(self._read_messages())
+        
+        # Wait for ready signal
+        ready_event = asyncio.Event()
+        self.message_handlers['ready'] = lambda msg: ready_event.set()
+        
+        try:
+            await asyncio.wait_for(ready_event.wait(), timeout=5.0)
+            printc(f"[{self.stream_id}] Subprocess ready", "0F0")
+            return True
+        except asyncio.TimeoutError:
+            printc(f"[{self.stream_id}] Subprocess failed to start", "F00")
+            await self.stop()
+            return False
+            
+    async def send_message(self, msg: Dict[str, Any]):
+        """Send message to subprocess"""
+        if self.stdin and not self.stdin.is_closing():
+            data = json.dumps(msg) + '\n'
+            self.stdin.write(data.encode())
+            await self.stdin.drain()
+            
+    async def _read_messages(self):
+        """Read messages from subprocess"""
+        while self.running and self.stdout:
+            try:
+                line = await self.stdout.readline()
+                if not line:
+                    break
                     
+                msg = json.loads(line.decode().strip())
+                await self._handle_message(msg)
+                
+            except json.JSONDecodeError:
+                continue
+            except Exception as e:
+                printc(f"[{self.stream_id}] Error reading message: {e}", "F00")
+                
+    async def _handle_message(self, msg: Dict[str, Any]):
+        """Handle message from subprocess"""
+        msg_type = msg.get('type')
+        
+        # Built-in handlers
+        if msg_type == 'log':
+            level = msg.get('level', 'info')
+            message = msg.get('message', '')
+            if level == 'error':
+                printc(message, "F00")
+            elif level == 'warning':
+                printc(message, "FF0")
+            else:
+                printc(message, "77F")
+                
+        elif msg_type in self.message_handlers:
+            await self.message_handlers[msg_type](msg)
+            
+    def on_message(self, msg_type: str, handler):
+        """Register message handler"""
+        self.message_handlers[msg_type] = handler
+        
+    async def stop(self):
+        """Stop the subprocess"""
+        self.running = False
+        
+        # Send stop message
+        await self.send_message({"type": "stop"})
+        
+        # Cancel reader task
+        if self.reader_task:
+            self.reader_task.cancel()
+            try:
+                await self.reader_task
+            except asyncio.CancelledError:
+                pass
+                
+        # Terminate process
+        if self.process and self.process.returncode is None:
+            self.process.terminate()
+            try:
+                await asyncio.wait_for(self.process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                self.process.kill()
+                await self.process.wait()
+                
+        printc(f"[{self.stream_id}] Subprocess stopped", "77F")
+
+
 class WebRTCClient:
     def __init__(self, params):
         self.params = params  # Store params for room recording manager
@@ -1324,20 +1460,21 @@ class WebRTCClient:
             print(f"   Stream: {self.view}")
             print(f"   Output prefix: {self.record}")
         
-        # Room recording parameters
+        # Room recording with subprocess managers
         self.room_recording = getattr(params, 'room_recording', False)
         self.record_room = getattr(params, 'record_room', False)
-        
-        # If record_room is set via command line, enable room_recording
-        if self.record_room:
-            self.room_recording = True
         self.room_ndi = getattr(params, 'room_ndi', False)
         self.stream_filter = getattr(params, 'stream_filter', None)
-        self.room_streams = {}  # Track all streams in the room
-        self.room_streams_lock = asyncio.Lock()  # Lock for thread-safe access
         
-        # Enable multiviewer when room recording is active
-        if self.room_recording or self.room_ndi:
+        # Subprocess managers for room recording
+        self.subprocess_managers = {}  # stream_id -> WebRTCSubprocessManager
+        self.room_streams = {}  # Track room streams
+        self.room_streams_lock = asyncio.Lock()
+        self.stream_id_to_uuid = {}  # Map stream_id to UUID for subprocess routing
+        self.session_to_stream = {}  # Map session to stream_id for subprocess routing
+        
+        # Enable multiviewer when room NDI is active
+        if self.room_ndi:
             self.multiviewer = True
         
         # Multi-peer recording state
@@ -1405,9 +1542,8 @@ class WebRTCClient:
                             # Format: turn://username:password@host:port
                             turn_url = f"{protocol}{self.turn_user}:{self.turn_pass}@{server_part}"
                 printc(f"Using custom TURN server: {turn_url}", "77F")
-            elif self.room_recording or (hasattr(self, 'auto_turn') and self.auto_turn):
-                # Use VDO.Ninja's default TURN servers for room recording or when auto_turn is enabled
-                printc(f"DEBUG: room_recording={self.room_recording}, checking for auto TURN", "FF0")
+            elif hasattr(self, 'auto_turn') and self.auto_turn:
+                # Use VDO.Ninja's default TURN servers when auto_turn is enabled
                 default_turn = self._get_default_turn_server()
                 if default_turn:
                     # Format with credentials
@@ -3607,12 +3743,10 @@ class WebRTCClient:
         async with self.cleanup_lock:
             printc("Cleaning up pipeline and resources...", "FF0")
             
-            # Stop multi-peer client if active
-            if self.multi_peer_client:
-                try:
-                    self.multi_peer_client.cleanup()
-                except Exception as e:
-                    printwarn(f"Error stopping multi-peer client: {e}")
+            # Stop subprocess managers if active
+            if self.subprocess_managers:
+                printc("Stopping subprocess recorders...", "77F")
+                await self.cleanup_subprocess_managers()
             
             # Report recorded files if any
             if self.recording_files:
@@ -3788,10 +3922,39 @@ class WebRTCClient:
                         
                     if 'type' in msg:
                         if msg['type'] == "offer":
-                            # Skip if multi-peer client is handling this stream
-                            if self.multi_peer_client and original_uuid in self.room_streams:
-                                # This offer is for a multi-peer client, skip main processing
-                                continue
+                            # Check if this is for a subprocess recorder
+                            if self.room_recording:
+                                printc(f"[Room Recording] Received offer for UUID: {UUID}", "77F")
+                                # First check if we have a session mapping
+                                session_id = self.clients[UUID].get('session') if UUID in self.clients else None
+                                stream_id = self.session_to_stream.get(session_id) if session_id else None
+                                
+                                # If not found by session, try by UUID in room_streams
+                                if not stream_id and original_uuid in self.room_streams:
+                                    stream_info = self.room_streams[original_uuid]
+                                    stream_id = stream_info.get('streamID')
+                                
+                                # Try to match by checking all subprocess managers
+                                if not stream_id:
+                                    printc(f"[Room Recording] Checking {len(self.subprocess_managers)} subprocess managers", "77F")
+                                    # This offer might be for any of our subprocess recorders
+                                    # For now, if we only have one, assume it's for that one
+                                    if len(self.subprocess_managers) == 1:
+                                        stream_id = list(self.subprocess_managers.keys())[0]
+                                        printc(f"[Room Recording] Using only available stream: {stream_id}", "77F")
+                                
+                                # If we have a stream_id and a subprocess for it
+                                if stream_id and stream_id in self.subprocess_managers:
+                                    printc(f"[Room Recording] Routing offer to subprocess: {stream_id}", "0F0")
+                                    # Update mappings
+                                    self.stream_id_to_uuid[stream_id] = UUID
+                                    if session_id:
+                                        self.session_to_stream[session_id] = stream_id
+                                    # Route to subprocess
+                                    await self.handle_subprocess_offer(stream_id, msg['sdp'], session_id or str(time.time()))
+                                    continue
+                                else:
+                                    printc(f"[Room Recording] No subprocess found for offer. UUID: {UUID}, session: {session_id}", "F00")
                             
                             if self.streamin:
                                 printc("📥 Incoming connection offer", "0FF")
@@ -3806,10 +3969,30 @@ class WebRTCClient:
                 elif 'candidates' in msg:
                     # Processing ICE candidates bundle via websocket
                     
-                    # Skip if multi-peer client is handling room recording
-                    if self.multi_peer_client and self.room_recording:
-                        # These candidates are for the multi-peer client, already handled
-                        continue
+                    # Check if this is for a subprocess recorder
+                    if self.room_recording:
+                        # First check if we have a session mapping
+                        session_id = self.clients[UUID].get('session') if UUID in self.clients else None
+                        stream_id = self.session_to_stream.get(session_id) if session_id else None
+                        
+                        # If not found by session, try by UUID
+                        if not stream_id:
+                            # Check if this UUID maps to a stream
+                            for sid, uid in self.stream_id_to_uuid.items():
+                                if uid == UUID:
+                                    stream_id = sid
+                                    break
+                        
+                        if stream_id and stream_id in self.subprocess_managers:
+                            # Route to subprocess
+                            if 'vector' in msg:
+                                decryptedJson = decrypt_message(msg['candidates'], msg['vector'], self.password+self.salt)
+                                msg['candidates'] = json.loads(decryptedJson)
+                            
+                            if type(msg['candidates']) is list:
+                                for ice in msg['candidates']:
+                                    await self.handle_subprocess_ice(stream_id, ice)
+                            continue
                     
                     if 'vector' in msg:
                         decryptedJson = decrypt_message(msg['candidates'], msg['vector'], self.password+self.salt)
@@ -3822,6 +4005,29 @@ class WebRTCClient:
                         printc("Warning: Expected a list of candidates","F00")
                 elif 'candidate' in msg:
                     # Processing single ICE candidate via websocket
+                    
+                    # Check if this is for a subprocess recorder
+                    if self.room_recording:
+                        # First check if we have a session mapping
+                        session_id = self.clients[UUID].get('session') if UUID in self.clients else None
+                        stream_id = self.session_to_stream.get(session_id) if session_id else None
+                        
+                        # If not found by session, try by UUID
+                        if not stream_id:
+                            # Check if this UUID maps to a stream
+                            for sid, uid in self.stream_id_to_uuid.items():
+                                if uid == UUID:
+                                    stream_id = sid
+                                    break
+                        
+                        if stream_id and stream_id in self.subprocess_managers:
+                            # Route to subprocess
+                            if 'vector' in msg:
+                                decryptedJson = decrypt_message(msg['candidate'], msg['vector'], self.password+self.salt)
+                                msg['candidate'] = json.loads(decryptedJson)
+                            await self.handle_subprocess_ice(stream_id, msg)
+                            continue
+                    
                     if 'vector' in msg:
                         decryptedJson = decrypt_message(msg['candidate'], msg['vector'], self.password+self.salt)
                         msg['candidate'] = json.loads(decryptedJson)
@@ -3933,9 +4139,9 @@ class WebRTCClient:
                     
             printc(f"Found {len(streams_to_record)} streams to record", "7FF")
             
-            # Start recording each stream
+            # Start recording each stream using subprocess architecture
             for stream_id in streams_to_record:
-                await self._add_room_stream(stream_id)
+                await self.create_subprocess_recorder(stream_id)
         else:
             # Original single-stream handling
             for member in room_list:
@@ -3989,6 +4195,149 @@ class WebRTCClient:
             if stream_uuid in self.room_streams:
                 self.room_streams[stream_uuid]['connection_requested'] = True
     
+    async def create_subprocess_recorder(self, stream_id):
+        """Create a subprocess recorder for a stream"""
+        if stream_id in self.subprocess_managers:
+            printc(f"[{stream_id}] Already recording", "FF0")
+            return
+            
+        printc(f"\n📹 Creating subprocess recorder for: {stream_id}", "0F0")
+        
+        # Configuration for subprocess
+        config = {
+            'mode': 'view',
+            'room': self.room_name,
+            'record_file': f"{self.record}_{stream_id}_{int(time.time())}.webm",
+            'pipeline': '',  # Will use default receive pipeline
+            'bitrate': self.bitrate,
+            'stun_server': self.stun_server if hasattr(self, 'stun_server') else 'stun://stun.l.google.com:19302',
+            'turn_server': self.turn_server if hasattr(self, 'turn_server') else None,
+        }
+        
+        # Create subprocess manager
+        manager = WebRTCSubprocessManager(stream_id, config)
+        
+        # Set up message handlers
+        def on_sdp(msg):
+            # Forward SDP to WebSocket
+            asyncio.create_task(self.send_subprocess_sdp(stream_id, msg))
+            
+        def on_ice(msg):
+            # Forward ICE to WebSocket
+            asyncio.create_task(self.send_subprocess_ice(stream_id, msg))
+            
+        def on_state(msg):
+            # Update connection state
+            state = msg.get('state', '')
+            printc(f"[{stream_id}] Connection state: {state}", "77F")
+            
+        manager.on_message('sdp', on_sdp)
+        manager.on_message('ice', on_ice)
+        manager.on_message('connection_state', on_state)
+        manager.on_message('ice_state', lambda msg: printc(f"[{stream_id}] ICE: {msg.get('state')}", "77F"))
+        
+        # Start subprocess
+        if await manager.start():
+            self.subprocess_managers[stream_id] = manager
+            
+            # Tell subprocess to start pipeline
+            await manager.send_message({"type": "start", "session_id": stream_id})
+            
+            # Request stream from server
+            play_msg = {
+                "request": "play",
+                "streamID": stream_id
+            }
+            # If we have a UUID for this stream already, include it
+            for uuid, stream_info in self.room_streams.items():
+                if stream_info.get('streamID') == stream_id:
+                    play_msg["UUID"] = uuid
+                    # Pre-map this for routing
+                    self.stream_id_to_uuid[stream_id] = uuid
+                    break
+                    
+            await self.sendMessageAsync(play_msg)
+            
+            printc(f"[{stream_id}] Subprocess recorder started", "0F0")
+        else:
+            printc(f"[{stream_id}] Failed to start subprocess", "F00")
+            
+    async def send_subprocess_sdp(self, stream_id, msg):
+        """Send SDP from subprocess to WebSocket"""
+        sdp_type = msg.get('sdp_type')
+        sdp = msg.get('sdp')
+        session_id = msg.get('session_id')
+        
+        if sdp_type == 'answer':
+            # Get the proper UUID for this stream
+            uuid = self.stream_id_to_uuid.get(stream_id, stream_id)
+            
+            # Send answer to server
+            await self.sendMessageAsync({
+                "description": {
+                    "type": "answer",
+                    "sdp": sdp
+                },
+                "UUID": uuid,
+                "session": session_id
+            })
+            
+    async def send_subprocess_ice(self, stream_id, msg):
+        """Send ICE candidate from subprocess to WebSocket"""
+        candidate = msg.get('candidate')
+        sdpMLineIndex = msg.get('sdpMLineIndex', 0)
+        session_id = msg.get('session_id')
+        
+        # Get the proper UUID for this stream
+        uuid = self.stream_id_to_uuid.get(stream_id, stream_id)
+        
+        await self.sendMessageAsync({
+            "candidates": [{
+                "candidate": candidate,
+                "sdpMLineIndex": sdpMLineIndex
+            }],
+            "UUID": uuid,
+            "session": session_id,
+            "type": "remote"
+        })
+        
+    async def handle_subprocess_offer(self, stream_id, offer_sdp, session_id):
+        """Forward offer to subprocess"""
+        manager = self.subprocess_managers.get(stream_id)
+        if not manager:
+            printc(f"[{stream_id}] No subprocess manager found", "F00")
+            return
+            
+        # Store session ID
+        manager.session_id = session_id
+        
+        # Send offer to subprocess
+        await manager.send_message({
+            "type": "sdp",
+            "sdp_type": "offer",
+            "sdp": offer_sdp,
+            "session_id": session_id
+        })
+        
+    async def handle_subprocess_ice(self, stream_id, candidate_data):
+        """Forward ICE candidate to subprocess"""
+        manager = self.subprocess_managers.get(stream_id)
+        if not manager:
+            return
+            
+        await manager.send_message({
+            "type": "ice",
+            "candidate": candidate_data.get('candidate'),
+            "sdpMLineIndex": candidate_data.get('sdpMLineIndex', 0)
+        })
+        
+    async def cleanup_subprocess_managers(self):
+        """Stop all subprocess managers"""
+        for stream_id, manager in self.subprocess_managers.items():
+            printc(f"Stopping subprocess: {stream_id}", "77F")
+            await manager.stop()
+        self.subprocess_managers.clear()
+    
     async def handle_new_room_stream(self, stream_id, uuid):
         """Handle a new stream that joined the room"""
         # Check if we should record this stream
@@ -4016,13 +4365,8 @@ class WebRTCClient:
                 }
         
         if self.room_recording:
-            # Use multi-peer client if available
-            if self.multi_peer_client:
-                printc(f"Adding new stream to multi-peer client: {stream_id}", "0F0")
-                await self.multi_peer_client.add_stream(stream_id)
-            else:
-                # Fallback to isolated connection
-                await self.create_isolated_connection(stream_id, uuid)
+            # Use subprocess recorder
+            await self.create_subprocess_recorder(stream_id)
     
     def on_new_stream_room(self, client, pad):
         """Handle new stream pad for room recording"""
@@ -5955,160 +6299,19 @@ async def main():
 
     args.pipeline = PIPELINE_DESC
     
-    # For room recording, spawn separate viewers for each stream
-    # Check if we should use multi-peer client instead
-    use_multi_peer = args.record_room and args.room and args.record
-    
-    # Check if multi_peer_client is available
-    try:
-        from multi_peer_client import MultiPeerClient
-        multi_peer_available = True
-    except ImportError:
-        multi_peer_available = False
-    
-    if use_multi_peer and multi_peer_available:
-        # Use multi-peer client instead of spawning processes
-        printc("\n🎬 Room Recording Mode (Multi-Peer Single WebSocket)", "0F0")
-        printc("   Using shared WebSocket with multiple WebRTC peer connections", "0F0")
-        printc("   This is more efficient than spawning separate processes", "77F")
-        # Continue to WebRTCClient creation below
-    elif use_multi_peer and not multi_peer_available:
-        # Fall back to process spawning if multi-peer client is not available
-        printc("\n🎬 Room Recording Mode (Process Spawning)", "0FF")
-        printc("   This will spawn separate recorder processes for each stream in the room", "77F")
+    # For room recording, use the new subprocess architecture
+    if args.record_room and args.room:
+        printc("\n🎬 Room Recording Mode (WebRTC Subprocess Architecture)", "0F0")
+        printc("   Using single WebSocket connection with subprocess WebRTC handlers", "0F0")
+        printc("   This provides proper signaling coordination between streams", "77F")
         
-        # First, connect to discover room members
-        printc("\n🔍 Discovering room members...", "0FF")
-        printc(f"   Room: {args.room}", "77F")
+        # Enable room recording mode
+        args.room_recording = True
+        args.streamin = False  # Not receiving directly
+        args.record = args.record or args.room  # Default prefix
         
-        # Create a temporary client just for discovery
-        discovery_args = argparse.Namespace(**vars(args))
-        discovery_args.streamin = False  # Don't start recording yet
-        discovery_args.record = None  # No recording during discovery
-        discovery_args.room_recording = False
-        discovery_args.pipeline = PIPELINE_DESC
-        
-        discovery_client = WebRTCClient(discovery_args)
-        room_members = []
-        
-        async def discover_room():
-            await discovery_client.connect()
-            
-            # Wait for room listing
-            timeout = 10
-            start_time = time.time()
-            
-            while time.time() - start_time < timeout:
-                await asyncio.sleep(0.5)
-                
-                # Check if we got room members
-                if discovery_client.room_streams:
-                    for uuid, info in discovery_client.room_streams.items():
-                        if 'streamID' in info:
-                            room_members.append(info['streamID'])
-                    break
-                    
-            await discovery_client.cleanup_pipeline()
-            
-        # Run discovery with retries
-        max_retries = 3
-        for retry in range(max_retries):
-            try:
-                room_members = []  # Clear before each attempt
-                discovery_client.room_streams = {}  # Reset room streams
-                await discover_room()
-                if room_members:
-                    break
-                    
-                if retry < max_retries - 1:
-                    printc(f"   No streams found, retrying ({retry + 1}/{max_retries})...", "FF0")
-                    await asyncio.sleep(3)
-                    
-            except Exception as e:
-                printc(f"Error during discovery: {e}", "F00")
-                if retry < max_retries - 1:
-                    await asyncio.sleep(2)
-                    
-        if not room_members:
-            printc("❌ No streams found in room after retries", "F00")
-            printc("   Make sure publishers are connected before starting the recorder", "FF0")
-            return
-            
-        printc(f"\n✅ Found {len(room_members)} streams: {', '.join(room_members)}", "0F0")
-        
-        # Now spawn recorders
-        printc("\n🚀 Starting individual recorders...", "0FF")
-        
-        processes = []
-        for stream_id in room_members:
-            cmd = [
-                sys.executable, sys.argv[0],  # Use same script
-                "--room", args.room,
-                "--view", stream_id,
-                "--record", f"{args.record}_{stream_id}",
-                "--bitrate", str(args.bitrate)
-            ]
-            
-            if args.noaudio:
-                cmd.append("--noaudio")
-            if args.server:
-                cmd.extend(["--server", args.server])
-            if hasattr(args, 'password') and args.password:
-                cmd.extend(["--password", args.password])
-                
-            log_file = f"{args.record}_{stream_id}.log"
-            printc(f"\n   Starting recorder for '{stream_id}'...", "77F")
-            
-            with open(log_file, "w") as log:
-                proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
-                
-            processes.append((stream_id, proc))
-            printc(f"   ✅ Started (PID: {proc.pid})", "0F0")
-            time.sleep(1)
-            
-        printc(f"\n📊 Recording {len(processes)} streams (press Ctrl+C to stop)...", "0FF")
-        
-        # Monitor processes
-        try:
-            while True:
-                active = sum(1 for _, p in processes if p.poll() is None)
-                print(f"\r   Active: {active}/{len(processes)} recorders", end="", flush=True)
-                
-                if active == 0:
-                    print("\n   All recorders stopped")
-                    break
-                    
-                await asyncio.sleep(2)
-                
-        except KeyboardInterrupt:
-            printc("\n\n🛑 Stopping recorders...", "FF0")
-            
-        # Stop all processes
-        for stream_id, proc in processes:
-            if proc.poll() is None:
-                proc.terminate()
-                printc(f"   Stopped {stream_id}", "77F")
-                
-        # Summary
-        printc("\n" + "="*60, "FFF")
-        printc("📹 Room Recording Summary", "0FF")
-        printc("="*60, "FFF")
-        
-        for stream_id, _ in processes:
-            files = list(Path(".").glob(f"{args.record}_{stream_id}_*.ts"))
-            files.extend(list(Path(".").glob(f"{args.record}_{stream_id}_*.mkv")))
-            
-            if files:
-                printc(f"\n{stream_id}:", "0F0")
-                for f in files:
-                    printc(f"  ✅ {f.name} ({f.stat().st_size:,} bytes)", "0F0")
-            else:
-                printc(f"\n{stream_id}: ❌ No recordings", "F00")
-                
-        printc("="*60, "FFF")
-        
-        # Return early without running the rest of main()
-        return  # End of process spawning block
+        # Continue with normal client creation below
+        # The WebRTCClient will handle room recording with subprocess managers
     
     c = WebRTCClient(args)
     
@@ -6118,10 +6321,7 @@ async def main():
     if args.socketout:
         c.setup_socket()
     
-    # Start stats display task if room recording
-    stats_task = None
-    if args.record_room:
-        stats_task = asyncio.create_task(c.display_room_stats())
+    # Stats display task removed - room recording now uses subprocess approach
     
     # Start web server if requested
     webserver = None
