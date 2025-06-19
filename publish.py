@@ -1476,14 +1476,13 @@ class WebRTCClient:
         self.subprocess_managers = {}  # stream_id -> WebRTCSubprocessManager
         self.room_streams = {}  # Track room streams
         self.room_streams_lock = asyncio.Lock()
-        self.stream_id_to_uuid = {}  # Map stream_id to UUID for subprocess routing
-        self.session_to_stream = {}  # Map session to stream_id for subprocess routing
+        self.uuid_to_stream_id = {} # Maps an incoming peer's UUID to a specific stream_id we requested
         
         # Enable multiviewer when room NDI is active
         if self.room_ndi:
             self.multiviewer = True
         
-        # Multi-peer recording state
+        # Multi-peer recording state (Legacy - can be removed if only using subprocesses)
         self.multi_peer_client = None
         self.room_recorders = {}  # stream_id -> recorder
         self.room_sessions = {}   # session_id -> stream_id
@@ -3921,170 +3920,68 @@ class WebRTCClient:
                         continue
                 
                 if 'description' in msg:
-                    print("description via WSS")
-                    
-                    # In room recording mode, check if this UUID corresponds to a stream we're tracking
-                    original_uuid = self.clients[UUID].get('original_uuid', UUID) if UUID in self.clients else UUID
-                    if self.room_recording and original_uuid in self.room_streams:
-                        printc(f"Offer for room stream: {self.room_streams[original_uuid]['streamID']}", "7F7")
-                    
+                    # Description (SDP Offer/Answer) received from WebSocket
                     if 'vector' in msg:
-                        decryptedJson = decrypt_message(msg['description'], msg['vector'], self.password+self.salt)
-                        msg = json.loads(decryptedJson)
+                        decrypted_json = decrypt_message(msg['description'], msg['vector'], self.password + self.salt)
+                        sdp_data = json.loads(decrypted_json)
                     else:
-                        msg = msg['description']
-                        
-                    if 'type' in msg:
-                        if msg['type'] == "offer":
-                            # Check if this is for a subprocess recorder
-                            if self.room_recording:
-                                printc(f"[Room Recording] Received offer for UUID: {UUID}", "77F")
-                                session_id = self.clients[UUID].get('session') if UUID in self.clients else None
-                                stream_id = None
-                                
-                                # Primary method: Check if this UUID is already mapped to a stream
-                                for sid, uid in self.stream_id_to_uuid.items():
-                                    if uid == UUID:
-                                        stream_id = sid
-                                        printc(f"[Room Recording] Found existing mapping: UUID {UUID} -> stream {stream_id}", "77F")
-                                        break
-                                
-                                # Secondary method: For first offer after play request, match unmapped streams
-                                if not stream_id:
-                                    printc(f"[Room Recording] No existing UUID mapping, checking {len(self.subprocess_managers)} subprocess managers", "77F")
-                                    
-                                    # Find subprocesses that don't have a UUID mapping yet
-                                    unmapped_streams = []
-                                    for sid in self.subprocess_managers.keys():
-                                        mapped = False
-                                        for mapped_sid, mapped_uid in self.stream_id_to_uuid.items():
-                                            if mapped_sid == sid:
-                                                mapped = True
-                                                break
-                                        if not mapped:
-                                            unmapped_streams.append(sid)
-                                    
-                                    if unmapped_streams:
-                                        # Use the first unmapped stream
-                                        stream_id = unmapped_streams[0]
-                                        printc(f"[Room Recording] Matching to unmapped stream: {stream_id}", "77F")
-                                    elif len(self.subprocess_managers) == 1:
-                                        # If only one subprocess, assume it's for that one
-                                        stream_id = list(self.subprocess_managers.keys())[0]
-                                        printc(f"[Room Recording] Using only available stream: {stream_id}", "77F")
-                                
-                                # If we have a stream_id and a subprocess for it
-                                if stream_id and stream_id in self.subprocess_managers:
-                                    printc(f"[Room Recording] Routing offer to subprocess: {stream_id}", "0F0")
-                                    # Update UUID mapping - this is the key!
-                                    self.stream_id_to_uuid[stream_id] = UUID
-                                    printc(f"[Room Recording] Mapped UUID {UUID} to stream {stream_id}", "0F0")
-                                    
-                                    # Also map session if available
-                                    if session_id:
-                                        self.session_to_stream[session_id] = stream_id
-                                        printc(f"[Room Recording] Also mapped session {session_id} to stream {stream_id}", "77F")
-                                        
-                                    # Route to subprocess
-                                    await self.handle_subprocess_offer(stream_id, msg['sdp'], session_id or str(time.time()))
-                                    continue
-                                else:
-                                    printc(f"[Room Recording] No subprocess found for offer. UUID: {UUID}, session: {session_id}", "F00")
-                            
-                            if self.streamin:
-                                printc("📥 Incoming connection offer", "0FF")
-                                await self.start_pipeline(UUID)
-                                self.handle_offer(msg, UUID)
+                        sdp_data = msg['description']
+
+                    if sdp_data.get('type') == "offer":
+                        # This is an offer from a new peer wanting to send video to us.
+                        if self.room_recording:
+                            # In room recording mode, this offer is for a stream we requested.
+                            # We need to route it to the correct subprocess.
+                            stream_id = self.uuid_to_stream_id.get(UUID)
+                            session_id = self.clients.get(UUID, {}).get('session')
+
+                            if stream_id and stream_id in self.subprocess_managers:
+                                printc(f"[Subprocess] Routing offer for UUID {UUID} to stream {stream_id}", "0F0")
+                                await self.handle_subprocess_offer(stream_id, sdp_data['sdp'], session_id)
+                                continue # Message handled, skip further processing
                             else:
-                                printc("We don't support two-way video calling yet. ignoring remote offer.", "399")
-                                continue
-                        elif msg['type'] == "answer":
-                            printc("🤝 Connection accepted", "0F0")
-                            self.handle_sdp_ice(msg, UUID)
-                elif 'candidates' in msg:
-                    # Processing ICE candidates bundle via websocket
-                    
-                    # Check if this is for a subprocess recorder
-                    if self.room_recording:
-                        session_id = self.clients[UUID].get('session') if UUID in self.clients else None
-                        stream_id = None
-                        
-                        # Primary method: Check UUID mapping
-                        for sid, uid in self.stream_id_to_uuid.items():
-                            if uid == UUID:
-                                stream_id = sid
-                                printc(f"[Room Recording] ICE candidates for UUID {UUID} -> stream {stream_id}", "77F")
-                                break
-                        
-                        # Secondary method: Try session mapping if no UUID match
-                        if not stream_id and session_id:
-                            stream_id = self.session_to_stream.get(session_id)
-                            if stream_id:
-                                printc(f"[Room Recording] ICE candidates for session {session_id} -> stream {stream_id} (fallback)", "77F")
-                        
-                        if stream_id and stream_id in self.subprocess_managers:
-                            # Validate session if we have one
-                            if session_id:
-                                expected_session = self.session_to_stream.get(session_id)
-                                if expected_session and expected_session != stream_id:
-                                    printc(f"[Room Recording] WARNING: Session mismatch - expected stream {expected_session}, got {stream_id}", "F00")
-                                    # Continue anyway with UUID-based routing
-                                    
-                            # Route to subprocess
-                            if 'vector' in msg:
-                                decryptedJson = decrypt_message(msg['candidates'], msg['vector'], self.password+self.salt)
-                                msg['candidates'] = json.loads(decryptedJson)
-                            
-                            if type(msg['candidates']) is list:
-                                printc(f"[Room Recording] Routing {len(msg['candidates'])} ICE candidates to {stream_id}", "0F0")
-                                for ice in msg['candidates']:
-                                    await self.handle_subprocess_ice(stream_id, ice)
-                            continue
+                                printc(f"[Subprocess] ⚠️ Received offer from UUID {UUID}, but no stream mapping found.", "F70")
+
+                        elif self.streamin:
+                            # Standard viewer mode
+                            printc("📥 Incoming connection offer", "0FF")
+                            await self.start_pipeline(UUID)
+                            self.handle_offer(sdp_data, UUID)
+
                         else:
-                            printc(f"[Room Recording] No subprocess found for ICE. UUID: {UUID}, session: {session_id}", "F00")
-                            printc(f"[Room Recording] UUID mappings: {self.stream_id_to_uuid}", "F00")
-                            printc(f"[Room Recording] Session mappings: {self.session_to_stream}", "F00")
-                    
-                    if 'vector' in msg:
-                        decryptedJson = decrypt_message(msg['candidates'], msg['vector'], self.password+self.salt)
-                        msg['candidates'] = json.loads(decryptedJson)
-                    
-                    if type(msg['candidates']) is list:
-                        for ice in msg['candidates']:
-                            self.handle_sdp_ice(ice, UUID)
-                    else:
-                        printc("Warning: Expected a list of candidates","F00")
-                elif 'candidate' in msg:
-                    # Processing single ICE candidate via websocket
-                    
-                    # Check if this is for a subprocess recorder
-                    if self.room_recording:
-                        session_id = self.clients[UUID].get('session') if UUID in self.clients else None
-                        stream_id = None
-                        
-                        # Primary method: Check UUID mapping
-                        for sid, uid in self.stream_id_to_uuid.items():
-                            if uid == UUID:
-                                stream_id = sid
-                                break
-                        
-                        # Secondary method: Try session mapping if no UUID match
-                        if not stream_id and session_id:
-                            stream_id = self.session_to_stream.get(session_id)
-                        
-                        if stream_id and stream_id in self.subprocess_managers:
-                            # Route to subprocess
-                            if 'vector' in msg:
-                                decryptedJson = decrypt_message(msg['candidate'], msg['vector'], self.password+self.salt)
-                                msg['candidate'] = json.loads(decryptedJson)
-                            await self.handle_subprocess_ice(stream_id, msg)
+                            printc("We don't support two-way video calling yet. ignoring remote offer.", "399")
                             continue
-                    
+
+                    elif sdp_data.get('type') == "answer":
+                        # This is an answer to our offer (when we are publishing).
+                        printc("🤝 Connection accepted", "0F0")
+                        self.handle_sdp_ice(sdp_data, UUID)
+                elif 'candidates' in msg or 'candidate' in msg:
+                    # Processing ICE candidates (single or bundled)
                     if 'vector' in msg:
-                        decryptedJson = decrypt_message(msg['candidate'], msg['vector'], self.password+self.salt)
-                        msg['candidate'] = json.loads(decryptedJson)
+                        key = 'candidates' if 'candidates' in msg else 'candidate'
+                        decrypted_json = decrypt_message(msg[key], msg['vector'], self.password + self.salt)
+                        candidates = json.loads(decrypted_json)
+                    else:
+                        candidates = msg.get('candidates') or [msg]
                     
-                    self.handle_sdp_ice(msg, UUID)
+                    if not isinstance(candidates, list):
+                        candidates = [candidates]
+
+                    if self.room_recording:
+                        stream_id = self.uuid_to_stream_id.get(UUID)
+                        if stream_id and stream_id in self.subprocess_managers:
+                            # Route to the correct subprocess
+                            printc(f"[Subprocess] Routing {len(candidates)} ICE candidate(s) for UUID {UUID} to stream {stream_id}", "77F")
+                            for ice in candidates:
+                                await self.handle_subprocess_ice(stream_id, ice)
+                            continue # Message handled
+                        else:
+                            printc(f"[Subprocess] ⚠️ Received ICE from UUID {UUID}, but no stream mapping found.", "F70")
+
+                    # Fallback to legacy/single-stream handling
+                    for ice in candidates:
+                        self.handle_sdp_ice(ice, UUID)
                 elif 'request' in msg:
                     if msg['request'] not in ['play', 'offerSDP', 'cleanup', 'bye', 'videoaddedtoroom']:
                         printc(f"📨 Request: {msg['request']}", "77F")
@@ -4102,11 +3999,10 @@ class WebRTCClient:
                     elif msg['request'] == "videoaddedtoroom":
                         if 'streamID' in msg:
                             if self.room_recording:
-                                # New stream added to room
-                                stream_id = msg['streamID']
-                                # UUID comes from the message context, not the msg dict
-                                # In custom websocket mode, this event may not be sent
-                                await self.handle_new_room_stream(stream_id, UUID)
+                                # This event tells us a new stream is in the room.
+                                # The UUID in this context is the room's, not the new peer's.
+                                # We need to handle the new stream joining.
+                                await self.handle_new_room_stream(msg['streamID'], msg.get('from')) # 'from' is the new peer
                             elif self.streamin:
                                 printwout("play stream.")
                                 await self.sendMessageAsync({"request":"play","streamID":self.streamin+self.hashcode})
@@ -4182,18 +4078,19 @@ class WebRTCClient:
             for member in room_list:
                 if 'streamID' in member:
                     stream_id = member['streamID']
+                    uuid = member.get('UUID')  # Get UUID if available
                     
                     # Apply filter if configured
                     if self.stream_filter and stream_id not in self.stream_filter:
                         continue
                         
-                    streams_to_record.append(stream_id)
+                    streams_to_record.append((stream_id, uuid))
                     
             printc(f"Found {len(streams_to_record)} streams to record", "7FF")
             
             # Start recording each stream using subprocess architecture
-            for stream_id in streams_to_record:
-                await self.create_subprocess_recorder(stream_id)
+            for stream_id, uuid in streams_to_record:
+                await self.create_subprocess_recorder(stream_id, uuid)
         else:
             # Original single-stream handling
             for member in room_list:
@@ -4247,132 +4144,115 @@ class WebRTCClient:
             if stream_uuid in self.room_streams:
                 self.room_streams[stream_uuid]['connection_requested'] = True
     
-    async def create_subprocess_recorder(self, stream_id):
-        """Create a subprocess recorder for a stream"""
+    async def create_subprocess_recorder(self, stream_id, uuid=None):
+        """Create a subprocess recorder for a stream. The UUID is the key for routing."""
         if stream_id in self.subprocess_managers:
-            printc(f"[{stream_id}] Already recording", "FF0")
+            printc(f"[{stream_id}] Subprocess manager already exists.", "FF0")
             return
-            
-        printc(f"\n📹 Creating subprocess recorder for: {stream_id}", "0F0")
+
+        printc(f"\n📹 Creating subprocess recorder for stream: {stream_id}", "0F0")
         
-        # Configuration for subprocess
-        # Get default TURN server if none specified
-        default_turn = None
-        if not (hasattr(self, 'turn_server') and self.turn_server):
-            # Use VDO.Ninja's default TURN servers for room recording
-            turn_info = self._get_default_turn_server()
-            if turn_info:
-                # Format TURN URL with credentials
-                turn_url = turn_info['url']
-                if '@' not in turn_url and turn_url.startswith('turn'):
-                    # Extract protocol and server parts
-                    if turn_url.startswith('turns:'):
-                        protocol = 'turns://'
-                        server_part = turn_url[6:]
-                    else:
-                        protocol = 'turn://'
-                        server_part = turn_url[5:]
-                    default_turn = f"{protocol}{turn_info['user']}:{turn_info['pass']}@{server_part}"
-                else:
-                    default_turn = turn_url
-                printc(f"[{stream_id}] Using default TURN server: {turn_info['url']} ({turn_info['region']})", "77F")
-                    
+        # This mapping is crucial. It links the peer's UUID from the websocket
+        # to the stream we are about to request. When the peer sends its offer,
+        # we'll know which subprocess to route it to.
+        if uuid:
+             self.uuid_to_stream_id[uuid] = stream_id
+             printc(f"[Subprocess] Mapping UUID {uuid} to stream {stream_id}", "77F")
+        
+        default_turn = self._get_default_turn_server()
+        if default_turn:
+            turn_info = default_turn
+            turn_url = turn_info['url']
+            if '@' not in turn_url and turn_url.startswith('turn'):
+                protocol = 'turns://' if turn_url.startswith('turns:') else 'turn://'
+                server_part = turn_url[len(protocol)-3:]
+                default_turn_url = f"{protocol}{turn_info['user']}:{turn_info['pass']}@{server_part}"
+            else:
+                default_turn_url = turn_url
+            printc(f"[{stream_id}] Using default TURN server for subprocess.", "77F")
+        else:
+            default_turn_url = None
+
         config = {
             'mode': 'view',
-            'room': self.room_name,
+            'stream_id': stream_id,
             'record_file': f"{self.record}_{stream_id}_{int(time.time())}.webm",
-            'pipeline': '',  # Will use default receive pipeline
-            'bitrate': self.bitrate,
-            'stun_server': self.stun_server if hasattr(self, 'stun_server') else 'stun://stun.cloudflare.com:3478',
-            'turn_server': self.turn_server if hasattr(self, 'turn_server') and self.turn_server else default_turn,
-            'ice_transport_policy': self.ice_transport_policy,  # Use policy from command line args
+            'stun_server': self.stun_server or 'stun://stun.cloudflare.com:3478',
+            'turn_server': self.turn_server or default_turn_url,
+            'ice_transport_policy': self.ice_transport_policy,
         }
-        
-        # Create subprocess manager
+
         manager = WebRTCSubprocessManager(stream_id, config)
+        manager.on_message('sdp', lambda msg: asyncio.create_task(self.send_subprocess_sdp(stream_id, msg)))
+        manager.on_message('ice', lambda msg: asyncio.create_task(self.send_subprocess_ice(stream_id, msg)))
+        manager.on_message('connection_state', lambda msg: printc(f"[{stream_id}] State: {msg.get('state', 'N/A')}", "77F"))
+        manager.on_message('ice_state', lambda msg: printc(f"[{stream_id}] ICE: {msg.get('state', 'N/A')}", "77F"))
         
-        # Set up message handlers
-        def on_sdp(msg):
-            # Forward SDP to WebSocket
-            asyncio.create_task(self.send_subprocess_sdp(stream_id, msg))
-            
-        def on_ice(msg):
-            # Forward ICE to WebSocket
-            asyncio.create_task(self.send_subprocess_ice(stream_id, msg))
-            
-        def on_state(msg):
-            # Update connection state
-            state = msg.get('state', '')
-            printc(f"[{stream_id}] Connection state: {state}", "77F")
-            
-        manager.on_message('sdp', on_sdp)
-        manager.on_message('ice', on_ice)
-        manager.on_message('connection_state', on_state)
-        manager.on_message('ice_state', lambda msg: printc(f"[{stream_id}] ICE: {msg.get('state')}", "77F"))
-        
-        # Start subprocess
         if await manager.start():
             self.subprocess_managers[stream_id] = manager
+            # Immediately request to play the stream.
+            # The server will then connect us to the peer, which will send an offer.
+            # The 'uuid' parameter here is the websocket 'from' field of the peer we want to connect to.
+            play_request = {"request": "play", "streamID": stream_id}
+            if uuid:
+                play_request["UUID"] = uuid
             
-            # Tell subprocess to start pipeline
-            await manager.send_message({"type": "start", "session_id": stream_id})
-            
-            # Request stream from server
-            play_msg = {
-                "request": "play",
-                "streamID": stream_id
-            }
-            # If we have a UUID for this stream already, include it
-            for uuid, stream_info in self.room_streams.items():
-                if stream_info.get('streamID') == stream_id:
-                    play_msg["UUID"] = uuid
-                    # Pre-map this for routing
-                    self.stream_id_to_uuid[stream_id] = uuid
-                    break
-                    
-            await self.sendMessageAsync(play_msg)
-            
-            printc(f"[{stream_id}] Subprocess recorder started", "0F0")
+            await self.sendMessageAsync(play_request)
+            printc(f"[{stream_id}] Subprocess started. Sent play request for UUID {uuid or 'any'}.", "0F0")
         else:
-            printc(f"[{stream_id}] Failed to start subprocess", "F00")
+            printc(f"[{stream_id}] ❌ Failed to start subprocess.", "F00")
+            if uuid and uuid in self.uuid_to_stream_id:
+                del self.uuid_to_stream_id[uuid] # Clean up failed mapping
             
     async def send_subprocess_sdp(self, stream_id, msg):
-        """Send SDP from subprocess to WebSocket"""
+        """Send SDP (answer) from a subprocess back to the WebSocket peer."""
         sdp_type = msg.get('sdp_type')
         sdp = msg.get('sdp')
         session_id = msg.get('session_id')
         
+        uuid = None
+        for u, sid in self.uuid_to_stream_id.items():
+            if sid == stream_id:
+                uuid = u
+                break
+
+        if not uuid:
+            printc(f"[{stream_id}] ❌ Cannot send SDP answer. No UUID mapping found.", "F00")
+            return
+
         if sdp_type == 'answer':
-            # Get the proper UUID for this stream
-            uuid = self.stream_id_to_uuid.get(stream_id, stream_id)
-            
-            # Send answer to server
+            printc(f"[{stream_id}] Sending SDP answer back to peer {uuid}", "0F0")
             await self.sendMessageAsync({
-                "description": {
-                    "type": "answer",
-                    "sdp": sdp
-                },
+                "description": {"type": "answer", "sdp": sdp},
                 "UUID": uuid,
                 "session": session_id
             })
             
     async def send_subprocess_ice(self, stream_id, msg):
-        """Send ICE candidate from subprocess to WebSocket"""
+        """Send an ICE candidate from a subprocess back to the WebSocket peer."""
         candidate = msg.get('candidate')
-        sdpMLineIndex = msg.get('sdpMLineIndex', 0)
+        sdp_m_line_index = msg.get('sdpMLineIndex', 0)
         session_id = msg.get('session_id')
         
-        # Get the proper UUID for this stream
-        uuid = self.stream_id_to_uuid.get(stream_id, stream_id)
+        uuid = None
+        for u, sid in self.uuid_to_stream_id.items():
+            if sid == stream_id:
+                uuid = u
+                break
         
+        if not uuid:
+            printc(f"[{stream_id}] ❌ Cannot send ICE. No UUID mapping found.", "F00")
+            return
+
+        #printc(f"[{stream_id}] Sending ICE candidate to peer {uuid}", "77F")
         await self.sendMessageAsync({
             "candidates": [{
                 "candidate": candidate,
-                "sdpMLineIndex": sdpMLineIndex
+                "sdpMLineIndex": sdp_m_line_index
             }],
             "UUID": uuid,
             "session": session_id,
-            "type": "remote"
+            "type": "remote" # This might need to be 'local' depending on server expectation
         })
         
     async def handle_subprocess_offer(self, stream_id, offer_sdp, session_id):
@@ -4413,34 +4293,25 @@ class WebRTCClient:
         self.subprocess_managers.clear()
     
     async def handle_new_room_stream(self, stream_id, uuid):
-        """Handle a new stream that joined the room"""
-        # Check if we should record this stream
+        """Handle a new stream that has joined the room by starting a recorder for it."""
         if self.stream_filter and stream_id not in self.stream_filter:
-            return
-            
-        printc(f"New stream joined room: {stream_id}", "7FF")
+            return # Skip streams not in our filter
         
-        # Track this stream (thread-safe)
+        # The 'uuid' here is the websocket peer ID of the new member. This is crucial.
+        if not uuid:
+            printc(f"[{stream_id}] ⚠️ New stream joined but had no UUID. Cannot record.", "F70")
+            return
+
+        printc(f"New peer '{uuid}' with stream '{stream_id}' joined room.", "7FF")
+        
         async with self.room_streams_lock:
-            # Check if stream already exists
-            existing_stream = False
-            for existing_uuid, stream_info in self.room_streams.items():
-                if stream_info.get('streamID') == stream_id:
-                    printc(f"⚠️  Stream {stream_id} already tracked (uuid: {existing_uuid})", "FF0")
-                    existing_stream = True
-                    break
-            
-            if not existing_stream:
-                self.room_streams[uuid] = {
-                    'streamID': stream_id,
-                    'recording': False,
-                    'stats': {},
-                    'client': None  # For future isolated client
-                }
+            if stream_id in [s['streamID'] for s in self.room_streams.values()]:
+                 printc(f"[{stream_id}] ⚠️ Already tracking this stream. Ignoring.", "FF0")
+                 return
+            self.room_streams[uuid] = {'streamID': stream_id, 'recording': False}
         
         if self.room_recording:
-            # Use subprocess recorder
-            await self.create_subprocess_recorder(stream_id)
+            await self.create_subprocess_recorder(stream_id, uuid)
     
     def on_new_stream_room(self, client, pad):
         """Handle new stream pad for room recording"""
