@@ -106,6 +106,29 @@ class IPCWebRTCHandler:
         else:
             self.log("Found existing webrtcbin element in pipeline")
             
+        # Configure webrtcbin for better compatibility
+        try:
+            # Set bundle-policy to max-bundle (often required for WebRTC compatibility)
+            self.webrtc.set_property('bundle-policy', GstWebRTC.WebRTCBundlePolicy.MAX_BUNDLE)
+            self.log("Set bundle-policy to MAX_BUNDLE")
+        except Exception as e:
+            self.log(f"Could not set bundle-policy: {e}", "warning")
+        
+        try:
+            # Configure ICE agent for better connectivity
+            # Set ICE TCP to false to avoid issues with some networks
+            self.webrtc.set_property('ice-tcp', False)
+            self.log("Disabled ICE TCP candidates")
+        except Exception as e:
+            self.log(f"Could not disable ICE TCP: {e}", "warning")
+        
+        try:
+            # Enable async handling of ICE candidates for better performance
+            self.webrtc.set_property('async-handling', True)
+            self.log("Enabled async handling")
+        except Exception as e:
+            self.log(f"Could not enable async handling: {e}", "warning")
+            
         # Verify webrtcbin has sink pads for publish mode
         if self.mode == 'publish':
             # Check if webrtcbin has any sink pads
@@ -150,6 +173,38 @@ class IPCWebRTCHandler:
             else:
                 self.webrtc.set_property('ice-transport-policy', GstWebRTC.WebRTCICETransportPolicy.ALL)
                 self.log("ICE transport policy set to: ALL (direct + relay)")
+                
+        # Set additional ICE properties for better connectivity
+        try:
+            # Set latency to reduce buffering delays
+            self.webrtc.set_property('latency', 100)
+            self.log("Set webrtcbin latency to 100ms")
+        except Exception as e:
+            self.log(f"Could not set latency: {e}", "warning")
+        
+        # Configure ICE agent properties if accessible
+        try:
+            ice_agent = self.webrtc.get_property('ice-agent')
+            if ice_agent:
+                # Set controlling mode for publish, controlled for view
+                if self.mode == 'publish':
+                    ice_agent.set_property('controlling-mode', True)
+                    self.log("Set ICE agent to controlling mode (publisher)")
+                else:
+                    ice_agent.set_property('controlling-mode', False)
+                    self.log("Set ICE agent to controlled mode (viewer)")
+                
+                # Set network interfaces if needed (commented out as it's usually auto-detected)
+                # ice_agent.set_property('network-interfaces', 'eth0,wlan0')
+        except Exception as e:
+            self.log(f"Could not configure ICE agent: {e}", "warning")
+            
+        try:
+            # Enable NACK for video streams for better error resilience
+            self.webrtc.set_property('nack', True)
+            self.log("Enabled NACK for error resilience")
+        except Exception as e:
+            self.log(f"Could not enable NACK: {e}", "warning")
             
         # Connect signals
         self.webrtc.connect('on-ice-candidate', self.on_ice_candidate)
