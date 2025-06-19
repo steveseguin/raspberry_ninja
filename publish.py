@@ -4260,8 +4260,9 @@ class WebRTCClient:
             'record_file': f"{self.record}_{stream_id}_{int(time.time())}.webm",
             'pipeline': '',  # Will use default receive pipeline
             'bitrate': self.bitrate,
-            'stun_server': self.stun_server if hasattr(self, 'stun_server') else 'stun://stun.l.google.com:19302',
-            'turn_server': self.turn_server if hasattr(self, 'turn_server') else None,
+            'stun_server': self.stun_server if hasattr(self, 'stun_server') else 'stun://stun.cloudflare.com:3478',
+            'turn_server': self.turn_server if hasattr(self, 'turn_server') and self.turn_server else None,
+            'ice_transport_policy': 'all',  # Allow both direct and relay connections
         }
         
         # Create subprocess manager

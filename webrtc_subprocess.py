@@ -86,9 +86,13 @@ class IPCWebRTCHandler:
             
         # Configure STUN/TURN
         if 'stun_server' in self.config:
-            self.webrtc.set_property('stun-server', self.config['stun_server'])
-        if 'turn_server' in self.config:
-            self.webrtc.set_property('turn-server', self.config['turn_server'])
+            stun = self.config['stun_server']
+            self.webrtc.set_property('stun-server', stun)
+            self.log(f"STUN server configured: {stun}")
+        if 'turn_server' in self.config and self.config['turn_server']:
+            turn = self.config['turn_server']
+            self.webrtc.set_property('turn-server', turn)
+            self.log(f"TURN server configured: {turn}")
             
         # Connect signals
         self.webrtc.connect('on-ice-candidate', self.on_ice_candidate)
@@ -235,6 +239,12 @@ class IPCWebRTCHandler:
         """ICE connection state changed"""
         state = webrtc.get_property('ice-connection-state')
         self.log(f"ICE state: {state.value_name}")
+        
+        # Log more details if failed
+        if state == GstWebRTC.WebRTCICEConnectionState.FAILED:
+            gathering_state = webrtc.get_property('ice-gathering-state')
+            self.log(f"ICE gathering state: {gathering_state.value_name}", "error")
+            
         self.send_message({
             "type": "ice_state",
             "state": state.value_name
