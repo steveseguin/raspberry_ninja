@@ -3865,8 +3865,8 @@ class WebRTCClient:
                         continue
                     else:
                         # For other requests without UUID, we might need to handle them
-                        # especially for room recording mode
-                        if self.room_recording:
+                        # especially for room recording mode (only if not using subprocess architecture)
+                        if self.room_recording and not self.subprocess_managers:
                             await self._handle_room_message(msg)
                     continue
 
@@ -3912,8 +3912,8 @@ class WebRTCClient:
                             print("sessions don't match")
                             continue
 
-                # Handle room recording messages
-                if self.room_recording:
+                # Handle room recording messages (only if not using subprocess architecture)
+                if self.room_recording and not self.subprocess_managers:
                     handled = await self._handle_room_message(msg)
                     if handled:
                         continue
@@ -6449,8 +6449,8 @@ async def main():
     signal.signal(signal.SIGINT, original_sigint)
     signal.signal(signal.SIGTERM, original_sigterm)
     
-    # Cancel stats task if running
-    if stats_task:
+    # Cancel stats task if running (if it exists)
+    if 'stats_task' in locals() and stats_task:
         stats_task.cancel()
         try:
             await stats_task
