@@ -93,6 +93,16 @@ class IPCWebRTCHandler:
             turn = self.config['turn_server']
             self.webrtc.set_property('turn-server', turn)
             self.log(f"TURN server configured: {turn}")
+        
+        # Set ICE transport policy if specified
+        if 'ice_transport_policy' in self.config:
+            policy = self.config['ice_transport_policy']
+            if policy == 'relay':
+                self.webrtc.set_property('ice-transport-policy', GstWebRTC.WebRTCICETransportPolicy.RELAY)
+                self.log("ICE transport policy set to: RELAY only")
+            else:
+                self.webrtc.set_property('ice-transport-policy', GstWebRTC.WebRTCICETransportPolicy.ALL)
+                self.log("ICE transport policy set to: ALL (direct + relay)")
             
         # Connect signals
         self.webrtc.connect('on-ice-candidate', self.on_ice_candidate)

@@ -4254,6 +4254,27 @@ class WebRTCClient:
         printc(f"\n📹 Creating subprocess recorder for: {stream_id}", "0F0")
         
         # Configuration for subprocess
+        # Get default TURN server if none specified
+        default_turn = None
+        if not (hasattr(self, 'turn_server') and self.turn_server):
+            # Use VDO.Ninja's default TURN servers for room recording
+            turn_info = self._get_default_turn_server()
+            if turn_info:
+                # Format TURN URL with credentials
+                turn_url = turn_info['url']
+                if '@' not in turn_url and turn_url.startswith('turn'):
+                    # Extract protocol and server parts
+                    if turn_url.startswith('turns:'):
+                        protocol = 'turns://'
+                        server_part = turn_url[6:]
+                    else:
+                        protocol = 'turn://'
+                        server_part = turn_url[5:]
+                    default_turn = f"{protocol}{turn_info['user']}:{turn_info['pass']}@{server_part}"
+                else:
+                    default_turn = turn_url
+                printc(f"[{stream_id}] Using default TURN server: {turn_info['url']} ({turn_info['region']})", "77F")
+                    
         config = {
             'mode': 'view',
             'room': self.room_name,
@@ -4261,7 +4282,7 @@ class WebRTCClient:
             'pipeline': '',  # Will use default receive pipeline
             'bitrate': self.bitrate,
             'stun_server': self.stun_server if hasattr(self, 'stun_server') else 'stun://stun.cloudflare.com:3478',
-            'turn_server': self.turn_server if hasattr(self, 'turn_server') and self.turn_server else None,
+            'turn_server': self.turn_server if hasattr(self, 'turn_server') and self.turn_server else default_turn,
             'ice_transport_policy': 'all',  # Allow both direct and relay connections
         }
         
