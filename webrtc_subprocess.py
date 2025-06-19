@@ -234,6 +234,7 @@ class IPCWebRTCHandler:
     def on_ice_state_changed(self, webrtc, pspec):
         """ICE connection state changed"""
         state = webrtc.get_property('ice-connection-state')
+        self.log(f"ICE state: {state.value_name}")
         self.send_message({
             "type": "ice_state",
             "state": state.value_name
@@ -242,10 +243,20 @@ class IPCWebRTCHandler:
     def on_connection_state_changed(self, webrtc, pspec):
         """WebRTC connection state changed"""
         state = webrtc.get_property('connection-state')
+        self.log(f"Connection state: {state.value_name}")
         self.send_message({
             "type": "connection_state",
             "state": state.value_name
         })
+        
+        # If connected, we should start seeing pads
+        if state == GstWebRTC.WebRTCPeerConnectionState.CONNECTED:
+            self.log("WebRTC connected successfully!")
+            self.send_message({
+                "type": "recording_started",
+                "file": self.record_file or "pending",
+                "codec": "pending"
+            })
         
     def on_bus_message(self, bus, message):
         """Handle GStreamer bus messages"""
@@ -265,6 +276,7 @@ class IPCWebRTCHandler:
     async def handle_message(self, msg: Dict[str, Any]):
         """Handle message from parent process"""
         msg_type = msg.get('type')
+        self.log(f"Received message type: {msg_type}", "info")
         
         if msg_type == 'start':
             # Start the pipeline
