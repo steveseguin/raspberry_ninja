@@ -378,18 +378,27 @@ class IPCWebRTCHandler:
 
 async def main():
     """Main entry point for subprocess"""
-    # Read configuration from first line
-    config_line = sys.stdin.readline()
-    config = json.loads(config_line.strip())
-    
-    # Create handler
-    handler = IPCWebRTCHandler(config)
-    
-    # Send ready signal
-    handler.send_message({"type": "ready"})
-    
-    # Run event loop
-    await handler.run()
+    try:
+        # Read configuration from first line
+        config_line = sys.stdin.readline()
+        if not config_line:
+            sys.stderr.write("No configuration received\n")
+            return
+            
+        config = json.loads(config_line.strip())
+        
+        # Create handler
+        handler = IPCWebRTCHandler(config)
+        
+        # Send ready signal
+        handler.send_message({"type": "ready"})
+        
+        # Run event loop
+        await handler.run()
+    except Exception as e:
+        sys.stderr.write(f"Subprocess error: {e}\n")
+        import traceback
+        traceback.print_exc(file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -1360,7 +1360,11 @@ class WebRTCSubprocessManager:
                 printc(message, "77F")
                 
         elif msg_type in self.message_handlers:
-            await self.message_handlers[msg_type](msg)
+            handler = self.message_handlers[msg_type]
+            if asyncio.iscoroutinefunction(handler):
+                await handler(msg)
+            else:
+                handler(msg)
             
     def on_message(self, msg_type: str, handler):
         """Register message handler"""
@@ -3937,9 +3941,20 @@ class WebRTCClient:
                                 # Try to match by checking all subprocess managers
                                 if not stream_id:
                                     printc(f"[Room Recording] Checking {len(self.subprocess_managers)} subprocess managers", "77F")
-                                    # This offer might be for any of our subprocess recorders
-                                    # For now, if we only have one, assume it's for that one
-                                    if len(self.subprocess_managers) == 1:
+                                    
+                                    # Check if this is the first offer after a play request
+                                    # We can match based on which subprocesses don't have a UUID mapping yet
+                                    unmapped_streams = []
+                                    for sid in self.subprocess_managers.keys():
+                                        if sid not in self.stream_id_to_uuid:
+                                            unmapped_streams.append(sid)
+                                    
+                                    if unmapped_streams:
+                                        # Use the first unmapped stream
+                                        stream_id = unmapped_streams[0]
+                                        printc(f"[Room Recording] Matching to unmapped stream: {stream_id}", "77F")
+                                    elif len(self.subprocess_managers) == 1:
+                                        # If only one subprocess, assume it's for that one
                                         stream_id = list(self.subprocess_managers.keys())[0]
                                         printc(f"[Room Recording] Using only available stream: {stream_id}", "77F")
                                 
