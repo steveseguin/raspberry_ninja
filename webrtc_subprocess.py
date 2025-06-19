@@ -46,6 +46,7 @@ class IPCWebRTCHandler:
         self.ice_candidates = []
         self.generated_ice_candidates = []  # Track our generated candidates
         self.pipeline_start_time = None
+        self.pending_answer = None  # For delayed answer sending
         
     def send_message(self, msg: Dict[str, Any]):
         """Send message to parent process via stdout"""
@@ -101,6 +102,28 @@ class IPCWebRTCHandler:
         if not self.webrtc:
             self.webrtc = Gst.ElementFactory.make('webrtcbin', 'sendrecv')
             self.pipe.add(self.webrtc)
+            self.log("Created webrtcbin element")
+        else:
+            self.log("Found existing webrtcbin element in pipeline")
+            
+        # Verify webrtcbin has sink pads for publish mode
+        if self.mode == 'publish':
+            # Check if webrtcbin has any sink pads
+            sink_pads = []
+            it = self.webrtc.iterate_sink_pads()
+            while True:
+                result, pad = it.next()
+                if result == Gst.IteratorResult.OK:
+                    sink_pads.append(pad)
+                elif result == Gst.IteratorResult.DONE:
+                    break
+                else:
+                    break
+            
+            if sink_pads:
+                self.log(f"Webrtcbin has {len(sink_pads)} sink pad(s) connected")
+            else:
+                self.log("WARNING: Webrtcbin has no sink pads - pipeline may not be properly connected!", "warning")
             
         # Configure STUN/TURN
         if 'stun_server' in self.config:
@@ -109,8 +132,14 @@ class IPCWebRTCHandler:
             self.log(f"STUN server configured: {stun}")
         if 'turn_server' in self.config and self.config['turn_server']:
             turn = self.config['turn_server']
-            self.webrtc.set_property('turn-server', turn)
-            self.log(f"TURN server configured: {turn}")
+            # Use add-turn-server signal for better compatibility
+            result = self.webrtc.emit('add-turn-server', turn)
+            if result:
+                self.log(f"TURN server configured: {turn}")
+            else:
+                # Fallback to property if signal fails
+                self.webrtc.set_property('turn-server', turn)
+                self.log(f"TURN server configured via property: {turn}")
         
         # Set ICE transport policy if specified
         if 'ice_transport_policy' in self.config:
@@ -126,6 +155,7 @@ class IPCWebRTCHandler:
         self.webrtc.connect('on-ice-candidate', self.on_ice_candidate)
         self.webrtc.connect('pad-added', self.on_pad_added)
         self.webrtc.connect('notify::ice-connection-state', self.on_ice_state_changed)
+        self.webrtc.connect('notify::ice-gathering-state', self.on_ice_gathering_state_changed)
         self.webrtc.connect('notify::connection-state', self.on_connection_state_changed)
         
         if self.mode == 'publish':
@@ -142,6 +172,16 @@ class IPCWebRTCHandler:
             self.log("Failed to start pipeline", "error")
             return False
             
+        # Wait for state change to complete if it's async
+        if ret == Gst.StateChangeReturn.ASYNC:
+            self.log("Pipeline state change is async, waiting...")
+            state_ret, state, pending = self.pipe.get_state(Gst.CLOCK_TIME_NONE)
+            if state_ret == Gst.StateChangeReturn.SUCCESS:
+                self.log(f"Pipeline reached {state.value_name} state")
+            else:
+                self.log(f"Pipeline state change failed: {state_ret}", "error")
+                return False
+                
         # Track pipeline start time for debugging
         self.pipeline_start_time = time.time()
         self.log("Pipeline started successfully")
@@ -157,8 +197,17 @@ class IPCWebRTCHandler:
     def on_negotiation_needed(self, webrtc):
         """Create offer when negotiation is needed"""
         self.log("Negotiation needed")
-        promise = Gst.Promise.new_with_change_func(self.on_offer_created, webrtc, None)
-        webrtc.emit('create-offer', None, promise)
+        
+        # Check current state
+        signaling_state = webrtc.get_property('signaling-state')
+        self.log(f"Current signaling state: {signaling_state.value_name}")
+        
+        # Only create offer if we're in a valid state
+        if signaling_state == GstWebRTC.WebRTCSignalingState.STABLE:
+            promise = Gst.Promise.new_with_change_func(self.on_offer_created, webrtc, None)
+            webrtc.emit('create-offer', None, promise)
+        else:
+            self.log(f"Skipping offer creation - signaling state is {signaling_state.value_name}, not STABLE", "warning")
         
     def on_offer_created(self, promise, webrtc, _):
         """Handle created offer"""
@@ -199,6 +248,23 @@ class IPCWebRTCHandler:
         # Log signaling state after setting local description
         signaling_state = webrtc.get_property('signaling-state')
         self.log(f"Signaling state after setting local offer: {signaling_state.value_name}")
+        
+        # Check ICE gathering state
+        gathering_state = webrtc.get_property('ice-gathering-state')
+        self.log(f"ICE gathering state after setting local offer: {gathering_state.value_name}")
+        
+        # Force ICE gathering to start if it hasn't
+        if gathering_state == GstWebRTC.WebRTCICEGatheringState.NEW:
+            self.log("ICE gathering hasn't started, checking pipeline state...")
+            state_ret, state, pending = self.pipe.get_state(0)
+            self.log(f"Pipeline state: {state.value_name}, pending: {pending.value_name if pending else 'None'}")
+            
+            # Get ICE agent to check its state
+            ice_agent = webrtc.get_property('ice-agent')
+            if ice_agent:
+                self.log("ICE agent exists, gathering should start soon...")
+            else:
+                self.log("WARNING: No ICE agent found!", "warning")
         
         # Send offer to parent
         self.log("Sending offer to parent process...")
@@ -308,6 +374,50 @@ class IPCWebRTCHandler:
         except Exception as e:
             self.log(f"Error setting up recording: {e}", "error")
             
+    def on_ice_gathering_state_changed(self, webrtc, pspec):
+        """ICE gathering state changed"""
+        state = webrtc.get_property('ice-gathering-state')
+        self.log(f"ICE gathering state: {state.value_name}")
+        
+        # Send gathering state to parent
+        self.send_message({
+            "type": "ice_gathering_state",
+            "state": state.value_name
+        })
+        
+        # Log when gathering starts
+        if state == GstWebRTC.WebRTCICEGatheringState.GATHERING:
+            self.log("ICE gathering started - collecting local candidates...")
+            # Reset generated candidates list when gathering starts
+            self.generated_ice_candidates = []
+        
+        # Log additional info when gathering completes
+        if state == GstWebRTC.WebRTCICEGatheringState.COMPLETE:
+            num_candidates = len(self.generated_ice_candidates)
+            self.log(f"ICE gathering complete - generated {num_candidates} candidates")
+            
+            # Log candidate types summary
+            host_count = sum(1 for _, c in self.generated_ice_candidates if c and 'typ host' in c)
+            srflx_count = sum(1 for _, c in self.generated_ice_candidates if c and 'typ srflx' in c)
+            relay_count = sum(1 for _, c in self.generated_ice_candidates if c and 'typ relay' in c)
+            
+            self.log(f"Candidate types: {host_count} host, {srflx_count} server reflexive, {relay_count} relay")
+            
+            # Check if we're using TURN only and have no relay candidates
+            if self.config.get('ice_transport_policy') == 'relay' and relay_count == 0:
+                self.log("WARNING: ICE transport policy is 'relay' but no TURN relay candidates were generated!", "warning")
+            
+            # Send pending answer if we were waiting for ICE gathering
+            if hasattr(self, 'pending_answer') and self.pending_answer:
+                self.log("ICE gathering complete - now sending delayed answer to parent process...")
+                self.send_message({
+                    "type": "sdp",
+                    "sdp_type": "answer",
+                    "sdp": self.pending_answer,
+                    "session_id": self.session_id
+                })
+                self.pending_answer = None
+    
     def on_ice_state_changed(self, webrtc, pspec):
         """ICE connection state changed"""
         state = webrtc.get_property('ice-connection-state')
@@ -490,6 +600,37 @@ class IPCWebRTCHandler:
             if sdp_type == 'offer':
                 self.log("Processing SDP offer...")
                 
+                # For view/record mode, add transceivers before setting remote offer
+                if self.mode == 'view' or self.record_file:
+                    self.log("Adding transceivers for view/record mode...")
+                    
+                    # Parse the offer to see what media types are offered
+                    for i in range(num_media):
+                        media = sdp_msg.get_media(i)
+                        media_type = media.get_media()
+                        
+                        if media_type == 'video':
+                            # Add video transceiver with recvonly direction
+                            caps = Gst.Caps.from_string("application/x-rtp,media=video")
+                            transceiver = self.webrtc.emit('add-transceiver', 
+                                                          GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY, 
+                                                          caps)
+                            if transceiver:
+                                self.log(f"Added video transceiver with direction=recvonly")
+                            else:
+                                self.log(f"Failed to add video transceiver", "warning")
+                                
+                        elif media_type == 'audio':
+                            # Add audio transceiver with recvonly direction
+                            caps = Gst.Caps.from_string("application/x-rtp,media=audio")
+                            transceiver = self.webrtc.emit('add-transceiver', 
+                                                          GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY, 
+                                                          caps)
+                            if transceiver:
+                                self.log(f"Added audio transceiver with direction=recvonly")
+                            else:
+                                self.log(f"Failed to add audio transceiver", "warning")
+                
                 # Set remote description
                 offer = GstWebRTC.WebRTCSessionDescription.new(
                     GstWebRTC.WebRTCSDPType.OFFER,
@@ -621,14 +762,39 @@ class IPCWebRTCHandler:
         signaling_state = webrtc.get_property('signaling-state')
         self.log(f"Signaling state after setting local answer: {signaling_state.value_name}")
         
-        # Send answer to parent
-        self.log("Sending answer to parent process...")
-        self.send_message({
-            "type": "sdp",
-            "sdp_type": "answer",
-            "sdp": text,
-            "session_id": self.session_id
-        })
+        # Check ICE gathering state
+        gathering_state = webrtc.get_property('ice-gathering-state')
+        self.log(f"ICE gathering state after setting local answer: {gathering_state.value_name}")
+        
+        # Force ICE gathering to start if it hasn't
+        if gathering_state == GstWebRTC.WebRTCICEGatheringState.NEW:
+            self.log("ICE gathering hasn't started, checking pipeline state...")
+            state_ret, state, pending = self.pipe.get_state(0)
+            self.log(f"Pipeline state: {state.value_name}, pending: {pending.value_name if pending else 'None'}")
+            
+            # Get ICE agent to check its state
+            ice_agent = webrtc.get_property('ice-agent')
+            if ice_agent:
+                self.log("ICE agent exists, gathering should start soon...")
+            else:
+                self.log("WARNING: No ICE agent found!", "warning")
+        
+        # Check if we should wait for ICE gathering to complete
+        wait_for_gathering = self.config.get('wait_for_ice_gathering', False)
+        
+        if wait_for_gathering and gathering_state != GstWebRTC.WebRTCICEGatheringState.COMPLETE:
+            self.log("Waiting for ICE gathering to complete before sending answer...")
+            # Store the answer to send later
+            self.pending_answer = text
+        else:
+            # Send answer to parent immediately
+            self.log("Sending answer to parent process...")
+            self.send_message({
+                "type": "sdp",
+                "sdp_type": "answer",
+                "sdp": text,
+                "session_id": self.session_id
+            })
         
     async def run(self):
         """Main event loop"""
