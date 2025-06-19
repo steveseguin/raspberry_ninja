@@ -1,0 +1,13 @@
+{
+  "test_time": "2025-06-17T07:30:02.400068",
+  "test_duration": 15,
+  "stream_id": "test_record_12345",
+  "recording_files_found": 1,
+  "files": [
+    {
+      "name": "test_record_12345_1750159785.mkv",
+      "size": 320117,
+      "modified": "2025-06-17T07:30:01.581323"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+# Default configuration for act
+# This makes act run faster by using smaller images
+
+# Use medium images by default (smaller than default large images)
+--platform ubuntu-latest=catthehacker/ubuntu:act-latest
+--platform ubuntu-22.04=catthehacker/ubuntu:act-22.04
+--platform ubuntu-20.04=catthehacker/ubuntu:act-20.04
+
+# Don't pull images if they exist
+--pull=false
+
+# Use host network (faster)
+--network host
+
+# Reuse containers between runs (faster)
+--reuse
+
+# Bind working directory
+--bind
+
+# Set default event (push)
+--eventpath .github/workflows/test.yml

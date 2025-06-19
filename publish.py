@@ -1453,6 +1453,7 @@ class WebRTCClient:
         # ICE/TURN configuration
         self.stun_server = getattr(params, 'stun_server', None)
         self.turn_server = getattr(params, 'turn_server', None)
+        self.auto_turn = getattr(params, 'auto_turn', False)
         self.ice_transport_policy = getattr(params, 'ice_transport_policy', 'all')
         
         # Recording support
@@ -5495,6 +5496,7 @@ async def main():
         # Room recording mode (check this first before regular record)
         args.streamin = "room_recording"  # Special value to indicate room recording mode
         args.room_recording = True
+        args.auto_turn = True  # Automatically use default TURN servers for room recording
         
         # Validate room parameter
         if not args.room:
@@ -6379,6 +6381,7 @@ async def main():
         
         # Enable room recording mode
         args.room_recording = True
+        args.auto_turn = True  # Automatically use default TURN servers for room recording
         args.streamin = False  # Not receiving directly
         args.record = args.record or args.room  # Default prefix
         
