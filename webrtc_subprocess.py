@@ -149,6 +149,14 @@ class IPCWebRTCHandler:
         
     def on_ice_candidate(self, webrtc, mlineindex, candidate):
         """Send ICE candidate to parent"""
+        # Log candidate type
+        if 'typ host' in candidate:
+            self.log(f"Generated host candidate: {candidate[:60]}...")
+        elif 'typ srflx' in candidate:
+            self.log(f"Generated server reflexive candidate: {candidate[:60]}...")
+        elif 'typ relay' in candidate:
+            self.log(f"Generated TURN relay candidate: {candidate[:60]}...")
+            
         self.send_message({
             "type": "ice",
             "candidate": candidate,
@@ -334,6 +342,15 @@ class IPCWebRTCHandler:
             # Add ICE candidate
             candidate = msg.get('candidate')
             sdpMLineIndex = msg.get('sdpMLineIndex', 0)
+            
+            # Log remote candidate type
+            if candidate:
+                if 'typ host' in candidate:
+                    self.log(f"Received remote host candidate")
+                elif 'typ srflx' in candidate:
+                    self.log(f"Received remote server reflexive candidate")
+                elif 'typ relay' in candidate:
+                    self.log(f"Received remote TURN relay candidate")
             
             if self.webrtc:
                 self.webrtc.emit('add-ice-candidate', sdpMLineIndex, candidate)
