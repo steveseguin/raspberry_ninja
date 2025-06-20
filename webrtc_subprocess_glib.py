@@ -59,6 +59,9 @@ class GLibWebRTCHandler:
         self.video_filename = None
         self.audio_filename = None
         
+        # NDI state
+        self.ndi_combiner = None
+        self.ndi_sink = None
         
         # Main loop
         self.main_loop = GLib.MainLoop()
@@ -551,7 +554,135 @@ class GLibWebRTCHandler:
         else:
             self.log("Still not in stable state, will retry")
             return True  # Continue the timer
+    
+    def setup_ndi_combiner(self):
+        """Set up NDI sink combiner for audio/video multiplexing"""
+        if hasattr(self, 'ndi_combiner') and self.ndi_combiner:
+            # Already set up
+            return
             
+        self.log("Setting up NDI combiner for audio/video multiplexing")
+        
+        # Create NDI sink combiner
+        self.ndi_combiner = Gst.ElementFactory.make('ndisinkcombiner', None)
+        if not self.ndi_combiner:
+            self.log("Failed to create ndisinkcombiner - is gst-plugin-ndi installed?", "error")
+            return
+            
+        # Create NDI sink
+        self.ndi_sink = Gst.ElementFactory.make('ndisink', None)
+        if not self.ndi_sink:
+            self.log("Failed to create ndisink", "error")
+            return
+            
+        # Set NDI stream name
+        ndi_name = self.ndi_name or f"{self.stream_id}"
+        self.ndi_sink.set_property('ndi-name', ndi_name)
+        self.log(f"   NDI stream name: {ndi_name}")
+        
+        # Add to pipeline
+        self.pipe.add(self.ndi_combiner)
+        self.pipe.add(self.ndi_sink)
+        
+        # Link combiner to sink
+        if not self.ndi_combiner.link(self.ndi_sink):
+            self.log("Failed to link NDI combiner to sink", "error")
+            return
+            
+        # Sync states
+        self.ndi_combiner.sync_state_with_parent()
+        self.ndi_sink.sync_state_with_parent()
+        
+        self.log("   ✅ NDI combiner ready for audio/video")
+    
+    def setup_ndi_audio_pad(self, pad, encoding_name):
+        """Set up audio processing for NDI output"""
+        # Create queue for buffering
+        queue = Gst.ElementFactory.make('queue', None)
+        # Set buffer properties for audio
+        queue.set_property('max-size-time', 10000000000)  # 10 seconds
+        queue.set_property('max-size-buffers', 0)
+        queue.set_property('max-size-bytes', 0)
+        
+        # Create depayloader and decoder based on codec
+        if encoding_name == 'OPUS':
+            depay = Gst.ElementFactory.make('rtpopusdepay', None)
+            decoder = Gst.ElementFactory.make('opusdec', None)
+        else:
+            self.log(f"   ⚠️  Unsupported audio codec for NDI: {encoding_name}", "error")
+            # Use fakesink as fallback
+            fakesink = Gst.ElementFactory.make('fakesink', None)
+            self.pipe.add(fakesink)
+            fakesink.sync_state_with_parent()
+            pad.link(fakesink.get_static_pad('sink'))
+            return
+            
+        # Audio convert and resample for NDI
+        audioconvert = Gst.ElementFactory.make('audioconvert', None)
+        audioresample = Gst.ElementFactory.make('audioresample', None)
+        
+        if not all([queue, depay, decoder, audioconvert, audioresample]):
+            self.log("Failed to create audio elements for NDI", "error")
+            return
+            
+        # Add elements to pipeline
+        elements = [queue, depay, decoder, audioconvert, audioresample]
+        for element in elements:
+            self.pipe.add(element)
+            
+        # Link audio processing chain
+        if not queue.link(depay):
+            self.log("Failed to link audio queue to depay", "error")
+            return
+        if not depay.link(decoder):
+            self.log("Failed to link audio depay to decoder", "error")
+            return
+        if not decoder.link(audioconvert):
+            self.log("Failed to link audio decoder to audioconvert", "error")
+            return
+        if not audioconvert.link(audioresample):
+            self.log("Failed to link audioconvert to audioresample", "error")
+            return
+            
+        # Link to NDI combiner audio pad
+        if self.ndi_combiner:
+            audio_pad = self.ndi_combiner.get_request_pad('audio')
+            if audio_pad:
+                src_pad = audioresample.get_static_pad('src')
+                if src_pad.link(audio_pad) == Gst.PadLinkReturn.OK:
+                    self.log("   ✅ Connected audio to NDI combiner")
+                else:
+                    self.log("Failed to link audio to NDI combiner", "error")
+                    return
+            else:
+                self.log("Failed to get audio pad from NDI combiner", "error")
+                return
+        else:
+            self.log("NDI combiner not available for audio", "error")
+            return
+            
+        # Sync states
+        for element in elements:
+            element.sync_state_with_parent()
+            
+        # Link incoming pad to queue
+        sink_pad = queue.get_static_pad('sink')
+        if pad.link(sink_pad) != Gst.PadLinkReturn.OK:
+            self.log("Failed to link audio pad to queue", "error")
+            return
+            
+        # Add probe to monitor audio flow
+        self._audio_ndi_probe_counter = 0
+        def audio_probe_cb(pad, info):
+            self._audio_ndi_probe_counter += 1
+            if self._audio_ndi_probe_counter % 100 == 0:
+                self.log(f"   📊 NDI audio flowing: {self._audio_ndi_probe_counter} buffers")
+            return Gst.PadProbeReturn.OK
+            
+        pad.add_probe(Gst.PadProbeType.BUFFER, audio_probe_cb)
+        
+        self.log("   ✅ NDI audio pipeline connected")
+        
     def on_pad_added(self, element, pad):
         """Handle new pad from webrtcbin"""
         pad_name = pad.get_name()
@@ -605,6 +736,8 @@ class GLibWebRTCHandler:
         
         if self.room_ndi:
             self.log(f"📹 NDI OUTPUT START: Video stream from {self.stream_id}")
+            # For NDI, we need to set up the combiner first
+            self.setup_ndi_combiner()
         else:
             self.log(f"📹 RECORDING START: Video stream from {self.stream_id}")
         self.log(f"   Codec: {encoding_name}, Resolution: {width}x{height}")
@@ -641,17 +774,12 @@ class GLibWebRTCHandler:
             return
         
         if self.room_ndi:
-            # Create NDI sink
+            # Create video processing elements for NDI
             videoconvert = Gst.ElementFactory.make('videoconvert', None)
-            ndisink = Gst.ElementFactory.make('ndisink', None)
             
-            if not all([queue, depay, decoder, videoconvert, ndisink]):
-                self.log("Failed to create NDI elements", "error")
+            if not all([queue, depay, decoder, videoconvert]):
+                self.log("Failed to create NDI video elements", "error")
                 return
-                
-            # Set NDI properties
-            ndisink.set_property('ndi-name', self.ndi_name or f"{self.stream_id}_video")
-            self.log(f"   NDI stream name: {self.ndi_name or f'{self.stream_id}_video'}")
             
         else:
             # Recording mode
@@ -664,16 +792,16 @@ class GLibWebRTCHandler:
         if self.room_ndi:
             # Add NDI elements to pipeline
             if encoding_name == 'VP8':
-                elements = [queue, depay, decoder, videoconvert, ndisink]
+                elements = [queue, depay, decoder, videoconvert]
             else:  # H264
-                elements = [queue, depay, h264parse, decoder, videoconvert, ndisink]
+                elements = [queue, depay, h264parse, decoder, videoconvert]
                 
             for element in elements:
                 self.pipe.add(element)
                 
-            # Link NDI pipeline
+            # Link NDI video pipeline
             if encoding_name == 'VP8':
-                # VP8: queue -> depay -> vp8dec -> videoconvert -> ndisink
+                # VP8: queue -> depay -> vp8dec -> videoconvert -> combiner
                 if not queue.link(depay):
                     self.log("Failed to link queue to depay", "error")
                     return
@@ -683,11 +811,8 @@ class GLibWebRTCHandler:
                 if not decoder.link(videoconvert):
                     self.log("Failed to link decoder to videoconvert", "error")
                     return
-                if not videoconvert.link(ndisink):
-                    self.log("Failed to link videoconvert to ndisink", "error")
-                    return
             else:  # H264
-                # H264: queue -> depay -> h264parse -> avdec_h264 -> videoconvert -> ndisink
+                # H264: queue -> depay -> h264parse -> avdec_h264 -> videoconvert -> combiner
                 if not queue.link(depay):
                     self.log("Failed to link queue to depay", "error")
                     return
@@ -700,8 +825,19 @@ class GLibWebRTCHandler:
                 if not decoder.link(videoconvert):
                     self.log("Failed to link decoder to videoconvert", "error")
                     return
-                if not videoconvert.link(ndisink):
-                    self.log("Failed to link videoconvert to ndisink", "error")
+            
+            # Link to NDI combiner video pad
+            if self.ndi_combiner:
+                video_pad = self.ndi_combiner.get_request_pad('video')
+                if video_pad:
+                    src_pad = videoconvert.get_static_pad('src')
+                    if src_pad.link(video_pad) == Gst.PadLinkReturn.OK:
+                        self.log("   ✅ Connected video to NDI combiner")
+                    else:
+                        self.log("Failed to link video to NDI combiner", "error")
+                        return
+                else:
+                    self.log("Failed to get video pad from NDI combiner", "error")
                     return
         else:
             # Recording mode
@@ -799,12 +935,9 @@ class GLibWebRTCHandler:
         self.log(f"   Codec: {encoding_name}, Sample rate: {clock_rate} Hz")
         
         if self.room_ndi:
-            self.log(f"   ℹ️  Audio handled separately in NDI mode")
-            # Just fakesink audio in NDI mode as video NDI sink will handle audio/video
-            fakesink = Gst.ElementFactory.make('fakesink', None)
-            self.pipe.add(fakesink)
-            fakesink.sync_state_with_parent()
-            pad.link(fakesink.get_static_pad('sink'))
+            self.log(f"   🔊 Setting up NDI audio output")
+            # For NDI, we need to decode and send audio to the combiner
+            self.setup_ndi_audio_pad(pad, encoding_name)
             return
         
         if not self.record_audio:
