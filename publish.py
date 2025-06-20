@@ -334,6 +334,32 @@ class WebServer:
                     gap: 20px;
                     margin: 20px 0;
                 }
+                .recording-section {
+                    background: #3a2a2a;
+                    border: 2px solid #ff4444;
+                    border-radius: 8px;
+                    padding: 20px;
+                    margin: 20px 0;
+                    grid-column: 1 / -1;
+                }
+                .recording-header {
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                    margin-bottom: 15px;
+                }
+                .recording-indicator {
+                    width: 16px;
+                    height: 16px;
+                    background: #ff4444;
+                    border-radius: 50%;
+                    animation: pulse 1.5s infinite;
+                }
+                @keyframes pulse {
+                    0% { opacity: 1; }
+                    50% { opacity: 0.5; }
+                    100% { opacity: 1; }
+                }
                 .stat-card {
                     background: #2a2a2a;
                     padding: 20px;
@@ -505,6 +531,17 @@ class WebServer:
             <script>
                 let ws;
                 
+                function formatDuration(seconds) {
+                    const hours = Math.floor(seconds / 3600);
+                    const minutes = Math.floor((seconds % 3600) / 60);
+                    const secs = seconds % 60;
+                    const parts = [];
+                    if (hours > 0) parts.push(hours + 'h');
+                    if (minutes > 0) parts.push(minutes + 'm');
+                    parts.push(secs + 's');
+                    return parts.join(' ');
+                }
+                
                 function connectWebSocket() {
                     ws = new WebSocket('ws://' + window.location.host + '/ws');
                     
@@ -548,7 +585,9 @@ class WebServer:
                 function updateStats(stats) {
                     const statsDiv = document.getElementById('stats');
                     const viewerDetails = stats.viewer_details;
+                    const recordingInfo = stats.recording;
                     delete stats.viewer_details;
+                    delete stats.recording;
                     
                     let html = Object.entries(stats).map(([key, value]) => {
                         // Special formatting for certain fields
@@ -579,6 +618,47 @@ class WebServer:
                                 '</div>'
                             ).join('') +
                             '</div></div>';
+                    }
+                    
+                    // Add recording information if available
+                    if (recordingInfo && recordingInfo.enabled) {
+                        html += '</div>'; // Close stats-grid
+                        html += '<div class="recording-section">' +
+                            '<div class="recording-header">' +
+                            '<div class="recording-indicator"></div>' +
+                            '<h2 style="margin: 0; color: #ff4444;">RECORDING ACTIVE</h2>' +
+                            '</div>' +
+                            '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">' +
+                            '<div><strong>Mode:</strong> ' + recordingInfo.mode.replace(/_/g, ' ').toUpperCase() + '</div>';
+                        
+                        if (recordingInfo.room_name) {
+                            html += '<div><strong>Room:</strong> ' + recordingInfo.room_name + '</div>';
+                        }
+                        
+                        if (recordingInfo.audio_enabled !== undefined) {
+                            html += '<div><strong>Audio:</strong> ' + (recordingInfo.audio_enabled ? '✓ Enabled' : '✗ Disabled') + '</div>';
+                        }
+                        
+                        if (recordingInfo.active_recordings !== undefined) {
+                            html += '<div><strong>Active Recordings:</strong> ' + recordingInfo.active_recordings + '</div>';
+                        }
+                        
+                        html += '</div>'; // Close grid
+                        
+                        if (recordingInfo.note) {
+                            html += '<div style="margin-top: 15px; padding: 10px; background: #1a1a1a; border-radius: 4px; font-style: italic;">' + recordingInfo.note + '</div>';
+                        }
+                        
+                        if (recordingInfo.files && recordingInfo.files.length > 0) {
+                            html += '<div style="margin-top: 15px;"><h3 style="margin-bottom: 10px;">Recording Files:</h3>';
+                            html += '<div style="background: #1a1a1a; padding: 10px; border-radius: 4px; max-height: 200px; overflow-y: auto;">';
+                            recordingInfo.files.forEach(f => {
+                                html += '<div style="margin: 5px 0; font-family: monospace;">• ' + f + '</div>';
+                            });
+                            html += '</div></div>';
+                        }
+                        html += '</div>'; // Close recording section
+                        html += '<div class="stats-grid">'; // Reopen stats-grid for consistency
                     }
                     
                     statsDiv.innerHTML = html;
@@ -962,19 +1042,63 @@ class WebServer:
         return web.Response(text=html, content_type='text/html')
     
     async def get_stats(self, request):
+        # Get real-time stats from the first connected client
+        current_bitrate = 0
+        packet_loss = 0.0
+        video_bytes = 0
+        audio_bytes = 0
+        
+        if self.client.clients:
+            # Get stats from the first connected client
+            for uuid, client_data in self.client.clients.items():
+                if '_last_bitrate_sent' in client_data:
+                    current_bitrate = client_data.get('_last_bitrate_sent', 0)
+                if '_last_packet_loss' in client_data:
+                    packet_loss = client_data.get('_last_packet_loss', 0.0)
+                if '_last_video_bytes' in client_data:
+                    video_bytes = client_data.get('_last_video_bytes', 0)
+                if '_last_audio_bytes' in client_data:
+                    audio_bytes = client_data.get('_last_audio_bytes', 0)
+                break  # Just get from first client
+        
         stats = {
             'status': 'connected' if len(self.client.clients) > 0 else 'idle',
             'viewers': len(self.client.clients),
-            'bitrate': f"{self.client.bitrate} kbps",
+            'configured_bitrate': f"{self.client.bitrate} kbps",
+            'current_bitrate': f"{current_bitrate} kbps" if current_bitrate > 0 else "0 kbps",
             'max_bitrate': f"{self.client.max_bitrate} kbps",
+            'packet_loss': f"{packet_loss:.2%}" if packet_loss > 0 else "0%",
             'stream_id': self.client.stream_id or 'N/A',
             'room': self.client.room_name or 'N/A',
             'multiviewer': 'enabled' if self.client.multiviewer else 'disabled',
             'pipeline_state': 'active' if self.client.pipe else 'inactive',
-            'recording': 'active' if self.client.record else 'inactive',
             'audio': 'disabled' if self.client.noaudio else 'enabled',
             'video': 'disabled' if self.client.novideo else 'enabled'
         }
+        
+        # Enhanced recording information
+        recording_info = {
+            'enabled': False,
+            'mode': 'none',
+            'active_recordings': 0,
+            'files': []
+        }
+        
+        if self.client.record:
+            recording_info['enabled'] = True
+            recording_info['mode'] = 'single_stream'
+            if hasattr(self.client, 'recording_files'):
+                recording_info['files'] = self.client.recording_files
+                recording_info['active_recordings'] = len(self.client.recording_files)
+        elif self.client.record_room:
+            recording_info['enabled'] = True
+            recording_info['mode'] = 'room_recording'
+            recording_info['room_name'] = self.client.room_name or 'N/A'
+            recording_info['audio_enabled'] = not self.client.noaudio
+            # Note: Detailed subprocess tracking would require additional implementation
+            recording_info['note'] = 'Recording all streams in room to separate files'
+        
+        stats['recording'] = recording_info
         
         # Add codec information
         if self.client.h264:
@@ -2774,6 +2898,11 @@ class WebRTCClient:
             if bytes_sent > client['_last_bytes_sent']:
                 client['_last_bytes_sent'] = bytes_sent
                 client['_last_bytes_time'] = current_time
+            
+            # Store current stats for web interface
+            client['_last_bitrate_sent'] = bitrate_sent
+            client['_last_video_bytes'] = video_bytes_sent
+            client['_last_audio_bytes'] = audio_bytes_sent
             
             # Log debug info after extracting all values
             if time.time() - client['_last_full_stats_log'] > 30:
