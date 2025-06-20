@@ -4375,14 +4375,22 @@ class WebRTCClient:
             
         printc(f"Room has {len(room_list)} members", "7F7")
         
+        # Print raw room list for debugging
+        import json
+        printc(f"Raw room list: {json.dumps(room_list, indent=2)}", "77F")
+        
         # Debug: print room members
         for i, member in enumerate(room_list):
             if isinstance(member, dict):
                 uuid = member.get('UUID', 'no-uuid')
                 stream_id = member.get('streamID', 'no-streamid')
-                printc(f"  - Member {i}: UUID={uuid}, streamID={stream_id}", "77F")
-                # Show all keys for debugging
-                if not ('streamID' in member and 'UUID' in member):
+                # Show members with streamIDs in green, others in yellow
+                if 'streamID' in member:
+                    printc(f"  - Member {i}: UUID={uuid}, streamID={stream_id} ✓", "0F0")
+                else:
+                    printc(f"  - Member {i}: UUID={uuid}, streamID={stream_id} (not publishing)", "FF0")
+                # Show all keys for debugging non-publishing members
+                if not 'streamID' in member:
                     printc(f"    Keys: {list(member.keys())}", "F77")
             else:
                 printc(f"  - Member {i}: Not a dict: {type(member)}", "F00")
