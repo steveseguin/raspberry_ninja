@@ -1284,11 +1284,12 @@ class WebRTCSubprocessManager:
             'turn_server': self.config.get('turn_server'),
             'ice_transport_policy': self.config.get('ice_transport_policy', 'all'),
             'bitrate': self.config.get('bitrate', 2500),
+            'record_audio': self.config.get('record_audio', False),  # Pass audio recording flag
         }
         
         # Start subprocess
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        subprocess_script = os.path.join(script_dir, 'webrtc_subprocess.py')
+        subprocess_script = os.path.join(script_dir, 'webrtc_subprocess_glib.py')
         cmd = [sys.executable, subprocess_script]
         self.process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -1477,6 +1478,8 @@ class WebRTCClient:
         self.room_streams = {}  # Track room streams
         self.room_streams_lock = asyncio.Lock()
         self.uuid_to_stream_id = {} # Maps an incoming peer's UUID to a specific stream_id we requested
+        self.stream_id_to_uuid = {} # Reverse mapping: stream_id -> UUID
+        self.session_to_stream = {} # Maps session ID to stream ID
         
         # Enable multiviewer when room NDI is active
         if self.room_ndi:
@@ -3933,10 +3936,11 @@ class WebRTCClient:
                             # In room recording mode, this offer is for a stream we requested.
                             # We need to route it to the correct subprocess.
                             stream_id = self.uuid_to_stream_id.get(UUID)
-                            session_id = self.clients.get(UUID, {}).get('session')
+                            # Get session ID from message or from client data
+                            session_id = msg.get('session') or self.clients.get(UUID, {}).get('session')
 
                             if stream_id and stream_id in self.subprocess_managers:
-                                printc(f"[Subprocess] Routing offer for UUID {UUID} to stream {stream_id}", "0F0")
+                                printc(f"[Subprocess] Routing offer for UUID {UUID} to stream {stream_id} (session: {session_id})", "0F0")
                                 await self.handle_subprocess_offer(stream_id, sdp_data['sdp'], session_id)
                                 continue # Message handled, skip further processing
                             else:
@@ -4157,6 +4161,7 @@ class WebRTCClient:
         # we'll know which subprocess to route it to.
         if uuid:
              self.uuid_to_stream_id[uuid] = stream_id
+             self.stream_id_to_uuid[stream_id] = uuid  # Add reverse mapping
              printc(f"[Subprocess] Mapping UUID {uuid} to stream {stream_id}", "77F")
         
         default_turn = self._get_default_turn_server()
@@ -4176,11 +4181,14 @@ class WebRTCClient:
         config = {
             'mode': 'view',
             'stream_id': stream_id,
+            'room': self.record,  # Room name prefix for files
             'record_file': f"{self.record}_{stream_id}_{int(time.time())}.webm",
             'stun_server': self.stun_server or 'stun://stun.cloudflare.com:3478',
             'turn_server': self.turn_server or default_turn_url,
             'ice_transport_policy': self.ice_transport_policy,
+            'record_audio': not self.noaudio,  # Enable audio recording if noaudio is False
         }
+        printc(f"[{stream_id}] DEBUG: Creating subprocess with record_audio={not self.noaudio} (noaudio={self.noaudio})", "77F")
 
         manager = WebRTCSubprocessManager(stream_id, config)
         manager.on_message('sdp', lambda msg: asyncio.create_task(self.send_subprocess_sdp(stream_id, msg)))
@@ -4203,6 +4211,8 @@ class WebRTCClient:
             printc(f"[{stream_id}] ❌ Failed to start subprocess.", "F00")
             if uuid and uuid in self.uuid_to_stream_id:
                 del self.uuid_to_stream_id[uuid] # Clean up failed mapping
+                if stream_id in self.stream_id_to_uuid:
+                    del self.stream_id_to_uuid[stream_id] # Clean up reverse mapping
             
     async def send_subprocess_sdp(self, stream_id, msg):
         """Send SDP (answer) from a subprocess back to the WebSocket peer."""
@@ -4221,12 +4231,18 @@ class WebRTCClient:
             return
 
         if sdp_type == 'answer':
-            printc(f"[{stream_id}] Sending SDP answer back to peer {uuid}", "0F0")
-            await self.sendMessageAsync({
+            printc(f"[{stream_id}] Sending SDP answer back to peer {uuid} (session: {session_id})", "0F0")
+            # Include session at root level for VDO.Ninja compatibility
+            message = {
                 "description": {"type": "answer", "sdp": sdp},
-                "UUID": uuid,
-                "session": session_id
-            })
+                "UUID": uuid
+            }
+            if session_id:
+                message["session"] = session_id
+                printc(f"[{stream_id}] Answer message includes session: {session_id}", "77F")
+            else:
+                printc(f"[{stream_id}] WARNING: No session ID for answer!", "F70")
+            await self.sendMessageAsync(message)
             
     async def send_subprocess_ice(self, stream_id, msg):
         """Send an ICE candidate from a subprocess back to the WebSocket peer."""
