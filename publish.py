@@ -5438,6 +5438,7 @@ async def main():
     parser.add_argument('--alsa', type=str, default=None, help='Use alsa audio input.')
     parser.add_argument('--pulse', type=str, help='Use pulse audio (or pipewire) input.')
     parser.add_argument('--zerolatency', action='store_true', help='A mode designed for the lowest audio output latency')
+    parser.add_argument('--lowlatency', action='store_true', help='Enable low latency mode with leaky queues. May drop frames under load but reduces latency.')
     parser.add_argument('--raw', action='store_true', help='Opens the V4L2 device with raw capabilities.')
     parser.add_argument('--bt601', action='store_true', help='Use colormetery bt601 mode; enables raw mode also')
     parser.add_argument('--h264', action='store_true', help='Prioritize h264 over vp8')
@@ -5507,6 +5508,10 @@ async def main():
     if args.buffer < 10:
         printc("Warning: Buffer values below 10ms can cause segfaults. Setting to minimum of 10ms.", "F77")
         args.buffer = 10
+    
+    # Notify about low latency mode
+    if args.lowlatency:
+        printc("⚡ Low latency mode enabled - frames may be dropped under load", "FF0")
 
     Gst.init(None)
 
@@ -5796,6 +5801,16 @@ async def main():
         args.multiviewer = True
         pass
     else:
+        # Helper function for queue configuration
+        def get_queue_config(lowlatency=False):
+            """Return queue configuration based on latency mode"""
+            if lowlatency:
+                # Low latency configuration with minimal buffering
+                # Only buffer 2 frames to reduce latency
+                return "queue max-size-buffers=2"
+            else:
+                return "queue max-size-buffers=10"
+        
         pipeline_video_input = ''
         pipeline_audio_input = ''
 
@@ -6281,20 +6296,24 @@ async def main():
                 if args.nvidia:
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxvp8enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                 elif args.rpi:
-                    # Add leaky queue to handle frame drops and prevent buffer overruns with low latency
+                    # Keep normal queue before encoder
                     pipeline_video_input += f' ! v4l2convert{timestampOverlay} ! video/x-raw,format=I420 ! queue max-size-buffers=10 ! vp8enc deadline=1 name="encoder" target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                 elif check_plugins('mppvp8enc'):
                     # Rockchip hardware VP8 encoder - ensure NV12 input
                     pipeline_video_input += f'{pipeline_video_converter} ! queue max-size-buffers=4 leaky=upstream ! mppvp8enc qp-init=40 qp-min=10 qp-max=100 gop=30 name="encoder" rc-mode=cbr bps={args.bitrate * 1000} {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
 
                 else:
-                    # Add leaky queue to handle frame drops and prevent buffer overruns with low latency
+                    # Keep normal queue before encoder
                     pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=10 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 name="encoder" {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
 
             if args.multiviewer:
                 pipeline_video_input += ' ! tee name=videotee '
             else:
-                pipeline_video_input += ' ! queue ! sendrecv. '
+                if args.lowlatency:
+                    # Apply low latency configuration to the final queue
+                    pipeline_video_input += ' ! queue max-size-buffers=2 max-size-time=50000000 leaky=upstream ! sendrecv. '
+                else:
+                    pipeline_video_input += ' ! queue ! sendrecv. '
 
         if not args.noaudio:
             if args.audio_pipeline:
