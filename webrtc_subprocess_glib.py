@@ -646,7 +646,12 @@ class GLibWebRTCHandler:
             
         # Link to NDI combiner audio pad
         if self.ndi_combiner:
-            audio_pad = self.ndi_combiner.get_request_pad('audio')
+            # Try new API first, fall back to deprecated API
+            try:
+                audio_pad = self.ndi_combiner.request_pad_simple('audio')
+            except AttributeError:
+                # Fall back to deprecated method for older GStreamer versions
+                audio_pad = self.ndi_combiner.get_request_pad('audio')
             if audio_pad:
                 src_pad = audioresample.get_static_pad('src')
                 if src_pad.link(audio_pad) == Gst.PadLinkReturn.OK:
@@ -828,7 +833,8 @@ class GLibWebRTCHandler:
             
             # Link to NDI combiner video pad
             if self.ndi_combiner:
-                video_pad = self.ndi_combiner.get_request_pad('video')
+                # Video pad is 'Always' available, not 'On request'
+                video_pad = self.ndi_combiner.get_static_pad('video')
                 if video_pad:
                     src_pad = videoconvert.get_static_pad('src')
                     if src_pad.link(video_pad) == Gst.PadLinkReturn.OK:
