@@ -4313,21 +4313,25 @@ class WebRTCClient:
                                 await self.start_pipeline(UUID)
                     elif msg['request'] == "videoaddedtoroom":
                         if 'streamID' in msg:
-                            if self.room_recording:
+                            printc(f"📹 Video added to room: {msg['streamID']}", "0FF")
+                            if self.room_recording or self.room_ndi:
                                 # This event tells us a new stream is in the room.
                                 # Try to get the UUID from various possible fields
                                 peer_uuid = msg.get('from') or msg.get('UUID') or UUID
                                 if peer_uuid:
+                                    printc(f"  UUID found: {peer_uuid}", "77F")
                                     await self.handle_new_room_stream(msg['streamID'], peer_uuid)
                                 else:
                                     printc(f"[{msg['streamID']}] ⚠️ videoaddedtoroom event missing peer UUID", "F70")
+                                    printc(f"  Message keys: {list(msg.keys())}", "F77")
                             elif self.streamin:
                                 printwout("play stream.")
                                 await self.sendMessageAsync({"request":"play","streamID":self.streamin+self.hashcode})
                     elif msg['request'] == 'joinroom':
-                        if self.room_recording:
+                        if self.room_recording or self.room_ndi:
                             # Handle new member joining when we're recording the room
                             if 'streamID' in msg:
+                                printc(f"👤 Member joined room with stream: {msg['streamID']}", "0FF")
                                 await self.handle_new_room_stream(msg['streamID'], UUID)
                         elif self.streamin and self.streamID and (self.streamin+self.hashcode == self.streamID):
                             if self.room_hashcode:
@@ -4341,7 +4345,8 @@ class WebRTCClient:
                             await self.sendMessageAsync({"request":"seed", "streamID":self.stream_id+self.hashcode, "UUID":UUID})
                     elif msg['request'] == 'someonejoined':
                         # Handle someone joining the room
-                        if self.room_recording and 'streamID' in msg:
+                        if (self.room_recording or self.room_ndi) and 'streamID' in msg:
+                            printc(f"🆕 Someone joined with stream: {msg['streamID']}", "0FF")
                             await self.handle_new_room_stream(msg['streamID'], UUID)
                             
                             
@@ -4371,13 +4376,20 @@ class WebRTCClient:
         printc(f"Room has {len(room_list)} members", "7F7")
         
         # Debug: print room members
-        for member in room_list:
-            if 'streamID' in member:
-                printc(f"  - Stream: {member.get('streamID', 'unknown')}", "77F")
+        for i, member in enumerate(room_list):
+            if isinstance(member, dict):
+                uuid = member.get('UUID', 'no-uuid')
+                stream_id = member.get('streamID', 'no-streamid')
+                printc(f"  - Member {i}: UUID={uuid}, streamID={stream_id}", "77F")
+                # Show all keys for debugging
+                if not ('streamID' in member and 'UUID' in member):
+                    printc(f"    Keys: {list(member.keys())}", "F77")
+            else:
+                printc(f"  - Member {i}: Not a dict: {type(member)}", "F00")
         
         # In room recording mode, we need to handle this differently
-        printc(f"Room recording mode: {self.room_recording}", "FF0")
-        if self.room_recording:
+        printc(f"Room recording mode: {self.room_recording}, Room NDI: {self.room_ndi}", "FF0")
+        if self.room_recording or self.room_ndi:
             printc("🚀 Room recording mode - will record all streams", "0F0")
             
             # Start ICE processor if not running
