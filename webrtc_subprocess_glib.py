@@ -457,26 +457,40 @@ class GLibWebRTCHandler:
             
             # Log what's in the data
             if 'description' in data:
-                self.log(f"DEBUG: Found description field with type: {data.get('description', {}).get('type')}")
+                desc = data['description']
+                if isinstance(desc, dict):
+                    self.log(f"DEBUG: Found description object with type: {desc.get('type')}")
+                else:
+                    self.log(f"DEBUG: Found encrypted description string (length: {len(str(desc))})")
             
             # Check if it's an SDP offer
-            if 'description' in data and data.get('description', {}).get('type') == 'offer':
-                self.log("Received renegotiation offer via data channel")
-                
-                # Store the offer and handle it in the main thread
-                sdp_text = data['description']['sdp']
-                self.log(f"Scheduling renegotiation handling in main thread ({len(sdp_text)} chars)")
-                
-                # Use GLib.idle_add to handle in main thread context
-                GLib.idle_add(self.handle_renegotiation_offer, sdp_text)
+            if 'description' in data:
+                desc = data['description']
+                if isinstance(desc, dict) and desc.get('type') == 'offer':
+                    self.log("Received renegotiation offer via data channel")
+                    
+                    # Store the offer and handle it in the main thread
+                    sdp_text = desc['sdp']
+                    self.log(f"Scheduling renegotiation handling in main thread ({len(sdp_text)} chars)")
+                    
+                    # Use GLib.idle_add to handle in main thread context
+                    GLib.idle_add(self.handle_renegotiation_offer, sdp_text)
+                elif isinstance(desc, str):
+                    # This is an encrypted offer - we can't handle renegotiation with encryption
+                    self.log("WARNING: Received encrypted SDP via data channel - renegotiation not supported with passwords enabled")
             elif 'candidates' in data:
                 # Handle ICE candidates from data channel
-                self.log(f"Received {len(data['candidates'])} ICE candidates via data channel")
-                for candidate in data['candidates']:
-                    if 'candidate' in candidate and 'sdpMLineIndex' in candidate:
-                        self.webrtc.emit('add-ice-candidate', 
-                                       candidate['sdpMLineIndex'], 
-                                       candidate['candidate'])
+                candidates = data['candidates']
+                if isinstance(candidates, list):
+                    self.log(f"Received {len(candidates)} ICE candidates via data channel")
+                    for candidate in candidates:
+                        if isinstance(candidate, dict) and 'candidate' in candidate and 'sdpMLineIndex' in candidate:
+                            self.webrtc.emit('add-ice-candidate', 
+                                           candidate['sdpMLineIndex'], 
+                                           candidate['candidate'])
+                elif isinstance(candidates, str):
+                    # Encrypted candidates - can't process them
+                    self.log(f"Received encrypted ICE candidates via data channel (length: {len(candidates)})")
                         
         except json.JSONDecodeError as e:
             # Not JSON, might be a different type of message
@@ -596,8 +610,11 @@ class GLibWebRTCHandler:
         # First, we need to depayload the RTP stream
         if encoding_name == 'VP8':
             depay = Gst.ElementFactory.make('rtpvp8depay', None)
-            # For VP8, we can directly record to WebM without re-encoding
+            # Use WebM but with better settings for live streams
             mux = Gst.ElementFactory.make('webmmux', None)
+            # Set properties for better live streaming
+            mux.set_property('streamable', True)
+            mux.set_property('min-index-interval', 1000000000)  # 1 second
             extension = 'webm'
         elif encoding_name == 'H264':
             depay = Gst.ElementFactory.make('rtph264depay', None)
@@ -635,10 +652,7 @@ class GLibWebRTCHandler:
         for element in elements:
             self.pipe.add(element)
         
-        # Configure muxer for proper timestamps
-        if encoding_name == 'VP8':
-            # Set WebM muxer properties for live streams
-            mux.set_property('streamable', True)
+        # Muxer is already configured above
             
         # Link elements based on codec
         if encoding_name == 'VP8':
@@ -725,20 +739,16 @@ class GLibWebRTCHandler:
         
         # Create queue for buffering
         queue = Gst.ElementFactory.make('queue', None)
+        # Set larger buffer for audio to handle async arrival
+        queue.set_property('max-size-time', 10000000000)  # 10 seconds
+        queue.set_property('max-size-buffers', 0)
+        queue.set_property('max-size-bytes', 0)
         
         # For now, just record audio alongside video in separate files
-        # TODO: Mux audio and video into single file
         self.log("   ℹ️  Audio recording is currently saved separately from video")
         
-        # Just use fakesink for now to avoid errors
-        fakesink = Gst.ElementFactory.make('fakesink', None)
-        self.pipe.add(fakesink)
-        fakesink.sync_state_with_parent()
-        pad.link(fakesink.get_static_pad('sink'))
-        return
-        
-        # Set output filename
-        if self.audio_filename:
+        # Check if already recording audio
+        if hasattr(self, 'audio_filename') and self.audio_filename:
             # Already recording audio, skip
             self.log("   ⚠️  Already recording audio, skipping duplicate pad")
             fakesink = Gst.ElementFactory.make('fakesink', None)
@@ -746,15 +756,39 @@ class GLibWebRTCHandler:
             fakesink.sync_state_with_parent()
             pad.link(fakesink.get_static_pad('sink'))
             return
+        
+        # Create depayloader based on codec
+        if encoding_name == 'OPUS':
+            depay = Gst.ElementFactory.make('rtpopusdepay', None)
+            # For audio, decode to raw and save as WAV for maximum compatibility
+            decoder = Gst.ElementFactory.make('opusdec', None)
+            audioconvert = Gst.ElementFactory.make('audioconvert', None)
+            wavenc = Gst.ElementFactory.make('wavenc', None)
+            extension = 'wav'
+        else:
+            self.log(f"   ⚠️  Unsupported audio codec: {encoding_name}, using fakesink")
+            fakesink = Gst.ElementFactory.make('fakesink', None)
+            self.pipe.add(fakesink)
+            fakesink.sync_state_with_parent()
+            pad.link(fakesink.get_static_pad('sink'))
+            return
+        
+        # Create filesink
+        filesink = Gst.ElementFactory.make('filesink', None)
+        
+        if not all([queue, depay, decoder, audioconvert, wavenc, filesink]):
+            self.log("Failed to create audio elements", "error")
+            return
             
         import datetime
         timestamp = int(datetime.datetime.now().timestamp())
         filename = f"{self.room}_{self.stream_id}_{timestamp}_audio.{extension}"
         filesink.set_property('location', filename)
+        self.audio_filename = filename
         self.log(f"   Output file: {filename}")
         
         # Add elements to pipeline
-        elements = [queue, depay, mux, filesink]
+        elements = [queue, depay, decoder, audioconvert, wavenc, filesink]
         for element in elements:
             self.pipe.add(element)
             
@@ -762,11 +796,17 @@ class GLibWebRTCHandler:
         if not queue.link(depay):
             self.log("Failed to link queue to depay", "error")
             return
-        if not depay.link(mux):
-            self.log("Failed to link depay to mux", "error")
+        if not depay.link(decoder):
+            self.log("Failed to link depay to decoder", "error")
             return
-        if not mux.link(filesink):
-            self.log("Failed to link mux to filesink", "error")
+        if not decoder.link(audioconvert):
+            self.log("Failed to link decoder to audioconvert", "error")
+            return
+        if not audioconvert.link(wavenc):
+            self.log("Failed to link audioconvert to wavenc", "error")
+            return
+        if not wavenc.link(filesink):
+            self.log("Failed to link wavenc to filesink", "error")
             return
             
         # Sync states
@@ -779,6 +819,16 @@ class GLibWebRTCHandler:
             self.log("Failed to link audio pad to queue", "error")
             return
             
+        # Add probe to monitor audio data flow
+        self._audio_probe_counter = 0
+        def audio_probe_cb(pad, info):
+            self._audio_probe_counter += 1
+            if self._audio_probe_counter % 100 == 0:
+                self.log(f"   📊 Audio data flowing: {self._audio_probe_counter} buffers")
+            return Gst.PadProbeReturn.OK
+            
+        pad.add_probe(Gst.PadProbeType.BUFFER, audio_probe_cb)
+        
         self.log("   ✅ Audio recording pipeline connected and running")
         
         # Store recording info

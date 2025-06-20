@@ -48,14 +48,26 @@ python3 publish.py --record RemoteStreamID --bitrate 4000
 
 ### Record Multiple Room Participants
 ```bash
-# Record all participants in a room
-python3 publish.py --room MyRoomName --record-room
+# Record all participants in a room (audio and video by default)
+python3 publish.py --room MyRoomName --record-room --password false
+
+# Record video only (disable audio)
+python3 publish.py --room MyRoomName --record-room --noaudio
 
 # Record specific participants only
 python3 publish.py --room MyRoomName --record-room --record-streams "alice,bob,charlie"
 
 # Output room streams as NDI sources
 python3 publish.py --room MyRoomName --room-ndi
+```
+
+### Combine Audio/Video Recordings
+```bash
+# After recording, combine the separate audio/video files
+python3 combine_recordings.py
+
+# Combine specific files
+python3 combine_recordings.py video.webm audio.wav output.mp4
 ```
 
 ## Advanced Examples

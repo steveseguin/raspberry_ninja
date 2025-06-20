@@ -1,0 +1,23 @@
+{
+  "start_time": "2025-06-17T08:12:22.724975",
+  "room_name": "test_multi_1750162342",
+  "publishers": {
+    "alice": {
+      "codec": "h264",
+      "pid": 24605,
+      "start_time": "2025-06-17T08:12:22.727519",
+      "log_file": "test_multi_stream_recording/publisher_alice.log"
+    },
+    "bob": {
+      "codec": "vp8",
+      "pid": 24638,
+      "start_time": "2025-06-17T08:12:24.732360",
+      "log_file": "test_multi_stream_recording/publisher_bob.log"
+    }
+  },
+  "recordings": {},
+  "errors": [],
+  "success": false,
+  "end_time": "2025-06-17T08:12:59.595284",
+  "duration_seconds": 15
+}

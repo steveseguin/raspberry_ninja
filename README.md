@@ -244,7 +244,8 @@ options:
   --record RECORD       Specify a stream ID to record to disk. System will not publish a stream when enabled.
   --view VIEW           Specify a stream ID to play out to the local display/audio.
   --save                Save a copy of the outbound stream to disk. Publish Live + Store the video.
-  --record-room         Record all streams in a room to separate files. Requires --room parameter.
+  --record-room         Record all streams in a room to separate files. Requires --room parameter. 
+                        Audio recording is enabled by default; use --noaudio to disable.
   --record-streams RECORD_STREAMS
                         Comma-separated list of stream IDs to record from a room. Optional filter for --record-room.
   --room-ndi            Relay all room streams to NDI as separate sources. Requires --room parameter.
@@ -307,6 +308,8 @@ Pulse audio and ALSA audio command-line arguments can be passed to setup audio, 
 
 - [Quick Start Guide](QUICK_START.md) - Common commands and examples
 - [Room Recording Feature](ROOM_RECORDING.md) - Record multiple participants in a room
+- [Combine Recordings Tool](COMBINE_RECORDINGS.md) - Combine separate audio/video files with sync
+- [Recording Usage Guide](RECORDING_USAGE_GUIDE.md) - Detailed recording options and examples
 - [Troubleshooting Guide](TROUBLESHOOTING.md) - Common issues and solutions
 - [Discord Support](https://discord.vdo.ninja) - Get help from the community
 
@@ -315,10 +318,12 @@ Pulse audio and ALSA audio command-line arguments can be passed to setup audio, 
 Ensure the pi/jetson is connected to the Internet, via Ethernet is recommended for best performance.  You'll also very likely need to ensure a camera and/or microphone input are connected; this can also be a USB UVC device, supported CSI-based camera, or other selectable media inputs. It technically might be possible to even select a pipe to stream from, although this is a fairly advanced option.
 
 Run using:
-`python3 publish.py --streamid SomeStreamID --bitrate 2000`
+`python3 publish.py --streamid SomeStreamID --bitrate 2000 --password false`
 
 In Chrome, open this link to view:
 `https://vdo.ninja/?password=false&view=SomeStreamID`
+
+Note: If you don't specify `--password false`, encryption will be enabled with the default password. In that case, remove `&password=false` from the viewer URL.
 
 You can have multiple viewers at a time, but you must enable that with a command-line argument.
 
@@ -505,7 +510,7 @@ midi demo video: https://youtu.be/Gry9UFtOTmQ
 
 - Please use the provided backup server for development purposes; that wss server is `wss://apibackup.vdo.ninja:443` and for viewing: `https://backup.vdo.ninja`
 
-- Passwords must be DISABLED explicitly as this code does not yet have the required crypto logic added yet. Things will not playback if you leave off `&password=false`
+- **Password/Encryption behavior**: By default, encryption is enabled with password `someEncryptionKey123`. To disable encryption, explicitly use `--password false`. For viewers, append `&password=false` to the URL if encryption was disabled during publishing.
 
 - The current code does not dynamically adjust resolution to combat frame loss; rather it will just drop frames. As a result, having a high quality connection between sender and viewer is required. Consider lowering the bitrate or resolution if problems persist.
 
@@ -535,6 +540,12 @@ midi demo video: https://youtu.be/Gry9UFtOTmQ
 
 
 ## Recent Changes
+
+### January 2025
+- **Audio Recording Now Enabled by Default**: Audio recording is now enabled by default when recording streams. Use `--noaudio` to disable audio recording. The system saves video (.webm) and audio (.wav) to separate files for maximum compatibility.
+- **Added Combine Recordings Tool**: New `combine_recordings.py` utility that intelligently synchronizes and combines separate audio/video files. Features timestamp-based sync to handle WebRTC negotiation delays (typically 400-600ms).
+- **Fixed TURN Server URL Parsing**: Corrected string slicing logic that was causing malformed TURN URLs and preventing ICE connections.
+- **Fixed Subprocess Selection Bug**: Disabled broken MKV subprocess that was causing recording to hang when audio was enabled.
 
 ### December 2024
 - **Fixed VP8 recording resolution change issue**: Added video decoding/re-encoding pipeline to handle dynamic resolution changes during recording. This prevents "Caps changes are not supported by Matroska" errors that were causing recording failures.

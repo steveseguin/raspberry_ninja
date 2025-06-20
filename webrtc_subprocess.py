@@ -14,7 +14,7 @@ import threading
 from typing import Optional, Dict, Any
 
 gi.require_version('Gst', '1.0')
-from gi.repository import Gst, GObject
+from gi.repository import Gst, GObject, GLib
 gi.require_version('GstWebRTC', '1.0')
 from gi.repository import GstWebRTC
 gi.require_version('GstSdp', '1.0')
@@ -47,6 +47,148 @@ class IPCWebRTCHandler:
         self.generated_ice_candidates = []  # Track our generated candidates
         self.pipeline_start_time = None
         self.pending_answer = None  # For delayed answer sending
+        
+        # Start GLib main loop in a separate thread
+        self.main_loop = GLib.MainLoop()
+        self.main_loop_thread = threading.Thread(target=self._run_main_loop, daemon=True)
+        self.main_loop_thread.start()
+        
+    def _run_main_loop(self):
+        """Run GLib main loop in a separate thread"""
+        self.main_loop.run()
+        
+    def _create_and_send_answer_sync(self):
+        """Create and send answer synchronously in a thread"""
+        try:
+            # Check signaling state
+            signaling_state = self.webrtc.get_property('signaling-state')
+            self.log(f"Signaling state before creating answer: {signaling_state.value_name}")
+            
+            if signaling_state != GstWebRTC.WebRTCSignalingState.HAVE_REMOTE_OFFER:
+                self.log(f"Cannot create answer - wrong signaling state: {signaling_state.value_name}", "error")
+                return
+            
+            # Create answer
+            self.log("Creating answer...")
+            promise = Gst.Promise.new()
+            self.webrtc.emit('create-answer', None, promise)
+            
+            # Try to get the answer with polling
+            start_time = time.time()
+            timeout = 5.0
+            answer = None
+            
+            while time.time() - start_time < timeout:
+                try:
+                    reply = promise.get_reply()
+                    if reply:
+                        result = promise.get_result()
+                        if result == Gst.PromiseResult.REPLIED:
+                            answer = reply.get_value('answer')
+                            if answer:
+                                break
+                except:
+                    pass
+                time.sleep(0.1)
+            
+            if not answer:
+                self.log("Failed to create answer within timeout", "error")
+                return
+            
+            self.log("Answer created successfully")
+            
+            # Get answer text
+            text = answer.sdp.as_text()
+            self.log(f"Answer SDP length: {len(text)} chars")
+            
+            # Set local description
+            self.log("Setting local description...")
+            local_promise = Gst.Promise.new()
+            self.webrtc.emit('set-local-description', answer, local_promise)
+            local_promise.interrupt()
+            
+            # Send answer to parent
+            self.log("Sending answer to parent process...")
+            self.send_message({
+                "type": "sdp",
+                "sdp_type": "answer",
+                "sdp": text,
+                "session_id": self.session_id
+            })
+            
+            # Add any queued ICE candidates
+            if self.ice_candidates:
+                self.log(f"Processing {len(self.ice_candidates)} queued ICE candidates")
+                while self.ice_candidates:
+                    sdpMLineIndex, candidate = self.ice_candidates.pop(0)
+                    self.webrtc.emit('add-ice-candidate', sdpMLineIndex, candidate)
+            
+        except Exception as e:
+            self.log(f"Error creating answer: {e}", "error")
+            import traceback
+            self.log(traceback.format_exc(), "error")
+    
+    def _on_negotiation_needed(self, element):
+        """Handle negotiation-needed signal"""
+        self.log("Negotiation needed signal received")
+        # For viewer mode, we don't initiate offers
+        
+    def _on_ice_connection_state(self, element, param_spec):
+        """Handle ICE connection state changes"""
+        state = element.get_property('ice-connection-state')
+        self.log(f"ICE connection state: {state.value_name}")
+        
+        if state == GstWebRTC.WebRTCICEConnectionState.FAILED:
+            self.log("ICE connection failed", "error")
+        elif state == GstWebRTC.WebRTCICEConnectionState.CONNECTED:
+            self.log("ICE connection established")
+            
+    def _on_ice_gathering_state(self, element, param_spec):
+        """Handle ICE gathering state changes"""
+        state = element.get_property('ice-gathering-state')
+        self.log(f"ICE gathering state: {state.value_name}")
+        
+        if state == GstWebRTC.WebRTCICEGatheringState.COMPLETE:
+            self.log("ICE gathering complete")
+            self.log(f"Error checking answer: {e}", "error")
+            
+        return False  # Don't repeat
+    
+    def _create_answer_after_remote_desc(self, sdp_msg, num_media):
+        """Create answer after remote description is set"""
+        try:
+            # Check signaling state
+            signaling_state = self.webrtc.get_property('signaling-state')
+            self.log(f"Signaling state after setting remote offer: {signaling_state.value_name}")
+            
+            # Check if this is just a data channel offer
+            has_video = False
+            has_audio = False
+            for i in range(num_media):
+                media = sdp_msg.get_media(i)
+                media_type = media.get_media()
+                if media_type == 'video':
+                    has_video = True
+                elif media_type == 'audio':
+                    has_audio = True
+            
+            if not has_video and not has_audio:
+                self.log("Offer contains only data channel, expecting renegotiation for media tracks")
+                
+            # Process any queued ICE candidates
+            if self.ice_candidates:
+                self.log(f"Found {len(self.ice_candidates)} queued ICE candidates")
+                self._process_queued_ice_candidates()
+                
+            # Create answer
+            self.log("Creating answer...")
+            promise = Gst.Promise.new_with_change_func(self.on_answer_created, self.webrtc, None)
+            self.webrtc.emit('create-answer', None, promise)
+            
+        except Exception as e:
+            self.log(f"Error creating answer: {e}", "error")
+            
+        return False  # Don't repeat
         
     def send_message(self, msg: Dict[str, Any]):
         """Send message to parent process via stdout"""
@@ -212,6 +354,15 @@ class IPCWebRTCHandler:
         self.webrtc.connect('notify::ice-connection-state', self.on_ice_state_changed)
         self.webrtc.connect('notify::ice-gathering-state', self.on_ice_gathering_state_changed)
         self.webrtc.connect('notify::connection-state', self.on_connection_state_changed)
+        
+        # Initialize data channel support early (as recommended by o3)
+        # This helps with data-channel-only offers
+        if self.mode == 'view' or self.record_file:
+            channel = self.webrtc.emit('create-data-channel', 'control', None)
+            if channel:
+                self.log("Initialized data channel support")
+            else:
+                self.log("Could not initialize data channel", "warning")
         
         if self.mode == 'publish':
             self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed)
@@ -630,112 +781,17 @@ class IPCWebRTCHandler:
             
             self.log(f"Received SDP {sdp_type} (length: {len(sdp_text)} chars)")
             
-            # Parse SDP and extract key info
-            res, sdp_msg = GstSdp.SDPMessage.new_from_text(sdp_text)
-            if res != GstSdp.SDPResult.OK:
-                self.log(f"Failed to parse SDP: result={res}", "error")
-                return
+            # Ensure pipeline is created before handling SDP
+            if not self.webrtc:
+                self.log("Pipeline not created yet, creating now...")
+                if not self.create_pipeline():
+                    self.log("Failed to create pipeline for SDP handling", "error")
+                    return
             
-            # Log media information
-            num_media = sdp_msg.medias_len()
-            self.log(f"SDP contains {num_media} media section(s)")
+            # Schedule SDP handling on GLib main thread
+            GLib.idle_add(self._handle_sdp_on_main_thread, sdp_type, sdp_text)
+            return
             
-            for i in range(num_media):
-                media = sdp_msg.get_media(i)
-                media_type = media.get_media()
-                num_formats = media.formats_len()
-                self.log(f"  Media {i}: type={media_type}, formats={num_formats}")
-                
-                # Log codec information
-                for j in range(media.attributes_len()):
-                    attr = media.get_attribute(j)
-                    if attr.key == 'rtpmap':
-                        self.log(f"    Codec: {attr.value}")
-                
-            if sdp_type == 'offer':
-                self.log("Processing SDP offer...")
-                
-                # For view/record mode, add transceivers before setting remote offer
-                if self.mode == 'view' or self.record_file:
-                    self.log("Adding transceivers for view/record mode...")
-                    
-                    # Parse the offer to see what media types are offered
-                    for i in range(num_media):
-                        media = sdp_msg.get_media(i)
-                        media_type = media.get_media()
-                        
-                        if media_type == 'video':
-                            # Add video transceiver with recvonly direction
-                            caps = Gst.Caps.from_string("application/x-rtp,media=video")
-                            transceiver = self.webrtc.emit('add-transceiver', 
-                                                          GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY, 
-                                                          caps)
-                            if transceiver:
-                                self.log(f"Added video transceiver with direction=recvonly")
-                            else:
-                                self.log(f"Failed to add video transceiver", "warning")
-                                
-                        elif media_type == 'audio':
-                            # Add audio transceiver with recvonly direction
-                            caps = Gst.Caps.from_string("application/x-rtp,media=audio")
-                            transceiver = self.webrtc.emit('add-transceiver', 
-                                                          GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY, 
-                                                          caps)
-                            if transceiver:
-                                self.log(f"Added audio transceiver with direction=recvonly")
-                            else:
-                                self.log(f"Failed to add audio transceiver", "warning")
-                
-                # Set remote description
-                offer = GstWebRTC.WebRTCSessionDescription.new(
-                    GstWebRTC.WebRTCSDPType.OFFER,
-                    sdp_msg
-                )
-                
-                self.log("Setting remote description (offer)...")
-                promise = Gst.Promise.new()
-                self.webrtc.emit('set-remote-description', offer, promise)
-                promise.interrupt()
-                
-                # Log current signaling state
-                signaling_state = self.webrtc.get_property('signaling-state')
-                self.log(f"Signaling state after setting remote offer: {signaling_state.value_name}")
-                
-                # Process any queued ICE candidates after setting remote description
-                if self.ice_candidates:
-                    self.log(f"Found {len(self.ice_candidates)} queued ICE candidates after setting remote description")
-                    # Give the webrtc element a moment to process the remote description
-                    GObject.timeout_add(50, self._process_queued_ice_candidates)
-                
-                # Create answer
-                self.log("Creating answer...")
-                promise = Gst.Promise.new_with_change_func(self.on_answer_created, self.webrtc, None)
-                self.webrtc.emit('create-answer', None, promise)
-                
-            elif sdp_type == 'answer':
-                self.log("Processing SDP answer...")
-                
-                # Set remote description
-                answer = GstWebRTC.WebRTCSessionDescription.new(
-                    GstWebRTC.WebRTCSDPType.ANSWER,
-                    sdp_msg
-                )
-                
-                self.log("Setting remote description (answer)...")
-                promise = Gst.Promise.new()
-                self.webrtc.emit('set-remote-description', answer, promise)
-                promise.interrupt()
-                
-                # Log final signaling state
-                signaling_state = self.webrtc.get_property('signaling-state')
-                self.log(f"Signaling state after setting remote answer: {signaling_state.value_name}")
-                
-                # Process any queued ICE candidates after setting remote description
-                if self.ice_candidates:
-                    self.log(f"Found {len(self.ice_candidates)} queued ICE candidates after setting remote description")
-                    # Give the webrtc element a moment to process the remote description
-                    GObject.timeout_add(50, self._process_queued_ice_candidates)
-                
         elif msg_type == 'ice':
             # Add ICE candidate
             candidate = msg.get('candidate')
@@ -777,6 +833,216 @@ class IPCWebRTCHandler:
                 self.pipe.set_state(Gst.State.NULL)
             self.send_message({"type": "stopped"})
             
+    def _handle_sdp_on_main_thread(self, sdp_type, sdp_text):
+        """Handle SDP on the GLib main thread"""
+        try:
+            # Parse SDP and extract key info
+            res, sdp_msg = GstSdp.SDPMessage.new_from_text(sdp_text)
+            if res != GstSdp.SDPResult.OK:
+                self.log(f"Failed to parse SDP: result={res}", "error")
+                return False
+            
+            # Log media information
+            num_media = sdp_msg.medias_len()
+            self.log(f"SDP contains {num_media} media section(s)")
+            
+            for i in range(num_media):
+                media = sdp_msg.get_media(i)
+                media_type = media.get_media()
+                num_formats = media.formats_len()
+                self.log(f"  Media {i}: type={media_type}, formats={num_formats}")
+                
+                # Log codec information
+                for j in range(media.attributes_len()):
+                    attr = media.get_attribute(j)
+                    if attr.key == 'rtpmap':
+                        self.log(f"    Codec: {attr.value}")
+                
+            if sdp_type == 'offer':
+                self.log("Processing SDP offer...")
+                
+                # Set remote description first
+                offer = GstWebRTC.WebRTCSessionDescription.new(
+                    GstWebRTC.WebRTCSDPType.OFFER,
+                    sdp_msg
+                )
+                
+                # Check current signaling state before setting offer
+                signaling_state = self.webrtc.get_property('signaling-state')
+                self.log(f"Current signaling state: {signaling_state.value_name}")
+                
+                self.log("Setting remote description (offer)...")
+                # Store state for use in callback
+                self._current_sdp_msg = sdp_msg
+                self._current_num_media = num_media
+                
+                # Check if this is just a data channel offer
+                has_video = False
+                has_audio = False
+                for i in range(num_media):
+                    media = sdp_msg.get_media(i)
+                    media_type = media.get_media()
+                    if media_type == 'video':
+                        has_video = True
+                    elif media_type == 'audio':
+                        has_audio = True
+                
+                if not has_video and not has_audio:
+                    self.log("Offer contains only data channel, expecting renegotiation for media tracks")
+                    
+                # Process any queued ICE candidates immediately
+                if self.ice_candidates:
+                    self.log(f"Processing {len(self.ice_candidates)} queued ICE candidates")
+                    while self.ice_candidates:
+                        sdpMLineIndex, candidate = self.ice_candidates.pop(0)
+                        self.webrtc.emit('add-ice-candidate', sdpMLineIndex, candidate)
+                        
+                # Set remote description
+                self.log("Setting remote description...")
+                set_promise = Gst.Promise.new()
+                self.webrtc.emit('set-remote-description', offer, set_promise)
+                set_promise.interrupt()
+                
+                # Give it a moment to process
+                time.sleep(0.2)
+                
+                # Check signaling state
+                signaling_state = self.webrtc.get_property('signaling-state')
+                self.log(f"Signaling state after set-remote-description: {signaling_state.value_name}")
+                
+                if signaling_state == GstWebRTC.WebRTCSignalingState.HAVE_REMOTE_OFFER:
+                    # Create answer immediately
+                    self.log("Creating answer immediately...")
+                    answer_promise = Gst.Promise.new()
+                    self.webrtc.emit('create-answer', None, answer_promise)
+                    answer_promise.interrupt()
+                    
+                    # Give it a moment
+                    time.sleep(0.2)
+                    
+                    # Try to get the answer
+                    try:
+                        reply = answer_promise.get_reply()
+                        if reply:
+                            answer = reply.get_value('answer')
+                            if answer:
+                                self.log("Answer created successfully")
+                                
+                                # Get answer text
+                                text = answer.sdp.as_text()
+                                self.log(f"Answer SDP length: {len(text)} chars")
+                                
+                                # Set local description
+                                self.log("Setting local description...")
+                                local_promise = Gst.Promise.new()
+                                self.webrtc.emit('set-local-description', answer, local_promise)
+                                local_promise.interrupt()
+                                
+                                # Send answer to parent
+                                self.log("Sending answer to parent process...")
+                                self.send_message({
+                                    "type": "sdp",
+                                    "sdp_type": "answer",
+                                    "sdp": text,
+                                    "session_id": self.session_id
+                                })
+                                
+                                # Add any queued ICE candidates
+                                if self.ice_candidates:
+                                    self.log(f"Processing {len(self.ice_candidates)} queued ICE candidates")
+                                    while self.ice_candidates:
+                                        sdpMLineIndex, candidate = self.ice_candidates.pop(0)
+                                        self.webrtc.emit('add-ice-candidate', sdpMLineIndex, candidate)
+                            else:
+                                self.log("No answer in promise reply", "error")
+                        else:
+                            self.log("No reply from create-answer promise", "error")
+                    except Exception as e:
+                        self.log(f"Error getting answer: {e}", "error")
+                else:
+                    self.log(f"Cannot create answer - wrong signaling state: {signaling_state.value_name}", "error")
+                
+                return False
+                
+            elif sdp_type == 'answer':
+                self.log("Processing SDP answer...")
+                
+                # Set remote description
+                answer = GstWebRTC.WebRTCSessionDescription.new(
+                    GstWebRTC.WebRTCSDPType.ANSWER,
+                    sdp_msg
+                )
+                
+                self.log("Setting remote description (answer)...")
+                promise = Gst.Promise.new()
+                self.webrtc.emit('set-remote-description', answer, promise)
+                promise.interrupt()
+                
+                # Log final signaling state
+                signaling_state = self.webrtc.get_property('signaling-state')
+                self.log(f"Signaling state after setting remote answer: {signaling_state.value_name}")
+                
+                # Process any queued ICE candidates after setting remote description
+                if self.ice_candidates:
+                    self.log(f"Found {len(self.ice_candidates)} queued ICE candidates after setting remote description")
+                    # Give the webrtc element a moment to process the remote description
+                    GObject.timeout_add(50, self._process_queued_ice_candidates)
+                    
+        except Exception as e:
+            self.log(f"Error handling SDP: {e}", "error")
+            
+        return False  # For GLib.idle_add
+            
+    def create_and_send_answer(self):
+        """Create and send answer synchronously"""
+        
+        # Create a promise without callback
+        promise = Gst.Promise.new()
+        
+        # Emit create-answer signal
+        self.webrtc.emit('create-answer', None, promise)
+        
+        # Wait for promise with timeout
+        promise.wait()
+        reply = promise.get_reply()
+        
+        if not reply:
+            self.log("Failed to get promise reply for answer creation", "error")
+            return
+            
+        answer = reply.get_value('answer')
+        
+        if not answer:
+            self.log("Failed to create answer - no answer in promise reply", "error")
+            return
+            
+        self.log("Answer created successfully")
+        
+        # Get answer text
+        text = answer.sdp.as_text()
+        self.log(f"Answer SDP length: {len(text)} chars")
+        
+        # Parse answer to log media details
+        res, sdp_msg = GstSdp.SDPMessage.new_from_text(text)
+        if res == GstSdp.SDPResult.OK:
+            num_media = sdp_msg.medias_len()
+            self.log(f"Answer contains {num_media} media section(s)")
+            
+        # Set local description
+        self.log("Setting local description (answer)...")
+        promise2 = Gst.Promise.new()
+        self.webrtc.emit('set-local-description', answer, promise2)
+        promise2.interrupt()
+        
+        # Send answer to parent
+        self.log("Sending answer to parent process...")
+        self.send_message({
+            "type": "sdp",
+            "sdp_type": "answer", 
+            "sdp": text,
+            "session_id": self.session_id
+        })
+    
     def on_answer_created(self, promise, webrtc, _):
         """Handle created answer"""
         promise.wait()
@@ -790,16 +1056,54 @@ class IPCWebRTCHandler:
         
         if not answer:
             self.log("Failed to create answer - no answer in promise reply", "error")
-            # Log current state for debugging
-            signaling_state = webrtc.get_property('signaling-state')
-            self.log(f"Current signaling state: {signaling_state.value_name}", "error")
             return
-        
+            
         self.log("Answer created successfully")
         
         # Get answer text and log key details
         text = answer.sdp.as_text()
         self.log(f"Answer SDP length: {len(text)} chars")
+        
+        # Log first few lines of answer to debug
+        lines = text.split('\n')
+        for i, line in enumerate(lines[:20]):  # First 20 lines
+            if line.strip():
+                self.log(f"Answer SDP [{i}]: {line.strip()}")
+        
+        # Parse answer to log media details
+        res, sdp_msg = GstSdp.SDPMessage.new_from_text(text)
+        if res == GstSdp.SDPResult.OK:
+            num_media = sdp_msg.medias_len()
+            self.log(f"Answer contains {num_media} media section(s)")
+            
+        # Set local description
+        self.log("Setting local description (answer)...")
+        promise = Gst.Promise.new()
+        self.webrtc.emit('set-local-description', answer, promise)
+        promise.interrupt()
+        
+        # Log signaling state after setting local description
+        signaling_state = self.webrtc.get_property('signaling-state')
+        self.log(f"Signaling state after setting local answer: {signaling_state.value_name}")
+        
+        # Check ICE gathering state
+        gathering_state = self.webrtc.get_property('ice-gathering-state')
+        self.log(f"ICE gathering state after setting local answer: {gathering_state.value_name}")
+        
+        # Send answer to parent immediately
+        self.log("Sending answer to parent process...")
+        self.send_message({
+            "type": "sdp",
+            "sdp_type": "answer",
+            "sdp": text,
+            "session_id": self.session_id
+        })
+        
+        # Log first few lines of answer to debug
+        lines = text.split('\n')
+        for i, line in enumerate(lines[:20]):  # First 20 lines
+            if line.strip():
+                self.log(f"Answer SDP [{i}]: {line.strip()}")
         
         # Parse answer to log media details
         res, sdp_msg = GstSdp.SDPMessage.new_from_text(text)

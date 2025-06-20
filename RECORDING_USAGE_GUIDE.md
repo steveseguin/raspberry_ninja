@@ -40,11 +40,14 @@ python3 publish.py --streamid myStream --save
 ```
 
 ### 3. Room Recording Mode (`--record-room`)
-Records all participants in a room to separate files.
+Records all participants in a room to separate files. Audio recording is enabled by default, saving video and audio to separate files.
 
 ```bash
-# Record all streams in a room
-python3 publish.py --room roomName123 --record-room
+# Record all streams in a room (audio and video by default)
+python3 publish.py --room roomName123 --record-room --password false
+
+# Record video only (disable audio)
+python3 publish.py --room roomName123 --record-room --noaudio
 ```
 
 ### 4. Selective Room Recording (`--record-streams`)
@@ -123,7 +126,7 @@ Files are automatically named with timestamps:
 ### Basic Room Recording
 
 ```bash
-# Record all participants in a room
+# Record all participants in a room (audio enabled by default)
 python3 publish.py --room meetingRoom --record-room
 
 # Join room as invisible recorder (no publishing)

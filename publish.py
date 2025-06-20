@@ -1285,11 +1285,29 @@ class WebRTCSubprocessManager:
             'ice_transport_policy': self.config.get('ice_transport_policy', 'all'),
             'bitrate': self.config.get('bitrate', 2500),
             'record_audio': self.config.get('record_audio', False),  # Pass audio recording flag
+            'use_hls': self.config.get('use_hls', False),  # Pass HLS flag
+            'use_splitmuxsink': self.config.get('use_splitmuxsink', False),  # Pass splitmuxsink flag
         }
         
         # Start subprocess
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        subprocess_script = os.path.join(script_dir, 'webrtc_subprocess_glib.py')
+        # Choose subprocess script based on recording format
+        # Choose subprocess based on configuration
+        if self.config.get('test_mode', False):
+            # Use test subprocess
+            printc(f"[{self.stream_id}] Using test subprocess with mux_format={self.config.get('mux_format', 'webm')}", "0F0")
+            subprocess_script = os.path.join(script_dir, 'webrtc_subprocess_test.py')
+        elif self.config.get('use_mkv', False):
+            # Use MKV subprocess only if explicitly requested
+            printc(f"[{self.stream_id}] Using MKV recording with audio/video muxing", "0F0")
+            subprocess_script = os.path.join(script_dir, 'webrtc_subprocess_mkv.py')
+        elif self.config.get('use_hls', False):
+            # HLS recording is not yet working - use WebM for now
+            self.log(f"[{self.stream_id}] HLS recording requested but not yet working. Using WebM format instead.", "warning")
+            subprocess_script = os.path.join(script_dir, 'webrtc_subprocess_glib.py')
+        else:
+            printc(f"[{self.stream_id}] Using standard WebM/MP4 recording", "0F0")
+            subprocess_script = os.path.join(script_dir, 'webrtc_subprocess_glib.py')
         cmd = [sys.executable, subprocess_script]
         self.process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -1309,6 +1327,7 @@ class WebRTCSubprocessManager:
         
         # Start reading messages
         self.reader_task = asyncio.create_task(self._read_messages())
+        self.stderr_task = asyncio.create_task(self._read_stderr())
         
         # Wait for ready signal
         ready_event = asyncio.Event()
@@ -1346,6 +1365,19 @@ class WebRTCSubprocessManager:
             except Exception as e:
                 printc(f"[{self.stream_id}] Error reading message: {e}", "F00")
                 
+    async def _read_stderr(self):
+        """Read stderr from subprocess"""
+        while self.running and self.process and self.process.stderr:
+            try:
+                line = await self.process.stderr.readline()
+                if not line:
+                    break
+                error_msg = line.decode().strip()
+                if error_msg:
+                    printc(f"[{self.stream_id}] STDERR: {error_msg}", "F70")
+            except Exception as e:
+                printc(f"[{self.stream_id}] Error reading stderr: {e}", "F00")
+                
     async def _handle_message(self, msg: Dict[str, Any]):
         """Handle message from subprocess"""
         msg_type = msg.get('type')
@@ -1379,11 +1411,18 @@ class WebRTCSubprocessManager:
         # Send stop message
         await self.send_message({"type": "stop"})
         
-        # Cancel reader task
+        # Cancel reader tasks
         if self.reader_task:
             self.reader_task.cancel()
             try:
                 await self.reader_task
+            except asyncio.CancelledError:
+                pass
+                
+        if hasattr(self, 'stderr_task') and self.stderr_task:
+            self.stderr_task.cancel()
+            try:
+                await self.stderr_task
             except asyncio.CancelledError:
                 pass
                 
@@ -1437,6 +1476,7 @@ class WebRTCClient:
         self.save_file = params.save
         self.noaudio = params.noaudio
         self.novideo = params.novideo
+        self.audio = getattr(params, 'audio', False)  # Audio recording flag
         self.counter = 0
         self.shared_memory = False
         self.trigger_socket = False
@@ -1472,6 +1512,10 @@ class WebRTCClient:
         self.record_room = getattr(params, 'record_room', False)
         self.room_ndi = getattr(params, 'room_ndi', False)
         self.stream_filter = getattr(params, 'stream_filter', None)
+        
+        # HLS recording options
+        self.use_hls = getattr(params, 'hls', False)
+        self.use_splitmux = getattr(params, 'hls_splitmux', False)
         
         # Subprocess managers for room recording
         self.subprocess_managers = {}  # stream_id -> WebRTCSubprocessManager
@@ -2640,6 +2684,123 @@ class WebRTCClient:
             stats = promise.get_reply()
             stats = stats.to_string()
             stats = stats.replace("\\", "")
+            
+            # Debug: print full stats to understand structure
+            if not hasattr(client, '_stats_logged'):
+                print("\n=== FULL STATS STRUCTURE ===")
+                print(stats)
+                print("=========================\n")
+                client['_stats_logged'] = True
+            
+            # Additional debug every 30 seconds to check for changes
+            if not hasattr(client, '_last_full_stats_log'):
+                client['_last_full_stats_log'] = 0
+            
+            if time.time() - client['_last_full_stats_log'] > 30:
+                print(f"\n=== STATS UPDATE at {time.strftime('%H:%M:%S')} ===")
+                if "bitrate" in stats:
+                    print("Found bitrate fields in stats")
+                if "video" in stats.lower():
+                    print("Found video-related fields in stats")
+                if "packets-sent" in stats:
+                    print("Found packets-sent field")
+            
+            # Calculate bitrate from bytes sent
+            bitrate_sent = 0
+            
+            # Initialize tracking variables if needed
+            if '_last_bytes_sent' not in client:
+                client['_last_bytes_sent'] = 0
+                client['_last_bytes_time'] = time.time()
+            
+            # We'll calculate bitrate from bytes-sent difference later
+            
+            # Try to find video-specific stats
+            video_bitrate = 0
+            video_bytes_sent = 0
+            audio_bytes_sent = 0
+            
+            # Look for video stream stats
+            if "kind=(string)video" in stats:
+                try:
+                    # Find the video stream section
+                    video_section = stats.split("kind=(string)video")[1].split("rtp-")[0]
+                    if "bytes-sent=(guint64)" in video_section:
+                        video_bytes_match = video_section.split("bytes-sent=(guint64)")[1]
+                        video_bytes_sent = int(video_bytes_match.split(",")[0].split(";")[0])
+                except:
+                    pass
+            
+            # Look for audio stream stats
+            if "kind=(string)audio" in stats:
+                try:
+                    # Find the audio stream section
+                    audio_section = stats.split("kind=(string)audio")[1].split("rtp-")[0]
+                    if "bytes-sent=(guint64)" in audio_section:
+                        audio_bytes_match = audio_section.split("bytes-sent=(guint64)")[1]
+                        audio_bytes_sent = int(audio_bytes_match.split(",")[0].split(";")[0])
+                except:
+                    pass
+            
+            # Extract packets sent
+            packets_sent = 0
+            if "packets-sent=(guint64)" in stats:
+                try:
+                    packets_part = stats.split("packets-sent=(guint64)")[1]
+                    packets_sent = int(packets_part.split(",")[0].split(";")[0])
+                except:
+                    pass
+            
+            # Extract bytes sent
+            bytes_sent = 0
+            if "bytes-sent=(guint64)" in stats:
+                try:
+                    bytes_part = stats.split("bytes-sent=(guint64)")[1]
+                    bytes_sent = int(bytes_part.split(",")[0].split(";")[0])
+                except:
+                    pass
+            
+            # Calculate bitrate from bytes difference
+            current_time = time.time()
+            if bytes_sent > 0 and client['_last_bytes_sent'] > 0:
+                time_diff = current_time - client['_last_bytes_time']
+                if time_diff > 0:
+                    bytes_diff = bytes_sent - client['_last_bytes_sent']
+                    if bytes_diff > 0:
+                        # Convert to kbps (bytes * 8 / seconds / 1000)
+                        bitrate_sent = int((bytes_diff * 8) / (time_diff * 1000))
+            
+            # Update tracking variables
+            if bytes_sent > client['_last_bytes_sent']:
+                client['_last_bytes_sent'] = bytes_sent
+                client['_last_bytes_time'] = current_time
+            
+            # Log debug info after extracting all values
+            if time.time() - client['_last_full_stats_log'] > 30:
+                print(f"Total bitrate: {bitrate_sent} kbps")
+                print(f"Total bytes sent: {bytes_sent}")
+                print(f"Video bytes sent: {video_bytes_sent}")
+                print(f"Audio bytes sent: {audio_bytes_sent}")
+                print(f"Packets sent: {packets_sent}")
+                if video_bytes_sent == 0 and audio_bytes_sent > 0:
+                    print("⚠️ WARNING: Video bytes = 0 but audio is sending!")
+                print("================================\n")
+                client['_last_full_stats_log'] = time.time()
+            
+            # Log bitrate periodically
+            current_time = time.time()
+            if not hasattr(client, '_last_bitrate_log'):
+                client['_last_bitrate_log'] = 0
+            
+            if current_time - client['_last_bitrate_log'] > 5:  # Log every 5 seconds
+                if video_bytes_sent == 0 and audio_bytes_sent > 0:
+                    printc(f"📊 Stats: ⚠️ VIDEO NOT SENDING! Audio: {audio_bytes_sent:,} bytes, Video: 0 bytes", "F00")
+                elif bitrate_sent > 0 or packets_sent > 0:
+                    printc(f"📊 Stats: Bitrate={bitrate_sent} kbps, Video={video_bytes_sent:,} bytes, Audio={audio_bytes_sent:,} bytes", "07F")
+                elif packets_sent == 0:
+                    printc(f"📊 Stats: No packets sent yet (bitrate=0 kbps)", "F70")
+                client['_last_bitrate_log'] = current_time
+            
             stats = stats.split("fraction-lost=(double)")
             if (len(stats)>1):
                 stats = stats[1].split(",")[0]
@@ -2652,41 +2813,52 @@ class WebRTCClient:
                         printc(f"📊 Packet loss: {stats} ⚠️", "F77")
                     elif client['_last_packet_loss'] < 0 or client['_last_packet_loss'] > 0.01:
                         # Only show excellent message when transitioning from bad to good
-                        printc(f"📊 Network quality: excellent", "0F0")
+                        if bitrate_sent > 0:
+                            printc(f"📊 Network quality: excellent (bitrate: {bitrate_sent} kbps)", "0F0")
+                        else:
+                            printc(f"📊 Network quality: excellent", "0F0")
                     client['_last_packet_loss'] = float(stats)
-                if " vp8enc " in self.pipeline: # doesn't support dynamic bitrates? not sure the property to use at least
-                    return
+                # VP8 and AV1 encoders have issues with dynamic bitrate changes
+                # but we should still process stats for monitoring
+                skip_bitrate_adjustment = False
+                if " vp8enc " in self.pipeline: # doesn't support dynamic bitrates
+                    skip_bitrate_adjustment = True
                 elif " av1enc " in self.pipeline: # seg-fault if I try to change it currently
-                    return
+                    skip_bitrate_adjustment = True
                 stats = float(stats)
-                if (stats>0.01) and not self.noqos:
-                    old_bitrate = self.bitrate
-                    bitrate = self.bitrate*0.9
-                    if bitrate < self.max_bitrate*0.2:
-                        bitrate = self.max_bitrate*0.2
-                    elif bitrate > self.max_bitrate*0.8:
+                if not skip_bitrate_adjustment:
+                    if (stats>0.01) and not self.noqos:
+                        old_bitrate = self.bitrate
                         bitrate = self.bitrate*0.9
-                    
-                    # Only update and print if bitrate actually changed
-                    if int(bitrate) != int(old_bitrate):
-                        self.bitrate = bitrate
-                        printc(f"   └─ Reducing bitrate to {int(bitrate)} kbps (packet loss detected)", "FF0")
-                        self.set_encoder_bitrate(client, int(bitrate))
+                        if bitrate < self.max_bitrate*0.2:
+                            bitrate = self.max_bitrate*0.2
+                        elif bitrate > self.max_bitrate*0.8:
+                            bitrate = self.bitrate*0.9
+                        
+                        # Only update and print if bitrate actually changed
+                        if int(bitrate) != int(old_bitrate):
+                            self.bitrate = bitrate
+                            printc(f"   └─ Reducing bitrate to {int(bitrate)} kbps (packet loss detected)", "FF0")
+                            self.set_encoder_bitrate(client, int(bitrate))
 
-                elif (stats<0.003) and not self.noqos:
-                    old_bitrate = self.bitrate
-                    bitrate = self.bitrate*1.05
-                    if bitrate>self.max_bitrate:
-                        bitrate = self.max_bitrate
-                    elif bitrate*2<self.max_bitrate:
+                    elif (stats<0.003) and not self.noqos:
+                        old_bitrate = self.bitrate
                         bitrate = self.bitrate*1.05
-                    
-                    # Only update and print if bitrate actually changed
-                    if int(bitrate) != int(old_bitrate):
-                        self.bitrate = bitrate
-                        printc(f"   └─ Increasing bitrate to {int(bitrate)} kbps (good connection)", "0F0")
-                        self.set_encoder_bitrate(client, int(bitrate))
+                        if bitrate>self.max_bitrate:
+                            bitrate = self.max_bitrate
+                        elif bitrate*2<self.max_bitrate:
+                            bitrate = self.bitrate*1.05
+                        
+                        # Only update and print if bitrate actually changed
+                        if int(bitrate) != int(old_bitrate):
+                            self.bitrate = bitrate
+                            printc(f"   └─ Increasing bitrate to {int(bitrate)} kbps (good connection)", "0F0")
+                            self.set_encoder_bitrate(client, int(bitrate))
 
+        # Debug encoder setup for VP8
+        if " vp8enc " in self.pipeline:
+            printc("   └─ VP8 encoder detected in pipeline", "77F")
+            
         printc("🔧 Creating WebRTC pipeline...", "0FF")
 
         started = True
@@ -2716,6 +2888,14 @@ class WebRTCClient:
         
         try:
             client['encoder'] = self.pipe.get_by_name('encoder')
+            if client['encoder'] and " vp8enc " in self.pipeline:
+                # Debug VP8 encoder properties
+                printc(f"   └─ VP8 encoder found: {client['encoder'].get_name()}", "77F")
+                try:
+                    target_br = client['encoder'].get_property('target-bitrate')
+                    printc(f"   └─ VP8 target-bitrate: {target_br}", "77F")
+                except:
+                    printc("   └─ Could not read VP8 target-bitrate property", "F77")
         except:
             try:
                 client['encoder1'] = self.pipe.get_by_name('encoder1')
@@ -4004,9 +4184,12 @@ class WebRTCClient:
                         if 'streamID' in msg:
                             if self.room_recording:
                                 # This event tells us a new stream is in the room.
-                                # The UUID in this context is the room's, not the new peer's.
-                                # We need to handle the new stream joining.
-                                await self.handle_new_room_stream(msg['streamID'], msg.get('from')) # 'from' is the new peer
+                                # Try to get the UUID from various possible fields
+                                peer_uuid = msg.get('from') or msg.get('UUID') or UUID
+                                if peer_uuid:
+                                    await self.handle_new_room_stream(msg['streamID'], peer_uuid)
+                                else:
+                                    printc(f"[{msg['streamID']}] ⚠️ videoaddedtoroom event missing peer UUID", "F70")
                             elif self.streamin:
                                 printwout("play stream.")
                                 await self.sendMessageAsync({"request":"play","streamID":self.streamin+self.hashcode})
@@ -4169,8 +4352,12 @@ class WebRTCClient:
             turn_info = default_turn
             turn_url = turn_info['url']
             if '@' not in turn_url and turn_url.startswith('turn'):
-                protocol = 'turns://' if turn_url.startswith('turns:') else 'turn://'
-                server_part = turn_url[len(protocol)-3:]
+                if turn_url.startswith('turns:'):
+                    protocol = 'turns://'
+                    server_part = turn_url[6:]  # Skip "turns:"
+                else:
+                    protocol = 'turn://'
+                    server_part = turn_url[5:]  # Skip "turn:"
                 default_turn_url = f"{protocol}{turn_info['user']}:{turn_info['pass']}@{server_part}"
             else:
                 default_turn_url = turn_url
@@ -4186,9 +4373,16 @@ class WebRTCClient:
             'stun_server': self.stun_server or 'stun://stun.cloudflare.com:3478',
             'turn_server': self.turn_server or default_turn_url,
             'ice_transport_policy': self.ice_transport_policy,
-            'record_audio': not self.noaudio,  # Enable audio recording if noaudio is False
+            'record_audio': True if not self.noaudio else False,  # Default to recording audio unless --noaudio is set
+            'use_mkv': False,  # Don't use MKV subprocess for now as it has issues
+            'use_hls': self.use_hls if hasattr(self, 'use_hls') else False,  # Use HLS recording
+            'use_splitmuxsink': self.use_splitmux if hasattr(self, 'use_splitmux') else False,  # Use splitmuxsink
+            'mux_format': getattr(self, 'mux_format', 'webm'),  # Default to webm
+            'test_mode': getattr(self, 'test_mode', False),  # Enable test mode
         }
-        printc(f"[{stream_id}] DEBUG: Creating subprocess with record_audio={not self.noaudio} (noaudio={self.noaudio})", "77F")
+        printc(f"[{stream_id}] DEBUG: Creating subprocess with record_audio={True if not self.noaudio else False} (noaudio={self.noaudio})", "77F")
+        if self.use_hls:
+            printc(f"[{stream_id}] Using HLS recording format (audio+video muxing)", "0FF")
 
         manager = WebRTCSubprocessManager(stream_id, config)
         manager.on_message('sdp', lambda msg: asyncio.create_task(self.send_subprocess_sdp(stream_id, msg)))
@@ -5272,6 +5466,9 @@ async def main():
     parser.add_argument('--save', action='store_true', help='Save a copy of the outbound stream to disk. Publish Live + Store the video.')
     parser.add_argument('--record-room', action='store_true', help='Record all streams in a room to separate files. Requires --room parameter.')
     parser.add_argument('--record-streams', type=str, help='Comma-separated list of stream IDs to record from a room. Optional filter for --record-room.')
+    parser.add_argument('--audio', action='store_true', help='Deprecated flag (audio recording is now enabled by default). Use --noaudio to disable audio recording.')
+    parser.add_argument('--hls', action='store_true', help='Use HLS format for recording instead of WebM/MP4. Includes audio+video muxing and creates .m3u8 playlists.')
+    parser.add_argument('--hls-splitmux', action='store_true', help='Use splitmuxsink for HLS recording (recommended) instead of hlssink.')
     parser.add_argument('--room-ndi', action='store_true', help='Relay all room streams to NDI as separate sources. Requires --room parameter.')
     parser.add_argument('--midi', action='store_true', help='Transparent MIDI bridge mode; no video or audio.')
     parser.add_argument('--filesrc', type=str, default=None,  help='Provide a media file (local file location) as a source instead of physical device; it can be a transparent webm or whatever. It will be transcoded, which offers the best results.')
@@ -6085,14 +6282,14 @@ async def main():
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxvp8enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                 elif args.rpi:
                     # Add leaky queue to handle frame drops and prevent buffer overruns with low latency
-                    pipeline_video_input += f' ! v4l2convert{timestampOverlay} ! video/x-raw,format=I420 ! queue max-size-buffers=30 max-size-time=0 leaky=upstream ! vp8enc deadline=1 name="encoder" target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
+                    pipeline_video_input += f' ! v4l2convert{timestampOverlay} ! video/x-raw,format=I420 ! queue max-size-buffers=10 ! vp8enc deadline=1 name="encoder" target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                 elif check_plugins('mppvp8enc'):
                     # Rockchip hardware VP8 encoder - ensure NV12 input
                     pipeline_video_input += f'{pipeline_video_converter} ! queue max-size-buffers=4 leaky=upstream ! mppvp8enc qp-init=40 qp-min=10 qp-max=100 gop=30 name="encoder" rc-mode=cbr bps={args.bitrate * 1000} {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
 
                 else:
                     # Add leaky queue to handle frame drops and prevent buffer overruns with low latency
-                    pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=30 max-size-time=0 leaky=upstream ! vp8enc deadline=1 target-bitrate={args.bitrate}000 name="encoder" {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
+                    pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=10 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 name="encoder" {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
 
             if args.multiviewer:
                 pipeline_video_input += ' ! tee name=videotee '
