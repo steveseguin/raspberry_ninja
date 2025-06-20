@@ -34,9 +34,11 @@ class GLibWebRTCHandler:
         self.room = config.get('room')
         self.record_file = config.get('record_file')
         self.record_audio = config.get('record_audio', False)
+        self.room_ndi = config.get('room_ndi', False)
+        self.ndi_name = config.get('ndi_name')
         
         # Debug log the config
-        self.log(f"DEBUG: Config received: record_audio={config.get('record_audio', 'NOT SET')}")
+        self.log(f"DEBUG: Config received: record_audio={config.get('record_audio', 'NOT SET')}, room_ndi={config.get('room_ndi', False)}")
         
         self.pipe = None
         self.webrtc = None
@@ -601,7 +603,10 @@ class GLibWebRTCHandler:
         width = structure.get_int('width')[1] if structure.has_field('width') else 'unknown'
         height = structure.get_int('height')[1] if structure.has_field('height') else 'unknown'
         
-        self.log(f"📹 RECORDING START: Video stream from {self.stream_id}")
+        if self.room_ndi:
+            self.log(f"📹 NDI OUTPUT START: Video stream from {self.stream_id}")
+        else:
+            self.log(f"📹 RECORDING START: Video stream from {self.stream_id}")
         self.log(f"   Codec: {encoding_name}, Resolution: {width}x{height}")
         
         # Create queue for buffering
@@ -610,74 +615,141 @@ class GLibWebRTCHandler:
         # First, we need to depayload the RTP stream
         if encoding_name == 'VP8':
             depay = Gst.ElementFactory.make('rtpvp8depay', None)
-            # Use WebM but with better settings for live streams
-            mux = Gst.ElementFactory.make('webmmux', None)
-            # Set properties for better live streaming
-            mux.set_property('streamable', True)
-            mux.set_property('min-index-interval', 1000000000)  # 1 second
-            extension = 'webm'
+            if self.room_ndi:
+                # For NDI, we need to decode VP8
+                decoder = Gst.ElementFactory.make('vp8dec', None)
+            else:
+                # Use WebM but with better settings for live streams
+                mux = Gst.ElementFactory.make('webmmux', None)
+                # Set properties for better live streaming
+                mux.set_property('streamable', True)
+                mux.set_property('min-index-interval', 1000000000)  # 1 second
+                extension = 'webm'
         elif encoding_name == 'H264':
             depay = Gst.ElementFactory.make('rtph264depay', None)
             # Parse H264 stream
             h264parse = Gst.ElementFactory.make('h264parse', None)
-            # For H264, we can use MP4
-            mux = Gst.ElementFactory.make('mp4mux', None)
-            extension = 'mp4'
+            if self.room_ndi:
+                # For NDI, we need to decode H264
+                decoder = Gst.ElementFactory.make('avdec_h264', None)
+            else:
+                # For H264, we can use MP4
+                mux = Gst.ElementFactory.make('mp4mux', None)
+                extension = 'mp4'
         else:
             self.log(f"Unsupported video codec: {encoding_name}", "error")
             return
         
-        filesink = Gst.ElementFactory.make('filesink', None)
-        
-        if not all([queue, depay, mux, filesink]):
-            self.log("Failed to create recording elements", "error")
-            return
+        if self.room_ndi:
+            # Create NDI sink
+            videoconvert = Gst.ElementFactory.make('videoconvert', None)
+            ndisink = Gst.ElementFactory.make('ndisink', None)
             
-        # Set output filename
-        if self.record_file:
-            filename = self.record_file
-        else:
-            import datetime
-            timestamp = int(datetime.datetime.now().timestamp())
-            filename = f"{self.room}_{self.stream_id}_{timestamp}.{extension}"
-            
-        filesink.set_property('location', filename)
-        self.log(f"   Output file: {filename}")
-        
-        # Add to pipeline
-        elements = [queue, depay, mux, filesink]
-        if encoding_name == 'H264' and 'h264parse' in locals():
-            elements.insert(2, h264parse)
-            
-        for element in elements:
-            self.pipe.add(element)
-        
-        # Muxer is already configured above
-            
-        # Link elements based on codec
-        if encoding_name == 'VP8':
-            # VP8: queue -> depay -> webmmux -> filesink
-            if not queue.link(depay):
-                self.log("Failed to link queue to depay", "error")
-                return
-            if not depay.link(mux):
-                self.log("Failed to link depay to mux", "error")
-                return
-        else:  # H264
-            # H264: queue -> depay -> h264parse -> mp4mux -> filesink
-            if not queue.link(depay):
-                self.log("Failed to link queue to depay", "error")
-                return
-            if not depay.link(h264parse):
-                self.log("Failed to link depay to h264parse", "error")
-                return
-            if not h264parse.link(mux):
-                self.log("Failed to link h264parse to mux", "error")
+            if not all([queue, depay, decoder, videoconvert, ndisink]):
+                self.log("Failed to create NDI elements", "error")
                 return
                 
-        if not mux.link(filesink):
-            self.log("Failed to link mux to filesink", "error")
-            return
+            # Set NDI properties
+            ndisink.set_property('ndi-name', self.ndi_name or f"{self.stream_id}_video")
+            self.log(f"   NDI stream name: {self.ndi_name or f'{self.stream_id}_video'}")
+            
+        else:
+            # Recording mode
+            filesink = Gst.ElementFactory.make('filesink', None)
+            
+            if not all([queue, depay, mux, filesink]):
+                self.log("Failed to create recording elements", "error")
+                return
+        
+        if self.room_ndi:
+            # Add NDI elements to pipeline
+            if encoding_name == 'VP8':
+                elements = [queue, depay, decoder, videoconvert, ndisink]
+            else:  # H264
+                elements = [queue, depay, h264parse, decoder, videoconvert, ndisink]
+                
+            for element in elements:
+                self.pipe.add(element)
+                
+            # Link NDI pipeline
+            if encoding_name == 'VP8':
+                # VP8: queue -> depay -> vp8dec -> videoconvert -> ndisink
+                if not queue.link(depay):
+                    self.log("Failed to link queue to depay", "error")
+                    return
+                if not depay.link(decoder):
+                    self.log("Failed to link depay to decoder", "error")
+                    return
+                if not decoder.link(videoconvert):
+                    self.log("Failed to link decoder to videoconvert", "error")
+                    return
+                if not videoconvert.link(ndisink):
+                    self.log("Failed to link videoconvert to ndisink", "error")
+                    return
+            else:  # H264
+                # H264: queue -> depay -> h264parse -> avdec_h264 -> videoconvert -> ndisink
+                if not queue.link(depay):
+                    self.log("Failed to link queue to depay", "error")
+                    return
+                if not depay.link(h264parse):
+                    self.log("Failed to link depay to h264parse", "error")
+                    return
+                if not h264parse.link(decoder):
+                    self.log("Failed to link h264parse to decoder", "error")
+                    return
+                if not decoder.link(videoconvert):
+                    self.log("Failed to link decoder to videoconvert", "error")
+                    return
+                if not videoconvert.link(ndisink):
+                    self.log("Failed to link videoconvert to ndisink", "error")
+                    return
+        else:
+            # Recording mode
+            # Set output filename
+            if self.record_file:
+                filename = self.record_file
+            else:
+                import datetime
+                timestamp = int(datetime.datetime.now().timestamp())
+                filename = f"{self.room}_{self.stream_id}_{timestamp}.{extension}"
+                
+            filesink.set_property('location', filename)
+            self.log(f"   Output file: {filename}")
+            
+            # Add to pipeline
+            elements = [queue, depay, mux, filesink]
+            if encoding_name == 'H264' and 'h264parse' in locals():
+                elements.insert(2, h264parse)
+                
+            for element in elements:
+                self.pipe.add(element)
+            
+            # Muxer is already configured above
+                
+            # Link elements based on codec
+            if encoding_name == 'VP8':
+                # VP8: queue -> depay -> webmmux -> filesink
+                if not queue.link(depay):
+                    self.log("Failed to link queue to depay", "error")
+                    return
+                if not depay.link(mux):
+                    self.log("Failed to link depay to mux", "error")
+                    return
+            else:  # H264
+                # H264: queue -> depay -> h264parse -> mp4mux -> filesink
+                if not queue.link(depay):
+                    self.log("Failed to link queue to depay", "error")
+                    return
+                if not depay.link(h264parse):
+                    self.log("Failed to link depay to h264parse", "error")
+                    return
+                if not h264parse.link(mux):
+                    self.log("Failed to link h264parse to mux", "error")
+                    return
+                    
+            if not mux.link(filesink):
+                self.log("Failed to link mux to filesink", "error")
+                return
         
         # Sync states
         for element in elements:
@@ -692,11 +764,13 @@ class GLibWebRTCHandler:
         # Add probe to monitor data flow
         pad.add_probe(Gst.PadProbeType.BUFFER, self.on_pad_probe, None)
         
-        self.log("   ✅ Video recording pipeline connected and running")
-        
-        # Store recording info
-        self.recording_video = True
-        self.video_filename = filename
+        if self.room_ndi:
+            self.log("   ✅ NDI video output pipeline connected and running")
+        else:
+            self.log("   ✅ Video recording pipeline connected and running")
+            # Store recording info only for file recording
+            self.recording_video = True
+            self.video_filename = filename
         
     def on_pad_probe(self, pad, info, user_data):
         """Monitor data flow through pad"""
@@ -723,6 +797,15 @@ class GLibWebRTCHandler:
         
         self.log(f"🎤 AUDIO STREAM DETECTED: {self.stream_id}")
         self.log(f"   Codec: {encoding_name}, Sample rate: {clock_rate} Hz")
+        
+        if self.room_ndi:
+            self.log(f"   ℹ️  Audio handled separately in NDI mode")
+            # Just fakesink audio in NDI mode as video NDI sink will handle audio/video
+            fakesink = Gst.ElementFactory.make('fakesink', None)
+            self.pipe.add(fakesink)
+            fakesink.sync_state_with_parent()
+            pad.link(fakesink.get_static_pad('sink'))
+            return
         
         if not self.record_audio:
             self.log(f"   ⏸️  Audio recording disabled (use --audio flag to enable)")

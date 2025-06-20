@@ -1411,6 +1411,8 @@ class WebRTCSubprocessManager:
             'record_audio': self.config.get('record_audio', False),  # Pass audio recording flag
             'use_hls': self.config.get('use_hls', False),  # Pass HLS flag
             'use_splitmuxsink': self.config.get('use_splitmuxsink', False),  # Pass splitmuxsink flag
+            'room_ndi': self.config.get('room_ndi', False),  # Pass NDI mode flag
+            'ndi_name': self.config.get('ndi_name'),  # Pass NDI stream name
         }
         
         # Start subprocess
@@ -4508,6 +4510,8 @@ class WebRTCClient:
             'use_splitmuxsink': self.use_splitmux if hasattr(self, 'use_splitmux') else False,  # Use splitmuxsink
             'mux_format': getattr(self, 'mux_format', 'webm'),  # Default to webm
             'test_mode': getattr(self, 'test_mode', False),  # Enable test mode
+            'room_ndi': self.room_ndi,  # Pass NDI mode flag
+            'ndi_name': f"{self.room_name}_{stream_id}" if self.room_ndi else None,  # NDI stream name
         }
         printc(f"[{stream_id}] DEBUG: Creating subprocess with record_audio={True if not self.noaudio else False} (noaudio={self.noaudio})", "77F")
         if self.use_hls:
