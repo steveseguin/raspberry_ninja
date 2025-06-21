@@ -761,6 +761,11 @@ class GLibWebRTCHandler:
             self.log("Failed to create ndisinkcombiner - is gst-plugin-ndi installed?", "error")
             return
             
+        # Configure NDI combiner with latency settings (from publish.py)
+        self.ndi_combiner.set_property("latency", 800_000_000)  # 800ms
+        self.ndi_combiner.set_property("min-upstream-latency", 1_000_000_000)  # 1000ms
+        self.ndi_combiner.set_property("start-time-selection", 1)  # 1 corresponds to "first"
+            
         # Create NDI sink
         self.ndi_sink = Gst.ElementFactory.make('ndisink', None)
         if not self.ndi_sink:
@@ -1435,6 +1440,34 @@ class GLibWebRTCHandler:
         
         if self.room_ndi:
             self.log("   ✅ NDI video output pipeline connected and running")
+            
+            # Add watchdog for NDI freezing
+            def ndi_watchdog():
+                if hasattr(self, '_probe_counter') and hasattr(self, '_last_watchdog_count'):
+                    if self._probe_counter == self._last_watchdog_count:
+                        self.log("   ⚠️  NDI video flow stuck - no new buffers in 10 seconds", "warning")
+                        self.log("   ℹ️  This might be the known NDI cool-down issue", "info")
+                        self.log("   ℹ️  Try restarting after waiting 1-2 minutes", "info")
+                        
+                        # Log element states for debugging
+                        if decoder:
+                            state = decoder.get_state(0)
+                            self.log(f"   Decoder state: {state[1]}")
+                        if self.ndi_combiner:
+                            state = self.ndi_combiner.get_state(0)
+                            self.log(f"   NDI combiner state: {state[1]}")
+                        if self.ndi_sink:
+                            state = self.ndi_sink.get_state(0)
+                            self.log(f"   NDI sink state: {state[1]}")
+                            
+                        return False  # Stop watchdog
+                
+                self._last_watchdog_count = getattr(self, '_probe_counter', 0)
+                return True  # Continue
+            
+            # Set initial count and start watchdog after 10 seconds
+            self._last_watchdog_count = 0
+            GLib.timeout_add(10000, ndi_watchdog)
             
         elif self.use_hls:
             # Already logged in HLS section above
