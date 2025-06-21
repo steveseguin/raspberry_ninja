@@ -1679,6 +1679,7 @@ class WebRTCSubprocessManager:
             'use_splitmuxsink': self.config.get('use_splitmuxsink', False),  # Pass splitmuxsink flag
             'room_ndi': self.config.get('room_ndi', False),  # Pass NDI mode flag
             'ndi_name': self.config.get('ndi_name'),  # Pass NDI stream name
+            'ndi_direct': self.config.get('ndi_direct', True),  # Default to direct mode
         }
         
         # Start subprocess
@@ -1903,6 +1904,9 @@ class WebRTCClient:
         self.room_recording = getattr(params, 'room_recording', False)
         self.record_room = getattr(params, 'record_room', False)
         self.room_ndi = getattr(params, 'room_ndi', False)
+        # NDI direct mode is now the default, use ndi_combine to opt into the problematic combiner
+        self.ndi_combine = getattr(params, 'ndi_combine', False)
+        self.ndi_direct = not self.ndi_combine  # Direct mode by default
         self.stream_filter = getattr(params, 'stream_filter', None)
         
         # HLS recording options
@@ -4797,6 +4801,7 @@ class WebRTCClient:
             'mux_format': getattr(self, 'mux_format', 'webm'),  # Default to webm
             'test_mode': getattr(self, 'test_mode', False),  # Enable test mode
             'room_ndi': self.room_ndi,  # Pass NDI mode flag
+            'ndi_direct': self.ndi_direct if hasattr(self, 'ndi_direct') else True,  # Default to direct mode
             'ndi_name': f"{self.room_name}_{stream_id}" if self.room_ndi else None,  # NDI stream name
         }
         printc(f"[{stream_id}] DEBUG: Creating subprocess with record_audio={True if not self.noaudio else False} (noaudio={self.noaudio})", "77F")
@@ -5889,7 +5894,8 @@ async def main():
     parser.add_argument('--audio', action='store_true', help='Deprecated flag (audio recording is now enabled by default). Use --noaudio to disable audio recording.')
     parser.add_argument('--hls', action='store_true', help='Use HLS format for recording instead of WebM/MP4. Includes audio+video muxing and creates .m3u8 playlists.')
     parser.add_argument('--hls-splitmux', action='store_true', help='Use splitmuxsink for HLS recording (recommended) instead of hlssink.')
-    parser.add_argument('--room-ndi', action='store_true', help='Relay all room streams to NDI as separate sources. Requires --room parameter.')
+    parser.add_argument('--room-ndi', action='store_true', help='Relay all room streams to NDI as separate sources. Requires --room parameter. Uses direct mode by default (separate audio/video streams).')
+    parser.add_argument('--ndi-combine', action='store_true', help='Use NDI combiner for audio/video muxing (WARNING: Known to freeze after ~1500 buffers). Default is direct mode with separate streams.')
     parser.add_argument('--midi', action='store_true', help='Transparent MIDI bridge mode; no video or audio.')
     parser.add_argument('--filesrc', type=str, default=None,  help='Provide a media file (local file location) as a source instead of physical device; it can be a transparent webm or whatever. It will be transcoded, which offers the best results.')
     parser.add_argument('--filesrc2', type=str, default=None,  help='Provide a media file (local file location) as a source instead of physical device; it can be a transparent webm or whatever. It will not be transcoded, so be sure its encoded correctly. Specify if --vp8 or --vp9, else --h264 is assumed.')
@@ -6873,7 +6879,14 @@ async def main():
                 printc(f"   Filter: {', '.join(args.stream_filter)}", "77F")
             printc(f"   Files will be saved as: {args.room}_<streamID>_<timestamp>.ts", "77F")
         elif args.room_ndi:
-            printc(f"\n-> Relaying all streams from room '{args.room}' to NDI", "7FF")
+            if not hasattr(args, 'ndi_combine') or not args.ndi_combine:
+                printc(f"\n-> Relaying all streams from room '{args.room}' to NDI (DIRECT MODE)", "0FF")
+                printc(f"   ✅ Using direct NDI mode (default) - no freezing issues", "0F0")
+                printc(f"   📹 Video streams: {args.room}_<streamID>_video", "77F")
+                printc(f"   🔊 Audio streams: {args.room}_<streamID>_audio", "77F")
+            else:
+                printc(f"\n-> Relaying all streams from room '{args.room}' to NDI (COMBINER MODE)", "FF0")
+                printc(f"   ⚠️  WARNING: Combiner mode may freeze after ~1500 buffers!", "F70")
             if args.stream_filter:
                 printc(f"   Filter: {', '.join(args.stream_filter)}", "77F")
         elif not args.room:

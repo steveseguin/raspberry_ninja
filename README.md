@@ -252,7 +252,7 @@ options:
   --record-streams RECORD_STREAMS
                         Comma-separated list of stream IDs to record from a room. Optional filter for --record-room.
   --room-ndi            Relay all room streams to NDI as separate sources. Requires --room parameter.
-  --use-hls             Enable HLS (HTTP Live Streaming) recording with H.264 transcoding.
+  ---hls             Enable HLS (HTTP Live Streaming) recording with H.264 transcoding.
   --webserver PORT      Start built-in web server on specified port for serving HLS files.
   --midi                Transparent MIDI bridge mode; no video or audio.
   --filesrc FILESRC     Provide a media file (local file location) as a source instead of physical device; it can be a
@@ -379,7 +379,7 @@ Raspberry Ninja now supports HLS (HTTP Live Streaming) recording, which creates 
 
 To record using HLS format:
 ```bash
-python3 publish.py --record streamID --use-hls
+python3 publish.py --record streamID --hls
 ```
 
 This will:
@@ -392,7 +392,7 @@ This will:
 Raspberry Ninja includes a built-in web server for serving HLS files. Simply add `--webserver 8080` to your command:
 
 ```bash
-python3 publish.py --record streamID --use-hls --webserver 8080
+python3 publish.py --record streamID --hls --webserver 8080
 ```
 
 This enables:
