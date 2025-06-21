@@ -772,6 +772,11 @@ class GLibWebRTCHandler:
         self.ndi_sink.set_property('ndi-name', ndi_name)
         self.log(f"   NDI stream name: {ndi_name}")
         
+        # Configure sync settings to reduce audio lag
+        self.ndi_sink.set_property('sync', True)
+        self.ndi_sink.set_property('max-lateness', 100000000)  # 100ms
+        self.ndi_sink.set_property('async', True)
+        
         # Add to pipeline
         self.pipe.add(self.ndi_combiner)
         self.pipe.add(self.ndi_sink)
@@ -791,10 +796,11 @@ class GLibWebRTCHandler:
         """Set up audio processing for NDI output"""
         # Create queue for buffering
         queue = Gst.ElementFactory.make('queue', None)
-        # Set buffer properties for audio
-        queue.set_property('max-size-time', 10000000000)  # 10 seconds
+        # Set buffer properties for audio - reduce to help sync
+        queue.set_property('max-size-time', 1000000000)  # 1 second
         queue.set_property('max-size-buffers', 0)
         queue.set_property('max-size-bytes', 0)
+        queue.set_property('leaky', 2)  # Drop old buffers
         
         # Create depayloader and decoder based on codec
         if encoding_name == 'OPUS':
@@ -1072,6 +1078,7 @@ class GLibWebRTCHandler:
         if self.room_ndi:
             # Create video processing elements for NDI
             videoconvert = Gst.ElementFactory.make('videoconvert', None)
+            videorate = Gst.ElementFactory.make('videorate', None)
             # Add another queue after decoder to prevent blocking
             video_queue2 = Gst.ElementFactory.make('queue', 'ndi_video_queue2')
             if video_queue2:
@@ -1079,8 +1086,24 @@ class GLibWebRTCHandler:
                 video_queue2.set_property('max-size-buffers', 0)
                 video_queue2.set_property('max-size-bytes', 0)
                 video_queue2.set_property('leaky', 2)  # Drop old buffers
+                
+            # Configure decoder for low latency
+            if decoder:
+                # Try to set properties that might exist
+                try:
+                    decoder.set_property('max-threads', 4)
+                except:
+                    pass
+                try:
+                    decoder.set_property('low-latency', True) 
+                except:
+                    pass
+                try:
+                    decoder.set_property('output-corrupt', False)
+                except:
+                    pass
             
-            if not all([queue, depay, decoder, videoconvert]):
+            if not all([queue, depay, decoder, videoconvert, videorate]):
                 self.log("Failed to create NDI video elements", "error")
                 return
                 
@@ -1109,16 +1132,16 @@ class GLibWebRTCHandler:
         if self.room_ndi:
             # Add NDI elements to pipeline
             if encoding_name in ['VP8', 'VP9', 'AV1']:
-                elements = [queue, depay, decoder, video_queue2, videoconvert] if video_queue2 else [queue, depay, decoder, videoconvert]
+                elements = [queue, depay, decoder, video_queue2, videoconvert, videorate] if video_queue2 else [queue, depay, decoder, videoconvert, videorate]
             else:  # H264
-                elements = [queue, depay, h264parse, decoder, video_queue2, videoconvert] if video_queue2 else [queue, depay, h264parse, decoder, videoconvert]
+                elements = [queue, depay, h264parse, decoder, video_queue2, videoconvert, videorate] if video_queue2 else [queue, depay, h264parse, decoder, videoconvert, videorate]
                 
             for element in elements:
                 self.pipe.add(element)
                 
             # Link NDI video pipeline
             if encoding_name in ['VP8', 'VP9', 'AV1']:
-                # VP8/VP9/AV1: queue -> depay -> decoder -> video_queue2 -> videoconvert -> combiner
+                # VP8/VP9/AV1: queue -> depay -> decoder -> video_queue2 -> videoconvert -> videorate -> combiner
                 if not queue.link(depay):
                     self.log("Failed to link queue to depay", "error")
                     return
@@ -1136,8 +1159,13 @@ class GLibWebRTCHandler:
                     if not decoder.link(videoconvert):
                         self.log("Failed to link decoder to videoconvert", "error")
                         return
+                
+                # Link videoconvert to videorate
+                if not videoconvert.link(videorate):
+                    self.log("Failed to link videoconvert to videorate", "error")
+                    return
             else:  # H264
-                # H264: queue -> depay -> h264parse -> avdec_h264 -> video_queue2 -> videoconvert -> combiner
+                # H264: queue -> depay -> h264parse -> avdec_h264 -> video_queue2 -> videoconvert -> videorate -> combiner
                 if not queue.link(depay):
                     self.log("Failed to link queue to depay", "error")
                     return
@@ -1158,13 +1186,18 @@ class GLibWebRTCHandler:
                     if not decoder.link(videoconvert):
                         self.log("Failed to link decoder to videoconvert", "error")
                         return
+                
+                # Link videoconvert to videorate
+                if not videoconvert.link(videorate):
+                    self.log("Failed to link videoconvert to videorate", "error")
+                    return
             
             # Link to NDI combiner video pad
             if self.ndi_combiner:
                 # Video pad is 'Always' available, not 'On request'
                 video_pad = self.ndi_combiner.get_static_pad('video')
                 if video_pad:
-                    src_pad = videoconvert.get_static_pad('src')
+                    src_pad = videorate.get_static_pad('src')
                     if src_pad.link(video_pad) == Gst.PadLinkReturn.OK:
                         self.log("   ✅ Connected video to NDI combiner")
                         
@@ -1436,23 +1469,46 @@ class GLibWebRTCHandler:
             if video_queue2:
                 # Monitor queue fullness
                 def monitor_ndi_queue():
-                    if hasattr(self, '_probe_counter'):
-                        current_level_time = video_queue2.get_property('current-level-time')
-                        current_level_buffers = video_queue2.get_property('current-level-buffers')
-                        self.log(f"   📊 NDI Queue Status - Buffers: {self._probe_counter}, Queue level: {current_level_time/1000000:.1f}ms, {current_level_buffers} buffers")
-                        
-                        # Check if queue is stuck (no new buffers in 5 seconds)
-                        if hasattr(self, '_last_ndi_buffer_count'):
-                            if self._probe_counter == self._last_ndi_buffer_count:
-                                self.log("   ⚠️  NDI video flow appears stuck - no new buffers in 5 seconds", "warning")
-                                # Try to force pipeline to playing state again
-                                if self.ndi_sink:
-                                    state_ret, state, pending = self.ndi_sink.get_state(0)
-                                    if state != Gst.State.PLAYING:
-                                        self.log(f"   NDI sink not in PLAYING state ({state}), forcing to PLAYING")
-                                        self.ndi_sink.set_state(Gst.State.PLAYING)
-                        
-                        self._last_ndi_buffer_count = self._probe_counter
+                    try:
+                        if hasattr(self, '_probe_counter'):
+                            current_level_time = video_queue2.get_property('current-level-time')
+                            current_level_buffers = video_queue2.get_property('current-level-buffers')
+                            self.log(f"   📊 NDI Queue Status - Buffers: {self._probe_counter}, Queue level: {current_level_time/1000000:.1f}ms, {current_level_buffers} buffers")
+                            
+                            # Check if queue is stuck (no new buffers in 5 seconds)
+                            if hasattr(self, '_last_ndi_buffer_count'):
+                                if self._probe_counter == self._last_ndi_buffer_count:
+                                    self.log("   ⚠️  NDI video flow appears stuck - no new buffers in 5 seconds", "warning")
+                                    
+                                    # Check pipeline state
+                                    if self.pipe:
+                                        pipe_state = self.pipe.get_state(0)
+                                        self.log(f"   Pipeline state: {pipe_state[1]}")
+                                    
+                                    # Check decoder state if it exists
+                                    if decoder:
+                                        dec_state = decoder.get_state(0)
+                                        self.log(f"   Decoder state: {dec_state[1]}")
+                                        
+                                    # Try to unblock by sending EOS and flushing
+                                    if current_level_buffers == 0 and self._probe_counter > 1000:
+                                        self.log("   🔧 Attempting to unblock pipeline with flush")
+                                        # Send flush events to try to unblock
+                                        if hasattr(self, 'webrtc'):
+                                            sink_pads = self.webrtc.iterate_sink_pads()
+                                            if sink_pads:
+                                                done = False
+                                                while not done:
+                                                    ret, pad = sink_pads.next()
+                                                    if ret == Gst.IteratorResult.OK and pad:
+                                                        pad.send_event(Gst.Event.new_flush_start())
+                                                        pad.send_event(Gst.Event.new_flush_stop(True))
+                                                    else:
+                                                        done = True
+                            
+                            self._last_ndi_buffer_count = self._probe_counter
+                    except Exception as e:
+                        self.log(f"   Error in NDI monitor: {e}", "warning")
                     return True  # Continue monitoring
                 
                 # Start monitoring after 5 seconds
