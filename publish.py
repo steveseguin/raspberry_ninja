@@ -2313,12 +2313,42 @@ class WebRTCClient:
                         printc("This may occur with custom websocket servers that don't provide proper stream metadata", "F77")
             if self.ndiout:
                 print("NDI OUT")
-                ndi_combiner = self.pipe.get_by_name("ndi_combiner")
-                ndi_sink = self.pipe.get_by_name("ndi_sink")
                 
-                if not ndi_combiner:
-                    print("Creating new NDI sink combiner")
-                    ndi_combiner = Gst.ElementFactory.make("ndisinkcombiner", "ndi_combiner")
+                # Use direct mode (separate audio/video streams) to avoid combiner freezing
+                use_direct_ndi = True  # Default to direct mode
+                
+                if use_direct_ndi:
+                    # Direct NDI mode - separate audio/video sinks
+                    if "video" in name:
+                        ndi_element_name = "ndi_video_sink"
+                        ndi_stream_suffix = "_video"
+                    else:  # audio
+                        ndi_element_name = "ndi_audio_sink"
+                        ndi_stream_suffix = "_audio"
+                        
+                    ndi_sink = self.pipe.get_by_name(ndi_element_name)
+                    if not ndi_sink:
+                        print(f"Creating new NDI sink for {ndi_element_name}")
+                        ndi_sink = Gst.ElementFactory.make("ndisink", ndi_element_name)
+                        if not ndi_sink:
+                            print("Failed to create ndisink element")
+                            print("Make sure gst-plugin-ndi is installed:")
+                            print("  - For Ubuntu/Debian: sudo apt install gstreamer1.0-plugins-bad")
+                            print("  - Or download from: https://ndi.tv/tools/")
+                            return
+                        unique_ndi_name = self.ndiout + ndi_stream_suffix
+                        ndi_sink.set_property("ndi-name", unique_ndi_name)
+                        self.pipe.add(ndi_sink)
+                        ndi_sink.sync_state_with_parent()
+                        print(f"NDI sink name: {unique_ndi_name}")
+                else:
+                    # Combiner mode (has freezing issues)
+                    ndi_combiner = self.pipe.get_by_name("ndi_combiner")
+                    ndi_sink = self.pipe.get_by_name("ndi_sink")
+                    
+                    if not ndi_combiner:
+                        print("Creating new NDI sink combiner")
+                        ndi_combiner = Gst.ElementFactory.make("ndisinkcombiner", "ndi_combiner")
                     if not ndi_combiner:
                         print("Failed to create ndisinkcombiner element")
                         return
@@ -2354,69 +2384,99 @@ class WebRTCClient:
                         return
 
                 if "video" in name:
-                    print("NDI VIDEO OUT")
+                    print("NDI VIDEO OUT (Direct Mode)" if use_direct_ndi else "NDI VIDEO OUT (Combiner Mode)")
                     pad_name = "video"
-                    rtp_caps_string = "application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)H264"
+                    # Detect video codec from caps
+                    if "VP8" in name:
+                        video_codec = "VP8"
+                    elif "H264" in name:
+                        video_codec = "H264"
+                    elif "VP9" in name:
+                        video_codec = "VP9"
+                    else:
+                        print(f"Unknown video codec in caps: {name}")
+                        video_codec = "VP8"  # Default fallback
                 elif "audio" in name:
-                    print("NDI AUDIO OUT")
+                    print("NDI AUDIO OUT (Direct Mode)" if use_direct_ndi else "NDI AUDIO OUT (Combiner Mode)")
                     pad_name = "audio"
-                    rtp_caps_string = "application/x-rtp,media=(string)audio,clock-rate=(int)48000,encoding-name=(string)OPUS"
                 else:
                     print("Unsupported media type:", name)
                     return
 
-                # Check if the pad already exists
-                target_pad = ndi_combiner.get_static_pad(pad_name)
-                if target_pad:
-                    print(f"{pad_name.capitalize()} pad already exists, using existing pad")
-                else:
-                    target_pad = ndi_combiner.request_pad(ndi_combiner.get_pad_template(pad_name), None, None)
-                    if target_pad is None:
-                        print(f"Failed to get {pad_name} pad from ndi_combiner")
-                        print("Available pad templates:")
-                        for template in ndi_combiner.get_pad_template_list():
-                            print(f"  {template.name_template}: {template.direction.value_name}")
-                        print("Current pads:")
-                        for pad in ndi_combiner.pads:
-                            print(f"  {pad.get_name()}: {pad.get_direction().value_name}")
-                        return
+                if not use_direct_ndi:
+                    # Combiner mode - get pad from combiner
+                    target_pad = ndi_combiner.get_static_pad(pad_name)
+                    if target_pad:
+                        print(f"{pad_name.capitalize()} pad already exists, using existing pad")
+                    else:
+                        target_pad = ndi_combiner.request_pad(ndi_combiner.get_pad_template(pad_name), None, None)
+                        if target_pad is None:
+                            print(f"Failed to get {pad_name} pad from ndi_combiner")
+                            print("Available pad templates:")
+                            for template in ndi_combiner.get_pad_template_list():
+                                print(f"  {template.name_template}: {template.direction.value_name}")
+                            print("Current pads:")
+                            for pad in ndi_combiner.pads:
+                                print(f"  {pad.get_name()}: {pad.get_direction().value_name}")
+                            return
 
-                print(f"Got {pad_name} pad: {target_pad.get_name()}")
+                    print(f"Got {pad_name} pad: {target_pad.get_name()}")
 
                 # Create elements based on media type
                 if pad_name == "video":
-                    elements = [
-                        Gst.ElementFactory.make("capsfilter", f"{pad_name}_rtp_caps"),
+                    # Create codec-specific elements
+                    if video_codec == "VP8":
+                        depay = Gst.ElementFactory.make("rtpvp8depay", "vp8_depay")
+                        decoder = Gst.ElementFactory.make("vp8dec", "vp8_decode")
+                        parser = None
+                    elif video_codec == "H264":
+                        depay = Gst.ElementFactory.make("rtph264depay", "h264_depay")
+                        parser = Gst.ElementFactory.make("h264parse", "h264_parse")
+                        decoder = Gst.ElementFactory.make("avdec_h264", "h264_decode")
+                    elif video_codec == "VP9":
+                        depay = Gst.ElementFactory.make("rtpvp9depay", "vp9_depay")
+                        decoder = Gst.ElementFactory.make("vp9dec", "vp9_decode")
+                        parser = None
+                    else:
+                        print(f"Unsupported video codec: {video_codec}")
+                        return
+                        
+                    # Start with depay (which accepts RTP caps), then queue
+                    elements = [depay]
+                    if parser:
+                        elements.append(parser)
+                    elements.extend([
+                        decoder,
                         Gst.ElementFactory.make("queue", f"{pad_name}_queue"),
-                        Gst.ElementFactory.make("rtph264depay", "h264_depay"),
-                        Gst.ElementFactory.make("h264parse", "h264_parse"),
-                        Gst.ElementFactory.make("avdec_h264", "h264_decode"),
                         Gst.ElementFactory.make("videoconvert", "video_convert"),
                         Gst.ElementFactory.make("videoscale", "video_scale"),
                         Gst.ElementFactory.make("videorate", "video_rate"),
                         Gst.ElementFactory.make("capsfilter", "video_caps"),
-                    ]
-                    elements[0].set_property("caps", Gst.Caps.from_string(rtp_caps_string))
-                    elements[-1].set_property("caps", Gst.Caps.from_string("video/x-raw,format=UYVY,width=1280,height=720,framerate=30/1"))
+                    ])
+                    # Use UYVY for best NDI performance
+                    elements[-1].set_property("caps", Gst.Caps.from_string("video/x-raw,format=UYVY,framerate=30/1"))
                 else:  # audio
+                    # Start with depay (which accepts RTP caps), then queue
                     elements = [
-                        Gst.ElementFactory.make("capsfilter", f"{pad_name}_rtp_caps"),
-                        Gst.ElementFactory.make("queue", f"{pad_name}_queue"),
                         Gst.ElementFactory.make("rtpopusdepay", "opus_depay"),
                         Gst.ElementFactory.make("opusdec", "opus_decode"),
+                        Gst.ElementFactory.make("queue", f"{pad_name}_queue"),
                         Gst.ElementFactory.make("audioconvert", "audio_convert"),
                         Gst.ElementFactory.make("audioresample", "audio_resample"),
                         Gst.ElementFactory.make("capsfilter", "audio_caps"),
                     ]
-                    elements[0].set_property("caps", Gst.Caps.from_string(rtp_caps_string))
                     elements[-1].set_property("caps", Gst.Caps.from_string("audio/x-raw,format=F32LE,channels=2,rate=48000,layout=interleaved"))
 
                 if not all(elements):
                     print("Couldn't create all elements")
+                    for i, elem in enumerate(elements):
+                        if not elem:
+                            print(f"  Element {i} is None")
                     return
 
-                # Create a bin for the elements
-                bin_name = f"{pad_name}_bin"
+                # Create a bin for the elements with unique name
+                import time
+                bin_name = f"{pad_name}_bin_{int(time.time() * 1000)}"
                 element_bin = Gst.Bin.new(bin_name)
                 for element in elements:
                     element_bin.add(element)
@@ -2438,20 +2498,58 @@ class WebRTCClient:
 
                 # Add the bin to the pipeline
                 self.pipe.add(element_bin)
+                
+                # Set to NULL first to ensure clean state
+                element_bin.set_state(Gst.State.NULL)
                 element_bin.sync_state_with_parent()
 
-                # Link the bin to the ndi_combiner
-                if not element_bin.link_pads("src", ndi_combiner, target_pad.get_name()):
-                    print(f"Failed to link {bin_name} to ndi_combiner:{target_pad.get_name()}")
-                    print(f"Bin src caps: {ghost_src.query_caps().to_string()}")
-                    print(f"Target pad caps: {target_pad.query_caps().to_string()}")
-                    return
+                # Link the bin to NDI output
+                if use_direct_ndi:
+                    # Direct mode - link directly to NDI sink
+                    if not element_bin.link(ndi_sink):
+                        print(f"Failed to link {bin_name} to NDI sink")
+                        print(f"Bin src caps: {ghost_src.query_caps().to_string()}")
+                        return
+                else:
+                    # Combiner mode - link to combiner
+                    if not element_bin.link_pads("src", ndi_combiner, target_pad.get_name()):
+                        print(f"Failed to link {bin_name} to ndi_combiner:{target_pad.get_name()}")
+                        print(f"Bin src caps: {ghost_src.query_caps().to_string()}")
+                        print(f"Target pad caps: {target_pad.query_caps().to_string()}")
+                        return
 
                 # Link the incoming pad to the bin
-                if not pad.link(ghost_sink):
-                    print(f"Failed to link incoming pad to {bin_name}")
-                    print(f"Incoming pad caps: {pad.query_caps().to_string()}")
-                    print(f"Ghost sink pad caps: {ghost_sink.query_caps().to_string()}")
+                print(f"Attempting to link incoming pad to {bin_name}")
+                
+                # Debug caps before linking
+                incoming_caps = pad.get_current_caps()
+                if incoming_caps:
+                    print(f"Incoming pad current caps: {incoming_caps.to_string()}")
+                else:
+                    print("Incoming pad has no current caps")
+                    
+                # Check if caps are compatible
+                ghost_sink_caps = ghost_sink.query_caps()
+                print(f"Ghost sink accepts caps: {ghost_sink_caps.to_string()[:200]}...")
+                
+                if incoming_caps and not ghost_sink_caps.can_intersect(incoming_caps):
+                    print("WARNING: Caps are not compatible!")
+                
+                link_result = pad.link(ghost_sink)
+                if link_result != Gst.PadLinkReturn.OK:
+                    print(f"Failed to link incoming pad to {bin_name}: {link_result}")
+                    print(f"Link error code: {link_result.value_name if hasattr(link_result, 'value_name') else link_result}")
+                    
+                    # More detailed debugging
+                    print(f"Incoming pad name: {pad.get_name()}")
+                    print(f"Ghost sink name: {ghost_sink.get_name()}")
+                    print(f"Element bin state: {element_bin.get_state(0)}")
+                    
+                    # Check first element caps specifically
+                    first_elem_sink = elements[0].get_static_pad("sink")
+                    if first_elem_sink:
+                        print(f"First element ({elements[0].get_name()}) sink caps: {first_elem_sink.query_caps().to_string()[:200]}...")
+                    
                     return
 
                 print(f"NDI {pad_name} pipeline set up successfully")

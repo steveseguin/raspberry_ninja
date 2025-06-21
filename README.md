@@ -347,38 +347,61 @@ Also note, if you run with `sudo`, you might get a permissions error when using 
 
 A guide on how to setup a RPI to auto-stream on boot can be found in the Rasbperry Pi folder, along with details on how to configure the WiFi SSID and password without needing to SSH in first.
 
-### Room Recording
+### Room Recording (Pull Mode)
 
-Raspberry Ninja supports recording multiple participants in a VDO.Ninja room simultaneously. This is perfect for recording podcasts, interviews, or group calls where each participant's stream is saved to a separate file.
+**Important**: The recording features (`--record`, `--record-room`) are for PULLING streams from VDO.Ninja, not for publishing. Raspberry Ninja connects as a viewer to download and save remote streams to disk.
 
 #### Basic Room Recording
 
 To record all participants in a room:
 ```bash
-python3 publish.py --room myroom123 --record-room
+python3 publish.py --room myroom123 --record-room --password false
 ```
 
 This will:
-- Connect to room "myroom123" as a viewer
+- Connect to room "myroom123" as a viewer (not as a publisher)
 - Automatically record each participant's stream to separate files
 - Name files using the pattern: `{room}_{streamID}_{timestamp}.webm`
 - Record both video and audio by default (audio saved as separate .wav files)
+- **Does NOT publish any local camera/audio to the room**
+
+#### Single Stream Recording
+
+To record a specific stream:
+```bash
+python3 publish.py --record streamID --password false
+```
+
+This pulls and records the specified stream from VDO.Ninja.
 
 #### Selective Room Recording
 
-To record only specific participants:
+To record only specific participants from a room:
 ```bash
 python3 publish.py --room myroom123 --record-room --record-streams "stream1,stream2" --password false
 ```
 
+#### Publishing vs Recording
+
+- **To PUBLISH** your camera/audio to VDO.Ninja: Use `--streamid` parameter
+  ```bash
+  python3 publish.py --streamid myStreamID  # Publishes local camera
+  ```
+- **To RECORD** from VDO.Ninja: Use `--record` or `--record-room` parameters
+  ```bash
+  python3 publish.py --record theirStreamID  # Records remote stream
+  ```
+
 #### Room NDI Output
 
-To relay all room streams as NDI sources:
+To relay all room streams as NDI sources (also pull mode):
 ```bash
 python3 publish.py --room myroom123 --room-ndi --password false
 ```
 
-Each participant will appear as a separate NDI source named `{room} - {streamID}`.
+Each participant will appear as separate NDI sources:
+- Default (direct mode): `{room}_{streamID}_video` and `{room}_{streamID}_audio`
+- With `--ndi-combine`: Single combined source per participant
 
 ### HLS Recording
 
@@ -522,7 +545,7 @@ Avoid apostrophes in your pipelines, as that can cause a syntax issue, and you s
 
 ### NDI support
 
-Raspberry Ninja provides comprehensive NDI support for converting VDO.Ninja streams to NDI sources, perfect for professional broadcast workflows.
+Raspberry Ninja provides comprehensive NDI support for converting VDO.Ninja streams to NDI sources, perfect for professional broadcast workflows. **Important Note**: NDI features are for PULLING streams from VDO.Ninja and converting them to NDI - they do not publish your local camera to NDI.
 
 #### Single Stream to NDI
 
@@ -541,11 +564,27 @@ python3 publish.py --room myroom123 --room-ndi --password false
 ```
 
 This powerful feature:
-- Connects to a VDO.Ninja room as a viewer
+- Connects to a VDO.Ninja room as a viewer (not as a publisher)
 - Automatically creates an NDI source for each participant
-- Names each source as `{room} - {streamID}` for easy identification
 - Handles participants joining/leaving dynamically
 - Perfect for multi-camera productions and live switching
+
+#### NDI Direct Mode (Default)
+
+By default, `--room-ndi` uses **direct mode** which creates separate NDI streams:
+- Video streams: `{room}_{streamID}_video`
+- Audio streams: `{room}_{streamID}_audio`
+
+This mode is reliable and avoids known freezing issues with the NDI combiner.
+
+#### NDI Combiner Mode (Optional)
+
+If you need combined audio/video in a single NDI stream, use:
+```bash
+python3 publish.py --room myroom123 --room-ndi --ndi-combine --password false
+```
+
+**⚠️ WARNING**: Combiner mode has a known issue where it freezes after ~1500-2000 buffers (60-90 seconds). Use direct mode unless you specifically need combined streams.
 
 #### NDI Installation
 
@@ -686,6 +725,8 @@ midi demo video: https://youtu.be/Gry9UFtOTmQ
 ## Recent Changes
 
 ### January 2025
+- **NDI Direct Mode Now Default**: Changed `--room-ndi` to use direct mode by default, creating separate audio/video NDI streams to avoid combiner freezing issues. Added `--ndi-combine` flag for users who need the problematic combiner mode.
+- **Fixed NDI Freezing Issue**: Implemented workaround for ndisinkcombiner freezing after ~1500 buffers by defaulting to direct NDI mode with separate streams.
 - **HLS Recording Support**: Added HLS (HTTP Live Streaming) recording with automatic VP8 to H.264 transcoding. Creates segmented TS files and M3U8 playlists for easy HTTP streaming.
 - **Audio Recording Now Enabled by Default**: Audio recording is now enabled by default when recording streams. Use `--noaudio` to disable audio recording. The system saves video (.webm) and audio (.wav) to separate files for maximum compatibility.
 - **Added Combine Recordings Tool**: New `combine_recordings.py` utility that intelligently synchronizes and combines separate audio/video files. Features timestamp-based sync to handle WebRTC negotiation delays (typically 400-600ms).
