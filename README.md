@@ -253,6 +253,7 @@ options:
                         Comma-separated list of stream IDs to record from a room. Optional filter for --record-room.
   --room-ndi            Relay all room streams to NDI as separate sources. Requires --room parameter.
   --use-hls             Enable HLS (HTTP Live Streaming) recording with H.264 transcoding.
+  --webserver PORT      Start built-in web server on specified port for serving HLS files.
   --midi                Transparent MIDI bridge mode; no video or audio.
   --filesrc FILESRC     Provide a media file (local file location) as a source instead of physical device; it can be a
                         transparent webm or whatever. It will be transcoded, which offers the best results.
@@ -386,11 +387,49 @@ This will:
 - Create numbered segment files: `streamID_timestamp_00000.ts`, `streamID_timestamp_00001.ts`, etc.
 - Use 5-second segments by default
 
+#### HLS Playback via Built-in Web Server
+
+Raspberry Ninja includes a built-in web server for serving HLS files. Simply add `--webserver 8080` to your command:
+
+```bash
+python3 publish.py --record streamID --use-hls --webserver 8080
+```
+
+This enables:
+- **Live playback**: Watch the stream in your browser while still recording
+- **Delayed playback**: Start watching at any time during recording
+- **Scrubbing/seeking**: Jump to any point in the recorded stream
+- **Progressive download**: Only download segments as needed
+- **Browser compatibility**: Works in any modern browser with HTML5 video
+
+Access your HLS stream at:
+```
+http://localhost:8080/streamID_timestamp.m3u8
+```
+
+The built-in web server automatically serves all HLS files in the current directory, making it easy to access recordings without setting up a separate web server.
+
 #### HLS Implementation Notes
 
 By default, HLS recording uses `splitmuxsink` which creates only TS segment files without an M3U8 playlist. This is simpler and more reliable.
 
 If you need M3U8 playlist generation, you can configure the subprocess to use `hlssink2` instead by modifying the `use_splitmuxsink` configuration in the code.
+
+### Combining Audio and Video Recordings
+
+Since audio and video are recorded to separate files (`.webm` for video, `.wav` for audio), you can use the included `combine_recordings.py` script to merge them:
+
+```bash
+python3 combine_recordings.py
+```
+
+This script will:
+- Automatically find matching audio/video pairs based on timestamps
+- Handle WebRTC negotiation delays (typically 400-600ms offset between audio/video)
+- Create combined MP4 files with synchronized audio and video
+- Support batch processing of multiple recordings
+
+The script uses intelligent timestamp matching to ensure proper synchronization even when audio and video streams start at slightly different times due to WebRTC negotiation.
 
 ### Recording Features Summary
 
@@ -398,10 +437,11 @@ If you need M3U8 playlist generation, you can configure the subprocess to use `h
 - **Room Recording**: Automatically record all participants in a room
 - **Selective Recording**: Filter which room participants to record
 - **Audio Support**: Audio recorded to separate WAV files for maximum compatibility
-- **HLS Support**: Generate HLS-compatible streams with H.264 transcoding
+- **HLS Support**: Generate HLS-compatible streams with H.264 transcoding for web playback
 - **NDI Output**: Relay room streams as NDI sources for professional workflows
 - **No Transcoding**: VP8/VP9 streams are recorded directly without quality loss (except HLS)
 - **Automatic Naming**: Files are named with room, stream ID, and timestamp
+- **Audio/Video Combining**: Use `combine_recordings.py` to merge separate audio/video files
 
 ### RTMP output
 
@@ -473,7 +513,32 @@ Avoid apostrophes in your pipelines, as that can cause a syntax issue, and you s
 
 ### NDI support
 
-I've added support to send VDO.Ninja streams to an NDI playout sink.
+Raspberry Ninja provides comprehensive NDI support for converting VDO.Ninja streams to NDI sources, perfect for professional broadcast workflows.
+
+#### Single Stream to NDI
+
+Convert any VDO.Ninja stream to an NDI source:
+```bash
+python3 publish.py --ndiout streamID
+```
+
+This creates an NDI source that can be discovered by any NDI-compatible software (OBS, vMix, Wirecast, etc.).
+
+#### Room to NDI (VDO.Ninja to NDI)
+
+Convert all participants in a VDO.Ninja room to individual NDI sources:
+```bash
+python3 publish.py --room myroom123 --room-ndi --password false
+```
+
+This powerful feature:
+- Connects to a VDO.Ninja room as a viewer
+- Automatically creates an NDI source for each participant
+- Names each source as `{room} - {streamID}` for easy identification
+- Handles participants joining/leaving dynamically
+- Perfect for multi-camera productions and live switching
+
+#### NDI Installation
 
 For Windows WSL, there's an install script here: https://github.com/steveseguin/raspberry_ninja/blob/main/wsl/install_ndi.sh, however please make sure Rust (cargo) is installed first.
 
