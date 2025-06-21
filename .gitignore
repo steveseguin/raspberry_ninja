@@ -133,3 +133,46 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test and temporary files
+*.tmp
+*.bak
+*.orig
+test_*.py
+*_test.py
+*_old.py
+*_backup.py
+
+# Media files (recordings)
+*.webm
+*.mp4
+*.wav
+*.ts
+*.m3u8
+
+# NDI specific
+*_ndi_*.py
+ndi_wrapper.sh
+FIX_*.md
+
+# Local configuration
+.env.local
+.env.*.local
+config.local.json
+
+# Log files
+*.log
+logs/
+
+# OS specific
+Thumbs.db
+.Trash-*
+.nfs*
