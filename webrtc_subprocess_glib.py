@@ -37,7 +37,7 @@ class GLibWebRTCHandler:
         self.room_ndi = config.get('room_ndi', False)
         self.ndi_name = config.get('ndi_name')
         self.use_hls = config.get('use_hls', False)
-        self.use_splitmuxsink = config.get('use_splitmuxsink', True)  # Default to splitmuxsink
+        self.use_splitmuxsink = config.get('use_splitmuxsink', True)  # Use splitmuxsink for now
         
         # Debug log the config
         self.log(f"DEBUG: Config received: record_audio={config.get('record_audio', 'NOT SET')}, room_ndi={config.get('room_ndi', False)}, use_hls={config.get('use_hls', False)}")
@@ -153,9 +153,107 @@ class GLibWebRTCHandler:
         else:
             self.log(f"Unexpected SDP type: {sdp_type}", "warning")
             
+    def prefer_codec(self, sdp: str, codec: str = 'h264') -> str:
+        """Reorder codecs in SDP to prefer a specific codec"""
+        if self.use_hls and codec == 'h264':
+            self.log("Reordering SDP to prefer H264 codec")
+        
+        lines = sdp.split('\n')
+        video_line_index = -1
+        video_codecs = []
+        codec_map = {}
+        
+        # First pass: find codec numbers
+        for i, line in enumerate(lines):
+            if line.startswith('m=video'):
+                video_line_index = i
+                # Extract codec numbers from m=video line
+                parts = line.split('SAVPF')
+                if len(parts) > 1:
+                    video_codecs = parts[1].strip().split(' ')
+            elif line.startswith('a=rtpmap:'):
+                # Extract codec mappings
+                codec_info = line[9:].split(' ')  # Remove 'a=rtpmap:'
+                if len(codec_info) >= 2:
+                    codec_num = codec_info[0]
+                    codec_details = codec_info[1].upper()
+                    
+                    if 'VP8/90000' in codec_details:
+                        codec_map['vp8'] = codec_num
+                    elif 'VP9/90000' in codec_details:
+                        codec_map['vp9'] = codec_num
+                    elif 'H264/90000' in codec_details:
+                        codec_map['h264'] = codec_num
+                    elif 'AV1/90000' in codec_details or 'AV1X/90000' in codec_details:
+                        codec_map['av1'] = codec_num
+        
+        # If we found the video line and the preferred codec
+        if video_line_index >= 0 and codec.lower() in codec_map and video_codecs:
+            preferred_codec_num = codec_map[codec.lower()]
+            
+            # Only reorder if the preferred codec exists and isn't already first
+            if preferred_codec_num in video_codecs and video_codecs[0] != preferred_codec_num:
+                self.log(f"   Moving {codec.upper()} (payload {preferred_codec_num}) to front of codec list")
+                
+                # Create new codec order with preferred codec first
+                new_order = [preferred_codec_num]
+                for c in video_codecs:
+                    if c != preferred_codec_num:
+                        new_order.append(c)
+                
+                # Reconstruct the m=video line
+                parts = lines[video_line_index].split('SAVPF')
+                lines[video_line_index] = parts[0] + 'SAVPF ' + ' '.join(new_order)
+                
+                self.log(f"   Original codec order: {' '.join(video_codecs)}")
+                self.log(f"   New codec order: {' '.join(new_order)}")
+        
+        return '\n'.join(lines)
+    
+    def create_hls_playlist(self):
+        """Create or update HLS m3u8 playlist file"""
+        try:
+            # Check how many segments exist
+            import glob
+            import os
+            pattern = f"{self.base_filename}_*.ts"
+            segments = sorted(glob.glob(pattern))
+            
+            playlist_content = "#EXTM3U\n"
+            playlist_content += "#EXT-X-VERSION:3\n"
+            playlist_content += "#EXT-X-TARGETDURATION:6\n"  # Slightly higher than segment duration
+            playlist_content += "#EXT-X-MEDIA-SEQUENCE:0\n\n"
+            
+            # Add all existing segments
+            for segment in segments:
+                segment_name = os.path.basename(segment)
+                # Assume 5 second duration for now
+                playlist_content += f"#EXTINF:5.0,\n{segment_name}\n"
+            
+            # Write playlist
+            with open(self.hls_playlist_path, 'w') as f:
+                f.write(playlist_content)
+                
+        except Exception as e:
+            self.log(f"Error creating HLS playlist: {e}", "error")
+    
+    def update_hls_playlist(self):
+        """Update HLS playlist with new segments"""
+        if hasattr(self, 'hls_playlist_path'):
+            self.create_hls_playlist()
+    
+    def update_hls_playlist_timer(self):
+        """Timer callback to update HLS playlist"""
+        self.update_hls_playlist()
+        return True  # Continue timer
+    
     def handle_offer(self, sdp_text: str):
         """Handle SDP offer"""
         try:
+            # If HLS mode, prefer H264 codec in SDP
+            if self.use_hls:
+                sdp_text = self.prefer_codec(sdp_text, 'h264')
+            
             # Parse SDP
             res, sdp_msg = GstSdp.SDPMessage.new_from_text(sdp_text)
             if res != GstSdp.SDPResult.OK:
@@ -313,6 +411,31 @@ class GLibWebRTCHandler:
         self.webrtc = Gst.ElementFactory.make('webrtcbin', 'webrtc')
         self.webrtc.set_property('bundle-policy', 'max-bundle')
         
+        # If HLS mode is enabled, request H264 codec via transceiver
+        if self.use_hls:
+            self.log("HLS mode: Adding transceivers for H264 video preference")
+            direction = GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY
+            
+            # Add video transceiver with H264 preference
+            h264_caps = Gst.caps_from_string("application/x-rtp,media=video,encoding-name=H264,payload=102,clock-rate=90000,packetization-mode=(string)1")
+            video_tcvr = self.webrtc.emit('add-transceiver', direction, h264_caps)
+            if video_tcvr:
+                # Set codec preferences if GStreamer version supports it
+                try:
+                    if Gst.version().minor > 18:
+                        video_tcvr.set_property("codec-preferences", h264_caps)
+                        self.log("   ✅ Set H264 codec preferences on video transceiver")
+                except Exception as e:
+                    self.log(f"   Could not set codec preferences: {e}")
+            else:
+                self.log("   Warning: Failed to add H264 transceiver")
+                
+            # Add audio transceiver as well
+            audio_caps = Gst.caps_from_string("application/x-rtp,media=audio,encoding-name=OPUS,payload=111,clock-rate=48000")
+            audio_tcvr = self.webrtc.emit('add-transceiver', direction, audio_caps)
+            if audio_tcvr:
+                self.log("   ✅ Added audio transceiver")
+        
         # Important: Set the transceiver direction properly for receiving
         self.webrtc.connect('on-new-transceiver', self.on_new_transceiver)
         
@@ -410,6 +533,13 @@ class GLibWebRTCHandler:
                 "allowchunked": False,
                 "allowresources": False
             }
+            
+            # If HLS mode is enabled, request H264 codec in the media request
+            if self.use_hls:
+                # VDO.Ninja codec parameters - both for compatibility
+                request["h264"] = True  # Primary H264 flag
+                request["codec"] = "h264"  # Alternative codec specification
+                self.log("   Requesting H264 codec in media request for HLS")
             
             request_json = json.dumps(request)
             data_channel.send_string(request_json)
@@ -557,6 +687,66 @@ class GLibWebRTCHandler:
             self.log("Still not in stable state, will retry")
             return True  # Continue the timer
     
+    def setup_hls_muxer(self):
+        """Set up shared mpegtsmux and HLS sink for audio/video"""
+        if hasattr(self, 'hls_mux'):
+            # Already set up
+            return
+            
+        self.log("Setting up HLS muxer for audio/video")
+        
+        # Initialize use_hlssink2 based on use_splitmuxsink setting
+        self.use_hlssink2 = not self.use_splitmuxsink
+        self.log(f"   use_splitmuxsink={self.use_splitmuxsink}, use_hlssink2={self.use_hlssink2}")
+            
+        # Create HLS sink
+        import datetime
+        timestamp = int(datetime.datetime.now().timestamp())
+        base_filename = f"{self.room}_{self.stream_id}_{timestamp}"
+        
+        # For HLS, we need different approaches for playlist vs no-playlist mode
+        if self.use_splitmuxsink:
+            # Simple segmented recording without playlist
+            self.hlssink = Gst.ElementFactory.make('splitmuxsink', None)
+            if self.hlssink:
+                self.hlssink.set_property('location', f"{base_filename}_%05d.ts")
+                self.hlssink.set_property('max-size-time', 5 * Gst.SECOND)  # 5 second segments
+                self.hlssink.set_property('send-keyframe-requests', True)
+                # Tell splitmuxsink to use mpegtsmux internally
+                self.hlssink.set_property('muxer', Gst.ElementFactory.make('mpegtsmux', None))
+                
+                self.log(f"   Output: {base_filename}_*.ts (5 second segments)")
+                self.base_filename = base_filename
+        else:
+            # HLS with m3u8 playlist - use hlssink2 which properly handles segmentation
+            self.hlssink = Gst.ElementFactory.make('hlssink2', None)
+            if self.hlssink:
+                self.hlssink.set_property('location', f"{base_filename}_%05d.ts")
+                self.hlssink.set_property('playlist-location', f"{base_filename}.m3u8")
+                self.hlssink.set_property('target-duration', 5)  # 5 second segments
+                self.hlssink.set_property('max-files', 0)  # Keep all segments
+                self.hlssink.set_property('playlist-length', 0)  # Keep all in playlist
+                # Enable fragmenting to start writing immediately
+                self.hlssink.set_property('send-keyframe-requests', True)
+                # Set async handling for dynamic pad connections
+                self.hlssink.set_property('async-handling', True)
+                
+                self.log(f"   Playlist: {base_filename}.m3u8")
+                self.log(f"   Segments: {base_filename}_*.ts (5 second chunks)")
+                self.base_filename = base_filename
+                
+        if not self.hlssink:
+            self.log("Failed to create HLS sink", "error")
+            return
+            
+        # Add sink to pipeline
+        self.pipe.add(self.hlssink)
+        
+        # Sync state
+        self.hlssink.sync_state_with_parent()
+        
+        self.log("   ✅ HLS muxer ready for audio/video streams")
+        
     def setup_ndi_combiner(self):
         """Set up NDI sink combiner for audio/video multiplexing"""
         if hasattr(self, 'ndi_combiner') and self.ndi_combiner:
@@ -714,6 +904,14 @@ class GLibWebRTCHandler:
                 media = structure.get_string('media')
                 self.log(f"RTP stream - encoding: {encoding_name}, media: {media}")
                 
+                # Add early probe to verify data is coming from WebRTC
+                def webrtc_probe_cb(pad, info):
+                    if not hasattr(self, f'_webrtc_{media}_probe_logged'):
+                        setattr(self, f'_webrtc_{media}_probe_logged', True)
+                        self.log(f"   ✅ WebRTC {media} data confirmed at source!")
+                    return Gst.PadProbeReturn.OK
+                pad.add_probe(Gst.PadProbeType.BUFFER, webrtc_probe_cb)
+                
                 if media == 'video' or (encoding_name and encoding_name.upper() in ['H264', 'VP8', 'VP9', 'AV1']):
                     self.handle_video_pad(pad)
                 elif media == 'audio' or (encoding_name and encoding_name.upper() in ['OPUS', 'PCMU', 'PCMA']):
@@ -747,7 +945,9 @@ class GLibWebRTCHandler:
             self.setup_ndi_combiner()
         elif self.use_hls:
             self.log(f"📹 HLS RECORDING START: Video stream from {self.stream_id}")
-            self.log(f"   Mode: {'splitmuxsink' if self.use_splitmuxsink else 'hlssink2'}")
+            self.log(f"   Mode: {'splitmuxsink' if self.use_splitmuxsink else 'hlssink'}")
+            # For HLS, we'll set up a shared muxer for audio/video
+            self.setup_hls_muxer()
         else:
             self.log(f"📹 RECORDING START: Video stream from {self.stream_id}")
         self.log(f"   Codec: {encoding_name}, Resolution: {width}x{height}")
@@ -762,7 +962,8 @@ class GLibWebRTCHandler:
                 # For NDI, we need to decode VP8
                 decoder = Gst.ElementFactory.make('vp8dec', None)
             elif self.use_hls:
-                # For HLS, decode and re-encode to H264
+                # For HLS, decode VP8 and re-encode to H264
+                self.log("   ⚠️  VP8 codec requires transcoding to H264 for HLS")
                 decoder = Gst.ElementFactory.make('vp8dec', None)
                 videoconvert_enc = Gst.ElementFactory.make('videoconvert', None)
                 encoder = Gst.ElementFactory.make('x264enc', None)
@@ -786,6 +987,8 @@ class GLibWebRTCHandler:
             h264parse = Gst.ElementFactory.make('h264parse', None)
             if h264parse and self.use_hls:
                 h264parse.set_property('config-interval', -1)  # Send config with every keyframe
+                # For HLS, we need to ensure we get access units
+                h264parse.set_property('update-timecode', False)
             if self.room_ndi:
                 # For NDI, we need to decode H264
                 decoder = Gst.ElementFactory.make('avdec_h264', None)
@@ -793,6 +996,54 @@ class GLibWebRTCHandler:
                 # For H264, we can use MP4
                 mux = Gst.ElementFactory.make('mp4mux', None)
                 extension = 'mp4'
+        elif encoding_name == 'VP9':
+            depay = Gst.ElementFactory.make('rtpvp9depay', None)
+            if self.room_ndi:
+                # For NDI, we need to decode VP9
+                decoder = Gst.ElementFactory.make('vp9dec', None)
+            elif self.use_hls:
+                # For HLS, decode VP9 and re-encode to H264
+                self.log("   ⚠️  VP9 codec requires transcoding to H264 for HLS")
+                decoder = Gst.ElementFactory.make('vp9dec', None)
+                videoconvert_enc = Gst.ElementFactory.make('videoconvert', None)
+                encoder = Gst.ElementFactory.make('x264enc', None)
+                if encoder:
+                    encoder.set_property('tune', 'zerolatency')
+                    encoder.set_property('speed-preset', 'superfast')
+                    encoder.set_property('key-int-max', 60)  # Keyframe every 2 seconds at 30fps
+                h264parse = Gst.ElementFactory.make('h264parse', None)
+                if h264parse:
+                    h264parse.set_property('config-interval', -1)  # Send config with every keyframe
+            else:
+                # Use WebM for VP9
+                mux = Gst.ElementFactory.make('webmmux', None)
+                mux.set_property('streamable', True)
+                mux.set_property('min-index-interval', 1000000000)  # 1 second
+                extension = 'webm'
+        elif encoding_name == 'AV1':
+            depay = Gst.ElementFactory.make('rtpav1depay', None)
+            if self.room_ndi:
+                # For NDI, we need to decode AV1
+                decoder = Gst.ElementFactory.make('av1dec', None)
+            elif self.use_hls:
+                # For HLS, decode AV1 and re-encode to H264
+                self.log("   ⚠️  AV1 codec requires transcoding to H264 for HLS")
+                decoder = Gst.ElementFactory.make('av1dec', None)
+                videoconvert_enc = Gst.ElementFactory.make('videoconvert', None)
+                encoder = Gst.ElementFactory.make('x264enc', None)
+                if encoder:
+                    encoder.set_property('tune', 'zerolatency')
+                    encoder.set_property('speed-preset', 'superfast')
+                    encoder.set_property('key-int-max', 60)  # Keyframe every 2 seconds at 30fps
+                h264parse = Gst.ElementFactory.make('h264parse', None)
+                if h264parse:
+                    h264parse.set_property('config-interval', -1)  # Send config with every keyframe
+            else:
+                # Use WebM for AV1
+                mux = Gst.ElementFactory.make('webmmux', None)
+                mux.set_property('streamable', True)
+                mux.set_property('min-index-interval', 1000000000)  # 1 second
+                extension = 'webm'
         else:
             self.log(f"Unsupported video codec: {encoding_name}", "error")
             return
@@ -806,48 +1057,13 @@ class GLibWebRTCHandler:
                 return
                 
         elif self.use_hls:
-            # HLS recording mode
-            import datetime
-            timestamp = int(datetime.datetime.now().timestamp())
-            base_filename = f"{self.room}_{self.stream_id}_{timestamp}"
-            
-            if self.use_splitmuxsink:
-                # Use splitmuxsink for HLS-like segmented recording
-                hlssink = Gst.ElementFactory.make('splitmuxsink', None)
-                if hlssink:
-                    hlssink.set_property('location', f"{base_filename}_%05d.ts")
-                    hlssink.set_property('max-size-time', 5 * Gst.SECOND)  # 5 second segments
-                    hlssink.set_property('send-keyframe-requests', True)
-                    hlssink.set_property('muxer-factory', 'mpegtsmux')
-                    
-                    self.log(f"   Output: {base_filename}_*.ts (5 second segments)")
-                    self.base_filename = base_filename
-            else:
-                # Use hlssink2 for proper HLS with playlist
-                hlssink = Gst.ElementFactory.make('hlssink2', None)
-                if hlssink:
-                    hlssink.set_property('location', f"{base_filename}_%05d.ts")
-                    hlssink.set_property('playlist-location', f"{base_filename}.m3u8")
-                    hlssink.set_property('target-duration', 2)  # 2 second segments
-                    hlssink.set_property('max-files', 0)  # Keep all segments on disk
-                    hlssink.set_property('playlist-length', 0)  # Keep all segments in playlist
-                    
-                    self.log(f"   Playlist: {base_filename}.m3u8")
-                    self.log(f"   Segments: {base_filename}_*.ts")
-                    self.base_filename = base_filename
-                    
-            if not hlssink:
-                self.log("Failed to create HLS sink", "error")
-                return
-                
-            # Store for reference
-            self.hlssink = hlssink
+            # HLS recording mode - muxer already set up in setup_hls_muxer()
             
             # Check elements based on codec
-            if encoding_name == 'VP8':
-                # VP8 needs full decode/encode pipeline
+            if encoding_name in ['VP8', 'VP9', 'AV1']:
+                # VP8/VP9/AV1 need full decode/encode pipeline
                 if not all([queue, depay, decoder, videoconvert_enc, encoder, h264parse]):
-                    self.log("Failed to create HLS elements for VP8", "error")
+                    self.log(f"Failed to create HLS elements for {encoding_name}", "error")
                     return
             else:  # H264
                 # H264 can go directly to HLS
@@ -915,20 +1131,27 @@ class GLibWebRTCHandler:
                     return
         elif self.use_hls:
             # HLS recording mode
-            if encoding_name == 'VP8':
-                # VP8: queue -> depay -> vp8dec -> videoconvert -> x264enc -> h264parse -> hlssink
-                elements = [queue, depay, decoder, videoconvert_enc, encoder, h264parse, self.hlssink]
+            # Create a queue specifically for video before muxer
+            video_queue = Gst.ElementFactory.make('queue', 'video_queue_hls')
+            if not video_queue:
+                self.log("Failed to create video queue for HLS", "error")
+                return
+                
+            if encoding_name in ['VP8', 'VP9', 'AV1']:
+                # VP8/VP9/AV1: queue -> depay -> decoder -> videoconvert -> x264enc -> h264parse -> video_queue -> mux
+                elements = [queue, depay, decoder, videoconvert_enc, encoder, h264parse, video_queue]
             else:  # H264
-                # H264: queue -> depay -> h264parse -> hlssink
-                elements = [queue, depay, h264parse, self.hlssink]
+                # H264: queue -> depay -> h264parse -> video_queue -> mux
+                self.log("   ✅ H264 codec - no transcoding needed for HLS")
+                elements = [queue, depay, h264parse, video_queue]
                 
             # Add all elements to pipeline
             for element in elements:
                 self.pipe.add(element)
                 
             # Link HLS pipeline
-            if encoding_name == 'VP8':
-                # Link VP8 decode/encode chain
+            if encoding_name in ['VP8', 'VP9', 'AV1']:
+                # Link decode/encode chain for transcoding
                 if not queue.link(depay):
                     self.log("Failed to link queue to depay", "error")
                     return
@@ -944,24 +1167,107 @@ class GLibWebRTCHandler:
                 if not encoder.link(h264parse):
                     self.log("Failed to link encoder to h264parse", "error")
                     return
-                if not h264parse.link(self.hlssink):
-                    self.log("Failed to link h264parse to HLS sink", "error")
+                if not h264parse.link(video_queue):
+                    self.log("Failed to link h264parse to video queue", "error")
                     return
             else:  # H264
-                # Link H264 chain
+                # Link H264 passthrough chain
                 if not queue.link(depay):
                     self.log("Failed to link queue to depay", "error")
                     return
                 if not depay.link(h264parse):
                     self.log("Failed to link depay to h264parse", "error")
                     return
-                if not h264parse.link(self.hlssink):
-                    self.log("Failed to link h264parse to HLS sink", "error")
+                    
+                # Add probe after depay to monitor incoming video
+                depay_pad = depay.get_static_pad('src')
+                if depay_pad:
+                    def depay_probe_cb(pad, info):
+                        if not hasattr(self, '_depay_probe_logged'):
+                            self._depay_probe_logged = True
+                            self.log("   ✅ Video data confirmed after depay!")
+                        return Gst.PadProbeReturn.OK
+                    depay_pad.add_probe(Gst.PadProbeType.BUFFER, depay_probe_cb)
+                    
+                if not h264parse.link(video_queue):
+                    self.log("Failed to link h264parse to video queue", "error")
                     return
+                    
+                # Add probe after h264parse to check flow
+                h264_pad = h264parse.get_static_pad('src')
+                if h264_pad:
+                    def h264_probe_cb(pad, info):
+                        if not hasattr(self, '_h264_probe_logged'):
+                            self._h264_probe_logged = True
+                            self.log("   ✅ Video data confirmed after h264parse!")
+                        return Gst.PadProbeReturn.OK
+                    h264_pad.add_probe(Gst.PadProbeType.BUFFER, h264_probe_cb)
+                    
+                # Add probe on video queue output
+                queue_src_pad = video_queue.get_static_pad('src')
+                if queue_src_pad:
+                    def queue_probe_cb(pad, info):
+                        if not hasattr(self, '_queue_probe_logged'):
+                            self._queue_probe_logged = True
+                            self.log("   ✅ Video data confirmed at video_queue output!")
+                        return Gst.PadProbeReturn.OK
+                    queue_src_pad.add_probe(Gst.PadProbeType.BUFFER, queue_probe_cb)
+                    
+            # Link video queue to appropriate sink
+            if hasattr(self, 'use_hlssink2') and self.use_hlssink2:
+                # For hlssink2, request a video pad and connect
+                video_pad = self.hlssink.request_pad_simple('video')
+                if video_pad:
+                    src_pad = video_queue.get_static_pad('src')
+                    if src_pad.link(video_pad) == Gst.PadLinkReturn.OK:
+                        self.log("   ✅ Video connected to HLS sink")
+                        # Check hlssink state
+                        state = self.hlssink.get_state(0)
+                        self.log(f"   HLS sink state after video connect: {state[1]}")
+                    else:
+                        self.log("Failed to link video to HLS sink", "error")
+                        return
+                else:
+                    self.log("Failed to get video pad from HLS sink", "error")
+                    return
+            elif hasattr(self, 'hlssink') and self.hlssink:
+                # For splitmuxsink, video is just 'video', not 'video_%u'
+                video_pad = self.hlssink.request_pad_simple('video')
+                    
+                if video_pad:
+                    src_pad = video_queue.get_static_pad('src')
+                    if src_pad.link(video_pad) == Gst.PadLinkReturn.OK:
+                        self.log("   ✅ Video connected to sink")
+                    else:
+                        self.log("Failed to link video to sink", "error")
+                        return
+                else:
+                    self.log("Failed to get video pad from sink", "error")
+                    return
+            else:
+                self.log("HLS sink not available", "error")
+                return
                     
             # Sync states for all elements
             for element in elements:
                 element.sync_state_with_parent()
+                
+            # Also ensure HLS sink is in correct state
+            if hasattr(self, 'hlssink') and self.hlssink:
+                # First try to sync with parent
+                ret = self.hlssink.sync_state_with_parent()
+                self.log(f"   HLS sink sync result: {ret}")
+                
+                # Check the actual state
+                state_ret, state, pending = self.hlssink.get_state(0)
+                if state != Gst.State.PLAYING:
+                    self.log(f"   HLS sink not in PLAYING state ({state}), forcing to PLAYING")
+                    ret = self.hlssink.set_state(Gst.State.PLAYING)
+                    self.log(f"   HLS sink set_state result: {ret}")
+                    # Wait for state change to complete
+                    timeout = 5 * Gst.SECOND  # 5 second timeout
+                    state_ret, state, pending = self.hlssink.get_state(timeout)
+                    self.log(f"   HLS sink final state: {state} (result: {state_ret})")
                 
             # Link incoming pad to queue
             sink_pad = queue.get_static_pad('sink')
@@ -977,6 +1283,27 @@ class GLibWebRTCHandler:
             # For HLS, we don't have a single filename
             if hasattr(self, 'base_filename'):
                 self.video_filename = self.base_filename
+                
+            # Schedule a check to see if data is flowing after a delay
+            def check_hls_status():
+                if hasattr(self, 'hlssink') and self.hlssink:
+                    state_ret, state, pending = self.hlssink.get_state(0)
+                    self.log(f"   HLS sink status check - State: {state}, Video buffers: {getattr(self, '_probe_counter', 0)}")
+                    # Check if files are being created
+                    import os
+                    import glob
+                    pattern = f"{self.base_filename}_*.ts" if hasattr(self, 'base_filename') else "*.ts"
+                    files = glob.glob(pattern)
+                    if files:
+                        self.log(f"   ✅ HLS files created: {len(files)} segments")
+                        for f in files[:3]:  # Show first 3
+                            size = os.path.getsize(f)
+                            self.log(f"      {os.path.basename(f)} ({size:,} bytes)")
+                    else:
+                        self.log("   ⚠️  No HLS files created yet")
+                return False  # Don't repeat
+            
+            GLib.timeout_add(3000, check_hls_status)  # Check after 3 seconds
                 
         else:
             # Recording mode
@@ -1056,8 +1383,18 @@ class GLibWebRTCHandler:
         if not hasattr(self, '_probe_counter'):
             self._probe_counter = 0
             self._last_probe_log = 0
+            self._first_buffer_logged = False
             
         self._probe_counter += 1
+        
+        # Log first buffer
+        if not self._first_buffer_logged:
+            self._first_buffer_logged = True
+            self.log(f"   📊 First video buffer received!")
+            buffer = info.get_buffer()
+            if buffer:
+                self.log(f"      Buffer size: {buffer.get_size()} bytes")
+                self.log(f"      Buffer PTS: {buffer.pts}")
         
         # Log every 100 buffers
         if self._probe_counter - self._last_probe_log >= 100:
@@ -1083,7 +1420,7 @@ class GLibWebRTCHandler:
             self.setup_ndi_audio_pad(pad, encoding_name)
             return
         
-        if not self.record_audio:
+        if not self.record_audio and not self.use_hls:
             self.log(f"   ⏸️  Audio recording disabled (use --audio flag to enable)")
             # Just fakesink audio
             fakesink = Gst.ElementFactory.make('fakesink', None)
@@ -1094,7 +1431,10 @@ class GLibWebRTCHandler:
             
             
         # Record audio
-        self.log(f"🔴 RECORDING START: Audio stream from {self.stream_id}")
+        if self.use_hls:
+            self.log(f"🔴 HLS AUDIO START: Audio stream from {self.stream_id}")
+        else:
+            self.log(f"🔴 RECORDING START: Audio stream from {self.stream_id}")
         
         # Create queue for buffering
         queue = Gst.ElementFactory.make('queue', None)
@@ -1103,11 +1443,17 @@ class GLibWebRTCHandler:
         queue.set_property('max-size-buffers', 0)
         queue.set_property('max-size-bytes', 0)
         
-        # For now, just record audio alongside video in separate files
-        self.log("   ℹ️  Audio recording is currently saved separately from video")
+        if self.use_hls:
+            # For HLS, we need to transcode audio to AAC and mux with video
+            self.log("   ℹ️  Audio will be muxed with video in HLS stream")
+            # Ensure HLS muxer is set up
+            self.setup_hls_muxer()
+        else:
+            # For non-HLS, just record audio alongside video in separate files
+            self.log("   ℹ️  Audio recording is currently saved separately from video")
         
         # Check if already recording audio
-        if hasattr(self, 'audio_filename') and self.audio_filename:
+        if hasattr(self, 'audio_filename') and self.audio_filename and not self.use_hls:
             # Already recording audio, skip
             self.log("   ⚠️  Already recording audio, skipping duplicate pad")
             fakesink = Gst.ElementFactory.make('fakesink', None)
@@ -1119,11 +1465,22 @@ class GLibWebRTCHandler:
         # Create depayloader based on codec
         if encoding_name == 'OPUS':
             depay = Gst.ElementFactory.make('rtpopusdepay', None)
-            # For audio, decode to raw and save as WAV for maximum compatibility
-            decoder = Gst.ElementFactory.make('opusdec', None)
-            audioconvert = Gst.ElementFactory.make('audioconvert', None)
-            wavenc = Gst.ElementFactory.make('wavenc', None)
-            extension = 'wav'
+            
+            if self.use_hls:
+                # For HLS, we need to transcode Opus to AAC
+                decoder = Gst.ElementFactory.make('opusdec', None)
+                audioconvert = Gst.ElementFactory.make('audioconvert', None)
+                audioresample = Gst.ElementFactory.make('audioresample', None)
+                aacenc = Gst.ElementFactory.make('avenc_aac', None)
+                aacparse = Gst.ElementFactory.make('aacparse', None)
+                # Create a queue before muxer
+                audio_queue = Gst.ElementFactory.make('queue', 'audio_queue_hls')
+            else:
+                # For non-HLS, decode to raw and save as WAV for maximum compatibility
+                decoder = Gst.ElementFactory.make('opusdec', None)
+                audioconvert = Gst.ElementFactory.make('audioconvert', None)
+                wavenc = Gst.ElementFactory.make('wavenc', None)
+                extension = 'wav'
         else:
             self.log(f"   ⚠️  Unsupported audio codec: {encoding_name}, using fakesink")
             fakesink = Gst.ElementFactory.make('fakesink', None)
@@ -1132,67 +1489,174 @@ class GLibWebRTCHandler:
             pad.link(fakesink.get_static_pad('sink'))
             return
         
-        # Create filesink
-        filesink = Gst.ElementFactory.make('filesink', None)
-        
-        if not all([queue, depay, decoder, audioconvert, wavenc, filesink]):
-            self.log("Failed to create audio elements", "error")
-            return
+        if self.use_hls:
+            # HLS mode - check elements
+            if not all([queue, depay, decoder, audioconvert, audioresample, aacenc, aacparse, audio_queue]):
+                self.log("Failed to create HLS audio elements", "error")
+                return
+                
+            # Add elements to pipeline
+            elements = [queue, depay, decoder, audioconvert, audioresample, aacenc, aacparse, audio_queue]
+            for element in elements:
+                self.pipe.add(element)
+                
+            # Link audio pipeline for HLS
+            if not queue.link(depay):
+                self.log("Failed to link queue to depay", "error")
+                return
+            if not depay.link(decoder):
+                self.log("Failed to link depay to decoder", "error")
+                return
+            if not decoder.link(audioconvert):
+                self.log("Failed to link decoder to audioconvert", "error")
+                return
+            if not audioconvert.link(audioresample):
+                self.log("Failed to link audioconvert to audioresample", "error")
+                return
+            if not audioresample.link(aacenc):
+                self.log("Failed to link audioresample to aacenc", "error")
+                return
+            if not aacenc.link(aacparse):
+                self.log("Failed to link aacenc to aacparse", "error")
+                return
+            if not aacparse.link(audio_queue):
+                self.log("Failed to link aacparse to audio queue", "error")
+                return
+                
+            # Link audio queue to appropriate sink
+            if hasattr(self, 'use_hlssink2') and self.use_hlssink2:
+                # For hlssink2, request an audio pad and connect
+                audio_pad = self.hlssink.request_pad_simple('audio')
+                if audio_pad:
+                    src_pad = audio_queue.get_static_pad('src')
+                    if src_pad.link(audio_pad) == Gst.PadLinkReturn.OK:
+                        self.log("   ✅ Audio connected to HLS sink")
+                    else:
+                        self.log("Failed to link audio to HLS sink", "error")
+                        return
+                else:
+                    self.log("Failed to get audio pad from HLS sink", "error")
+                    return
+            elif hasattr(self, 'hlssink') and self.hlssink:
+                # For splitmuxsink, we need to check which sink type we have
+                if self.use_splitmuxsink:
+                    # splitmuxsink uses template names like audio_%u
+                    audio_pad_template = self.hlssink.get_pad_template('audio_%u')
+                    if audio_pad_template:
+                        audio_pad = self.hlssink.request_pad(audio_pad_template, None, None)
+                    else:
+                        # Fallback to simple request
+                        audio_pad = self.hlssink.request_pad_simple('audio')
+                else:
+                    audio_pad = self.hlssink.request_pad_simple('audio')
+                    
+                if audio_pad:
+                    src_pad = audio_queue.get_static_pad('src')
+                    if src_pad.link(audio_pad) == Gst.PadLinkReturn.OK:
+                        self.log("   ✅ Audio connected to sink")
+                    else:
+                        self.log("Failed to link audio to sink", "error")
+                        return
+                else:
+                    self.log("Failed to get audio pad from sink", "error")
+                    return
+            else:
+                self.log("HLS sink not available for audio", "error")
+                return
+                
+            # Sync states
+            for element in elements:
+                element.sync_state_with_parent()
+                
+            # Also ensure HLS sink is in correct state for audio
+            if hasattr(self, 'hlssink') and self.hlssink:
+                # Don't sync again if already done for video
+                pass
+                
+            # Link incoming pad to queue
+            sink_pad = queue.get_static_pad('sink')
+            if pad.link(sink_pad) != Gst.PadLinkReturn.OK:
+                self.log("Failed to link audio pad to queue", "error")
+                return
+                
+            # Add probe to monitor audio data flow
+            self._audio_probe_counter = 0
+            def audio_probe_cb(pad, info):
+                self._audio_probe_counter += 1
+                if self._audio_probe_counter % 100 == 0:
+                    self.log(f"   📊 HLS audio flowing: {self._audio_probe_counter} buffers")
+                return Gst.PadProbeReturn.OK
+                
+            pad.add_probe(Gst.PadProbeType.BUFFER, audio_probe_cb)
             
-        import datetime
-        timestamp = int(datetime.datetime.now().timestamp())
-        filename = f"{self.room}_{self.stream_id}_{timestamp}_audio.{extension}"
-        filesink.set_property('location', filename)
-        self.audio_filename = filename
-        self.log(f"   Output file: {filename}")
-        
-        # Add elements to pipeline
-        elements = [queue, depay, decoder, audioconvert, wavenc, filesink]
-        for element in elements:
-            self.pipe.add(element)
+            self.log("   ✅ HLS audio pipeline connected and running")
+            self.recording_audio = True
+            # For HLS, audio filename is same as video base filename
+            if hasattr(self, 'base_filename'):
+                self.audio_filename = self.base_filename
             
-        # Link elements
-        if not queue.link(depay):
-            self.log("Failed to link queue to depay", "error")
-            return
-        if not depay.link(decoder):
-            self.log("Failed to link depay to decoder", "error")
-            return
-        if not decoder.link(audioconvert):
-            self.log("Failed to link decoder to audioconvert", "error")
-            return
-        if not audioconvert.link(wavenc):
-            self.log("Failed to link audioconvert to wavenc", "error")
-            return
-        if not wavenc.link(filesink):
-            self.log("Failed to link wavenc to filesink", "error")
-            return
+        else:
+            # Non-HLS mode - original recording code
+            filesink = Gst.ElementFactory.make('filesink', None)
             
-        # Sync states
-        for element in elements:
-            element.sync_state_with_parent()
+            if not all([queue, depay, decoder, audioconvert, wavenc, filesink]):
+                self.log("Failed to create audio elements", "error")
+                return
+                
+            import datetime
+            timestamp = int(datetime.datetime.now().timestamp())
+            filename = f"{self.room}_{self.stream_id}_{timestamp}_audio.{extension}"
+            filesink.set_property('location', filename)
+            self.audio_filename = filename
+            self.log(f"   Output file: {filename}")
             
-        # Link pad to queue
-        sink_pad = queue.get_static_pad('sink')
-        if pad.link(sink_pad) != Gst.PadLinkReturn.OK:
-            self.log("Failed to link audio pad to queue", "error")
-            return
+            # Add elements to pipeline
+            elements = [queue, depay, decoder, audioconvert, wavenc, filesink]
+            for element in elements:
+                self.pipe.add(element)
+                
+            # Link elements
+            if not queue.link(depay):
+                self.log("Failed to link queue to depay", "error")
+                return
+            if not depay.link(decoder):
+                self.log("Failed to link depay to decoder", "error")
+                return
+            if not decoder.link(audioconvert):
+                self.log("Failed to link decoder to audioconvert", "error")
+                return
+            if not audioconvert.link(wavenc):
+                self.log("Failed to link audioconvert to wavenc", "error")
+                return
+            if not wavenc.link(filesink):
+                self.log("Failed to link wavenc to filesink", "error")
+                return
+                
+            # Sync states
+            for element in elements:
+                element.sync_state_with_parent()
+                
+            # Link pad to queue
+            sink_pad = queue.get_static_pad('sink')
+            if pad.link(sink_pad) != Gst.PadLinkReturn.OK:
+                self.log("Failed to link audio pad to queue", "error")
+                return
+                
+            # Add probe to monitor audio data flow
+            self._audio_probe_counter = 0
+            def audio_probe_cb(pad, info):
+                self._audio_probe_counter += 1
+                if self._audio_probe_counter % 100 == 0:
+                    self.log(f"   📊 Audio data flowing: {self._audio_probe_counter} buffers")
+                return Gst.PadProbeReturn.OK
+                
+            pad.add_probe(Gst.PadProbeType.BUFFER, audio_probe_cb)
             
-        # Add probe to monitor audio data flow
-        self._audio_probe_counter = 0
-        def audio_probe_cb(pad, info):
-            self._audio_probe_counter += 1
-            if self._audio_probe_counter % 100 == 0:
-                self.log(f"   📊 Audio data flowing: {self._audio_probe_counter} buffers")
-            return Gst.PadProbeReturn.OK
+            self.log("   ✅ Audio recording pipeline connected and running")
             
-        pad.add_probe(Gst.PadProbeType.BUFFER, audio_probe_cb)
-        
-        self.log("   ✅ Audio recording pipeline connected and running")
-        
-        # Store recording info
-        self.recording_audio = True
-        self.audio_filename = filename
+            # Store recording info
+            self.recording_audio = True
+            self.audio_filename = filename
         
     def on_new_transceiver(self, element, transceiver):
         """Handle new transceiver creation"""
