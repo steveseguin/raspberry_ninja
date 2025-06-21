@@ -1416,6 +1416,8 @@ class GLibWebRTCHandler:
         
         if self.room_ndi:
             self.log(f"   🔊 Setting up NDI audio output")
+            # Ensure NDI combiner is set up (in case audio arrives before video)
+            self.setup_ndi_combiner()
             # For NDI, we need to decode and send audio to the combiner
             self.setup_ndi_audio_pad(pad, encoding_name)
             return
