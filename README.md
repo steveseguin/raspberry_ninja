@@ -353,7 +353,7 @@ Raspberry Ninja supports recording multiple participants in a VDO.Ninja room sim
 
 To record all participants in a room:
 ```bash
-python3 publish.py --room myroom123 --record-room --password false
+python3 publish.py --room myroom123 --record-room
 ```
 
 This will:
