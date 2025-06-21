@@ -135,6 +135,7 @@ pip3 install --break-system-packages websockets cryptography
 
 sudo apt-get install -y libcairo-dev ## possibly optional
 pip3 install PyGObject ## possibly optional
+pip3 install aiohttp --break-system-packages # optional
 
 sudo apt-get install git -y
 cd ~ 
