@@ -761,9 +761,9 @@ class GLibWebRTCHandler:
             self.log("Failed to create ndisinkcombiner - is gst-plugin-ndi installed?", "error")
             return
             
-        # Configure NDI combiner with latency settings (from publish.py)
-        self.ndi_combiner.set_property("latency", 800_000_000)  # 800ms
-        self.ndi_combiner.set_property("min-upstream-latency", 1_000_000_000)  # 1000ms
+        # Configure NDI combiner with reduced latency to avoid buffering issues
+        self.ndi_combiner.set_property("latency", 100_000_000)  # 100ms (was 800ms)
+        self.ndi_combiner.set_property("min-upstream-latency", 100_000_000)  # 100ms (was 1000ms)
         self.ndi_combiner.set_property("start-time-selection", 1)  # 1 corresponds to "first"
             
         # Create NDI sink
@@ -777,23 +777,35 @@ class GLibWebRTCHandler:
         self.ndi_sink.set_property('ndi-name', ndi_name)
         self.log(f"   NDI stream name: {ndi_name}")
         
-        # Configure sync settings to reduce audio lag
-        self.ndi_sink.set_property('sync', True)  # Enable sync for proper timing
-        self.ndi_sink.set_property('max-lateness', -1)  # Unlimited lateness
+        # Configure sync settings - try minimal sync to avoid blocking
+        self.ndi_sink.set_property('sync', False)  # Disable sync completely
         self.ndi_sink.set_property('async', False)  # Disable async to avoid blocking
-        self.ndi_sink.set_property('enable-last-sample', False)  # Disable last-sample
+        
+        # Create a queue between combiner and sink to prevent blocking
+        ndi_queue = Gst.ElementFactory.make('queue', 'ndi_output_queue')
+        if ndi_queue:
+            # Small queue to prevent accumulation
+            ndi_queue.set_property('max-size-time', 100_000_000)  # 100ms
+            ndi_queue.set_property('max-size-buffers', 10)
+            ndi_queue.set_property('max-size-bytes', 0)
+            ndi_queue.set_property('leaky', 2)  # Drop old buffers
         
         # Add to pipeline
         self.pipe.add(self.ndi_combiner)
+        self.pipe.add(ndi_queue)
         self.pipe.add(self.ndi_sink)
         
-        # Link combiner to sink
-        if not self.ndi_combiner.link(self.ndi_sink):
-            self.log("Failed to link NDI combiner to sink", "error")
+        # Link combiner -> queue -> sink
+        if not self.ndi_combiner.link(ndi_queue):
+            self.log("Failed to link NDI combiner to queue", "error")
+            return
+        if not ndi_queue.link(self.ndi_sink):
+            self.log("Failed to link queue to NDI sink", "error")
             return
             
         # Sync states
         self.ndi_combiner.sync_state_with_parent()
+        ndi_queue.sync_state_with_parent()
         self.ndi_sink.sync_state_with_parent()
         
         self.log("   ✅ NDI combiner ready for audio/video")
@@ -1086,6 +1098,11 @@ class GLibWebRTCHandler:
         if self.room_ndi:
             # Create video processing elements for NDI
             videoconvert = Gst.ElementFactory.make('videoconvert', None)
+            # Add videorate to regulate framerate
+            videorate = Gst.ElementFactory.make('videorate', None)
+            if videorate:
+                videorate.set_property('drop-only', True)  # Only drop frames, don't duplicate
+                videorate.set_property('max-rate', 30)  # Max 30 fps
                 
             # Configure decoder for low latency
             if decoder:
@@ -1103,7 +1120,7 @@ class GLibWebRTCHandler:
                 except:
                     pass
             
-            if not all([queue, depay, decoder, videoconvert]):
+            if not all([queue, depay, decoder, videoconvert, videorate]):
                 self.log("Failed to create NDI video elements", "error")
                 return
                 
@@ -1130,11 +1147,11 @@ class GLibWebRTCHandler:
                 return
         
         if self.room_ndi:
-            # Add NDI elements to pipeline - simplified without extra queues
+            # Add NDI elements to pipeline with videorate
             if encoding_name in ['VP8', 'VP9', 'AV1']:
-                elements = [queue, depay, decoder, videoconvert]
+                elements = [queue, depay, decoder, videoconvert, videorate]
             else:  # H264
-                elements = [queue, depay, h264parse, decoder, videoconvert]
+                elements = [queue, depay, h264parse, decoder, videoconvert, videorate]
                 
             for element in elements:
                 self.pipe.add(element)
@@ -1151,6 +1168,9 @@ class GLibWebRTCHandler:
                 if not decoder.link(videoconvert):
                     self.log("Failed to link decoder to videoconvert", "error")
                     return
+                if not videoconvert.link(videorate):
+                    self.log("Failed to link videoconvert to videorate", "error")
+                    return
                 
             else:  # H264
                 # H264: queue -> depay -> h264parse -> avdec_h264 -> video_queue2 -> videoconvert -> videorate -> combiner
@@ -1166,6 +1186,9 @@ class GLibWebRTCHandler:
                 if not decoder.link(videoconvert):
                     self.log("Failed to link decoder to videoconvert", "error")
                     return
+                if not videoconvert.link(videorate):
+                    self.log("Failed to link videoconvert to videorate", "error")
+                    return
                 
             
             # Link to NDI combiner video pad
@@ -1173,7 +1196,7 @@ class GLibWebRTCHandler:
                 # Video pad is 'Always' available, not 'On request'
                 video_pad = self.ndi_combiner.get_static_pad('video')
                 if video_pad:
-                    src_pad = videoconvert.get_static_pad('src')
+                    src_pad = videorate.get_static_pad('src')
                     if src_pad.link(video_pad) == Gst.PadLinkReturn.OK:
                         self.log("   ✅ Connected video to NDI combiner")
                         
