@@ -761,10 +761,10 @@ class GLibWebRTCHandler:
             self.log("Failed to create ndisinkcombiner - is gst-plugin-ndi installed?", "error")
             return
             
-        # Configure NDI combiner with reduced latency to avoid buffering issues
-        self.ndi_combiner.set_property("latency", 100_000_000)  # 100ms (was 800ms)
-        self.ndi_combiner.set_property("min-upstream-latency", 100_000_000)  # 100ms (was 1000ms)
-        self.ndi_combiner.set_property("start-time-selection", 1)  # 1 corresponds to "first"
+        # Configure NDI combiner with minimal latency
+        self.ndi_combiner.set_property("latency", 0)  # 0ms latency
+        self.ndi_combiner.set_property("min-upstream-latency", 0)  # 0ms min latency
+        self.ndi_combiner.set_property("start-time-selection", 0)  # 0 = "zero"
             
         # Create NDI sink
         self.ndi_sink = Gst.ElementFactory.make('ndisink', None)
