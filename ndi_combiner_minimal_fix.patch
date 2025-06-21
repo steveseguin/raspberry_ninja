@@ -1,0 +1,54 @@
+--- a/src/ndisinkcombiner/imp.rs
++++ b/src/ndisinkcombiner/imp.rs
+@@ -587,6 +587,20 @@ impl AggregatorImpl for NdiSinkCombiner {
+             Some(_) => None,
+         };
+ 
++        // CRITICAL FIX: Check if we have enough video buffers waiting
++        // If video running time has advanced significantly but audio hasn't caught up,
++        // we need to output what we have to prevent freezing
++        if let Some(audio_running_time_end) = audio_running_time_end {
++            if let Some(video_running_time_end) = video_running_time_end {
++                // If video is more than 500ms ahead of audio, force output
++                if video_running_time_end.saturating_sub(audio_running_time_end) > gst::ClockTime::from_mseconds(500) {
++                    gst::warning!(CAT, imp: self, "Video ahead of audio by >500ms, forcing output");
++                    // Don't wait for more audio, output what we have
++                    state.current_video_buffer = video_buffer_after;
++                    return self.finish_buffer(output);
++                }
++            }
++        }
++
+         // If audio is before video, we need to clip it or fill it
+         if let Some(audio_running_time) = audio_running_time {
+             if audio_running_time < video_running_time {
+@@ -601,11 +615,22 @@ impl AggregatorImpl for NdiSinkCombiner {
+ 
+         // If audio is after video, we can't output it yet
+         if let Some(audio_running_time) = audio_running_time {
+             if audio_running_time > video_running_time {
++                // CRITICAL FIX: Add a maximum wait time
++                // If we've been waiting too long, output video without audio
++                if state.current_audio_buffers.len() > 50 {
++                    gst::warning!(CAT, imp: self, "Too many audio buffers accumulated ({}), forcing video output", state.current_audio_buffers.len());
++                    state.current_video_buffer = video_buffer_after;
++                    return self.finish_buffer(output);
++                }
++                
+                 gst::trace!(
+                     CAT,
+                     imp: self,
+                     "Waiting for more audio, audio {} > video {}",
+                     audio_running_time,
+                     video_running_time,
+                 );
+                 state.current_video_buffer = video_buffer_after;
++                
++                // Clear old audio buffers to prevent infinite accumulation
++                if state.current_audio_buffers.len() > 100 {
++                    state.current_audio_buffers.drain(0..50);
++                }
++                
+                 return Err(gst_base::AGGREGATOR_FLOW_NEED_DATA);
+             }
+         }

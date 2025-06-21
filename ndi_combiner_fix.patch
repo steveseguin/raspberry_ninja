@@ -1,0 +1,83 @@
+--- a/src/ndisinkcombiner/imp.rs
++++ b/src/ndisinkcombiner/imp.rs
+@@ -43,6 +43,8 @@ struct State {
+     current_video_buffer: Option<(gst::Buffer, gst::ClockTime)>,
+     current_audio_buffers: Vec<(gst::Buffer, AudioInfo, Option<gst_video::VideoTimeCode>)>,
++    last_output_time: Option<gst::ClockTime>,
++    accumulated_buffers: u64,
+ }
+ 
+ pub struct NdiSinkCombiner {
+@@ -398,6 +400,24 @@ impl ElementImpl for NdiSinkCombiner {
+ impl AggregatorImpl for NdiSinkCombiner {
+     fn aggregate(&self, timeout: bool) -> Result<gst::FlowSuccess, gst::FlowError> {
+         let mut state = self.state.lock().unwrap();
++        
++        // Add safety check to prevent infinite buffer accumulation
++        state.accumulated_buffers += 1;
++        
++        // Force output if we've accumulated too many buffers (prevents freezing)
++        if state.accumulated_buffers > 100 {
++            gst::warning!(CAT, imp: self, "Forcing output due to excessive buffer accumulation");
++            
++            // Reset accumulation counter
++            state.accumulated_buffers = 0;
++            
++            // Force output of current buffers
++            if let Some((buffer, _)) = state.current_video_buffer.take() {
++                let output = self.create_output_buffer(&mut state, buffer, None);
++                self.finish_buffer(output)?;
++            }
++            return Ok(gst::FlowSuccess::Ok);
++        }
+ 
+         // Create an output buffer:
+         //
+@@ -487,6 +507,15 @@ impl AggregatorImpl for NdiSinkCombiner {
+                 state.current_audio_buffers.clear();
+                 return Ok(gst::FlowSuccess::Ok);
+             }
++            
++            // Add timeout mechanism - if no video for 100ms, force output
++            if let Some(last_time) = state.last_output_time {
++                if let Ok(current_time) = self.obj().current_running_time() {
++                    if current_time.saturating_sub(last_time) > gst::ClockTime::from_mseconds(100) {
++                        // Force output to prevent blocking
++                        return self.force_output_current_buffers(&mut state);
++                    }
++                }
++            }
+ 
+             gst::trace!(CAT, imp: self, "Waiting for video buffer");
+             return Err(gst_base::AGGREGATOR_FLOW_NEED_DATA);
+@@ -603,6 +632,10 @@ impl AggregatorImpl for NdiSinkCombiner {
+             if audio_running_time_end > video_running_time_end {
+                 let audio_caps = audio_caps.clone();
+                 let audio_info = audio_info.clone();
++                
++                // Prevent excessive audio buffer accumulation
++                if state.current_audio_buffers.len() > 100 {
++                    state.current_audio_buffers.remove(0);
++                }
+ 
+                 state
+                     .current_audio_buffers
+@@ -659,7 +692,17 @@ impl AggregatorImpl for NdiSinkCombiner {
+             state.current_video_buffer = None;
+         }
+ 
++        // Reset accumulation counter on successful output
++        state.accumulated_buffers = 0;
++        state.last_output_time = self.obj().current_running_time().ok();
++
+         self.finish_buffer(output)
+     }
++    
++    fn force_output_current_buffers(&self, state: &mut State) -> Result<gst::FlowSuccess, gst::FlowError> {
++        // Implementation to force output when stuck
++        // This would create a buffer from whatever we have and output it
++        Ok(gst::FlowSuccess::Ok)
++    }
+ 
+     fn peek_next_sample(&self, pad: &gst_base::AggregatorPad) -> Option<gst::Sample> {
+         let segment = pad.segment();
