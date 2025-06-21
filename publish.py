@@ -301,6 +301,9 @@ class WebServer:
         self.app.router.add_get('/api/devices', self.get_devices)
         self.app.router.add_get('/api/pipeline', self.get_pipeline_info)
         self.app.router.add_get('/api/ice', self.get_ice_stats)
+        self.app.router.add_get('/api/hls', self.get_hls_streams)
+        self.app.router.add_get('/hls/{filename}', self.serve_hls_file)
+        self.app.router.add_static('/hls/', path='.', name='hls_static')
         
     async def index(self, request):
         html = r"""
@@ -522,14 +525,144 @@ class WebServer:
                     </div>
                 </div>
                 
+                <h2>HLS Streams</h2>
+                <div class="stats-grid" id="hlsStreams">
+                    <div class="stat-card">
+                        <div class="stat-label">Loading...</div>
+                    </div>
+                </div>
+                
                 <div id="modalContainer"></div>
+                
+                <h2>HLS Player</h2>
+                <div id="hlsPlayerSection" style="display: none; margin: 20px 0;">
+                    <video id="hlsVideo" controls style="width: 100%; max-width: 800px; background: #000;"></video>
+                    <div style="margin-top: 10px;">
+                        <button onclick="closeHLSPlayer()" style="background: #f44336;">Close Player</button>
+                        <span id="hlsPlayerStatus" style="margin-left: 20px;"></span>
+                    </div>
+                    <div style="margin-top: 15px; padding: 10px; background: #2a2a2a; border-radius: 4px;">
+                        <div style="font-size: 0.9em; color: #888; margin-bottom: 5px;">HLS Manifest URL (for OBS, VLC, etc.):</div>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <input id="hlsManifestUrl" type="text" readonly style="flex: 1; padding: 8px; background: #1a1a1a; border: 1px solid #444; color: #e0e0e0; font-family: monospace; font-size: 0.9em;">
+                            <button onclick="copyHLSUrl()" style="padding: 8px 15px; background: #4CAF50;">Copy URL</button>
+                        </div>
+                        <div id="copyStatus" style="margin-top: 5px; font-size: 0.8em; color: #4CAF50; display: none;">✓ Copied to clipboard!</div>
+                    </div>
+                </div>
                 
                 <h2>Live Logs</h2>
                 <div class="logs" id="logs"></div>
             </div>
             
+            <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
             <script>
                 let ws;
+                let hls;
+                
+                function playHLSStream(url) {
+                    const playerSection = document.getElementById('hlsPlayerSection');
+                    const video = document.getElementById('hlsVideo');
+                    const status = document.getElementById('hlsPlayerStatus');
+                    const manifestInput = document.getElementById('hlsManifestUrl');
+                    
+                    // Generate full URL
+                    const fullUrl = window.location.protocol + '//' + window.location.host + url;
+                    manifestInput.value = fullUrl;
+                    
+                    // Reset copy status
+                    document.getElementById('copyStatus').style.display = 'none';
+                    
+                    playerSection.style.display = 'block';
+                    playerSection.scrollIntoView({ behavior: 'smooth' });
+                    
+                    if (hls) {
+                        hls.destroy();
+                    }
+                    
+                    if (Hls.isSupported()) {
+                        hls = new Hls({
+                            debug: false,
+                            enableWorker: true,
+                            lowLatencyMode: true,
+                            backBufferLength: 90
+                        });
+                        
+                        hls.loadSource(fullUrl);
+                        hls.attachMedia(video);
+                        
+                        hls.on(Hls.Events.MEDIA_ATTACHED, function () {
+                            status.textContent = 'Loading stream...';
+                        });
+                        
+                        hls.on(Hls.Events.MANIFEST_PARSED, function (event, data) {
+                            status.textContent = 'Stream loaded, playing...';
+                            video.play().catch(e => {
+                                status.textContent = 'Click video to play (autoplay blocked)';
+                            });
+                        });
+                        
+                        hls.on(Hls.Events.ERROR, function (event, data) {
+                            if (data.fatal) {
+                                status.textContent = 'Error: ' + data.details;
+                            }
+                        });
+                    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                        // Native HLS support (Safari)
+                        video.src = fullUrl;
+                        video.addEventListener('loadedmetadata', function() {
+                            video.play().catch(e => {
+                                status.textContent = 'Click video to play';
+                            });
+                        });
+                    } else {
+                        status.textContent = 'HLS not supported in this browser';
+                    }
+                }
+                
+                function copyHLSUrl() {
+                    const manifestInput = document.getElementById('hlsManifestUrl');
+                    const copyStatus = document.getElementById('copyStatus');
+                    
+                    manifestInput.select();
+                    manifestInput.setSelectionRange(0, 99999); // For mobile devices
+                    
+                    try {
+                        document.execCommand('copy');
+                        copyStatus.style.display = 'block';
+                        setTimeout(() => {
+                            copyStatus.style.display = 'none';
+                        }, 3000);
+                    } catch (err) {
+                        // Fallback for modern browsers
+                        if (navigator.clipboard && navigator.clipboard.writeText) {
+                            navigator.clipboard.writeText(manifestInput.value).then(() => {
+                                copyStatus.style.display = 'block';
+                                setTimeout(() => {
+                                    copyStatus.style.display = 'none';
+                                }, 3000);
+                            }).catch(err => {
+                                alert('Failed to copy: ' + err);
+                            });
+                        } else {
+                            alert('Copy not supported. Please select and copy manually.');
+                        }
+                    }
+                }
+                
+                function closeHLSPlayer() {
+                    const playerSection = document.getElementById('hlsPlayerSection');
+                    const video = document.getElementById('hlsVideo');
+                    
+                    if (hls) {
+                        hls.destroy();
+                        hls = null;
+                    }
+                    
+                    video.pause();
+                    video.src = '';
+                    playerSection.style.display = 'none';
+                }
                 
                 function formatDuration(seconds) {
                     const hours = Math.floor(seconds / 3600);
@@ -639,7 +772,8 @@ class WebServer:
                             html += '<div><strong>Audio:</strong> ' + (recordingInfo.audio_enabled ? '✓ Enabled' : '✗ Disabled') + '</div>';
                         }
                         
-                        if (recordingInfo.active_recordings !== undefined) {
+                        // Only show active recordings count for single stream mode, not room recording
+                        if (recordingInfo.mode === 'single_stream' && recordingInfo.active_recordings !== undefined) {
                             html += '<div><strong>Active Recordings:</strong> ' + recordingInfo.active_recordings + '</div>';
                         }
                         
@@ -895,6 +1029,52 @@ class WebServer:
                     }
                 }
                 
+                async function fetchHLSStreams() {
+                    try {
+                        const response = await fetch('/api/hls');
+                        const streams = await response.json();
+                        
+                        const hlsDiv = document.getElementById('hlsStreams');
+                        
+                        if (streams.length === 0) {
+                            hlsDiv.innerHTML = '<div class="stat-card" style="grid-column: span 3;">' +
+                                '<div class="stat-label">NO HLS STREAMS</div>' +
+                                '<div class="stat-value">No .m3u8 files found</div>' +
+                                '</div>';
+                            return;
+                        }
+                        
+                        hlsDiv.innerHTML = streams.map(stream => {
+                            const status = stream.status === 'recording' ? 
+                                '<span style="color: #ff4444;">● RECORDING</span>' : 
+                                '<span style="color: #4CAF50;">✓ Complete</span>';
+                            
+                            const modified = new Date(stream.modified * 1000).toLocaleString();
+                            
+                            return '<div class="stat-card" style="grid-column: span 3; cursor: pointer;" onclick="playHLSStream(\'' + stream.url + '\')">' +
+                                '<div style="display: flex; justify-content: space-between; align-items: center;">' +
+                                '<div>' +
+                                '<div class="stat-label">Stream: ' + (stream.stream_id || 'Unknown') + ' | Room: ' + (stream.room || 'Unknown') + '</div>' +
+                                '<div class="stat-value" style="font-size: 0.9em;">' + stream.filename + '</div>' +
+                                '<div style="margin-top: 5px; font-size: 0.8em; color: #888;">' +
+                                'Segments: ' + stream.segment_count + ' | Modified: ' + modified +
+                                '</div>' +
+                                '</div>' +
+                                '<div style="text-align: right;">' +
+                                status +
+                                '<div style="margin-top: 5px;">' +
+                                '<button onclick="event.stopPropagation(); playHLSStream(\'' + stream.url + '\')" style="padding: 5px 10px; font-size: 0.8em;">Play</button>' +
+                                '</div>' +
+                                '</div>' +
+                                '</div>' +
+                                '</div>';
+                        }).join('');
+                    } catch (error) {
+                        console.error('Failed to fetch HLS streams:', error);
+                    }
+                }
+                
+                
                 // Update fetchStats to track quality
                 const originalFetchStats = fetchStats;
                 fetchStats = async function() {
@@ -1034,7 +1214,9 @@ class WebServer:
                 // Refresh stats every 2 seconds
                 setInterval(fetchStats, 2000);
                 setInterval(fetchSystemStats, 5000);
+                setInterval(fetchHLSStreams, 3000);
                 fetchSystemStats();
+                fetchHLSStreams();
             </script>
         </body>
         </html>
@@ -1084,19 +1266,20 @@ class WebServer:
             'files': []
         }
         
-        if self.client.record:
-            recording_info['enabled'] = True
-            recording_info['mode'] = 'single_stream'
-            if hasattr(self.client, 'recording_files'):
-                recording_info['files'] = self.client.recording_files
-                recording_info['active_recordings'] = len(self.client.recording_files)
-        elif self.client.record_room:
+        # Check record_room first as it takes priority
+        if self.client.record_room:
             recording_info['enabled'] = True
             recording_info['mode'] = 'room_recording'
             recording_info['room_name'] = self.client.room_name or 'N/A'
             recording_info['audio_enabled'] = not self.client.noaudio
             # Note: Detailed subprocess tracking would require additional implementation
             recording_info['note'] = 'Recording all streams in room to separate files'
+        elif self.client.record:
+            recording_info['enabled'] = True
+            recording_info['mode'] = 'single_stream'
+            if hasattr(self.client, 'recording_files'):
+                recording_info['files'] = self.client.recording_files
+                recording_info['active_recordings'] = len(self.client.recording_files)
         
         stats['recording'] = recording_info
         
@@ -1348,6 +1531,89 @@ class WebServer:
                 
         return web.json_response(ice_stats)
     
+    async def get_hls_streams(self, request):
+        """Get list of available HLS streams"""
+        import glob
+        hls_streams = []
+        
+        # Find all .m3u8 files in current directory
+        for playlist in glob.glob("*.m3u8"):
+            # Get file info
+            stat = os.stat(playlist)
+            
+            # Extract stream info from filename
+            # Format: room_streamid_timestamp.m3u8
+            parts = playlist.replace('.m3u8', '').split('_')
+            
+            stream_info = {
+                'filename': playlist,
+                'url': f'/hls/{playlist}',
+                'size': stat.st_size,
+                'modified': stat.st_mtime,
+                'segments': []
+            }
+            
+            # Try to parse room and stream ID
+            if len(parts) >= 3:
+                stream_info['room'] = parts[0]
+                stream_info['stream_id'] = parts[1]
+                stream_info['timestamp'] = parts[2]
+            
+            # Count segments
+            base_name = playlist.replace('.m3u8', '')
+            segments = glob.glob(f"{base_name}_*.ts")
+            stream_info['segment_count'] = len(segments)
+            
+            # Check if still recording (recently modified)
+            import time
+            if time.time() - stat.st_mtime < 10:  # Modified in last 10 seconds
+                stream_info['status'] = 'recording'
+            else:
+                stream_info['status'] = 'complete'
+                
+            hls_streams.append(stream_info)
+            
+        # Sort by modification time (newest first)
+        hls_streams.sort(key=lambda x: x['modified'], reverse=True)
+        
+        return web.json_response(hls_streams)
+    
+    async def serve_hls_file(self, request):
+        """Serve HLS files with proper headers"""
+        filename = request.match_info['filename']
+        
+        # Security check - only allow .m3u8 and .ts files
+        if not (filename.endswith('.m3u8') or filename.endswith('.ts')):
+            return web.Response(status=403, text='Forbidden')
+            
+        # Check if file exists
+        if not os.path.exists(filename):
+            return web.Response(status=404, text='Not Found')
+            
+        # Set appropriate content type
+        if filename.endswith('.m3u8'):
+            content_type = 'application/vnd.apple.mpegurl'
+            # Don't cache playlists
+            headers = {
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache',
+                'Expires': '0'
+            }
+        else:  # .ts files
+            content_type = 'video/mp2t'
+            # Cache segments
+            headers = {
+                'Cache-Control': 'public, max-age=3600'
+            }
+            
+        # Read and serve file
+        try:
+            with open(filename, 'rb') as f:
+                content = f.read()
+            return web.Response(body=content, content_type=content_type, headers=headers)
+        except Exception as e:
+            return web.Response(status=500, text=str(e))
+    
     async def start(self):
         """Start the web server"""
         self.runner = web.AppRunner(self.app)
@@ -1428,8 +1694,8 @@ class WebRTCSubprocessManager:
             printc(f"[{self.stream_id}] Using MKV recording with audio/video muxing", "0F0")
             subprocess_script = os.path.join(script_dir, 'webrtc_subprocess_mkv.py')
         elif self.config.get('use_hls', False):
-            # HLS recording is not yet working - use WebM for now
-            self.log(f"[{self.stream_id}] HLS recording requested but not yet working. Using WebM format instead.", "warning")
+            # HLS recording
+            printc(f"[{self.stream_id}] Using HLS recording format", "0F0")
             subprocess_script = os.path.join(script_dir, 'webrtc_subprocess_glib.py')
         else:
             printc(f"[{self.stream_id}] Using standard WebM/MP4 recording", "0F0")
