@@ -26,6 +26,14 @@ It also has the ability to record remote VDO.Ninja streams to disk (no transcode
 - [Documentation](#documentation)
 - [How to Run:](#how-to-run)
   - [Auto-starting the script on boot](#auto-starting-the-script-on-boot)
+  - [Room Recording](#room-recording)
+    - [Basic Room Recording](#basic-room-recording)
+    - [Selective Room Recording](#selective-room-recording)
+    - [Room NDI Output](#room-ndi-output)
+  - [HLS Recording](#hls-recording)
+    - [Enable HLS Recording](#enable-hls-recording)
+    - [HLS Implementation Notes](#hls-implementation-notes)
+  - [Recording Features Summary](#recording-features-summary)
   - [RTMP output](#rtmp-output)
   - [SRT support](#srt-support)
   - [WHIP / Meshcast support](#whip--meshcast-support)
@@ -127,6 +135,7 @@ pip3 install --break-system-packages websockets cryptography
 
 sudo apt-get install -y libcairo-dev ## possibly optional
 pip3 install PyGObject ## possibly optional
+pip3 install aiohttp --break-system-packages # optional
 
 sudo apt-get install git -y
 cd ~ 
@@ -346,7 +355,7 @@ Raspberry Ninja supports recording multiple participants in a VDO.Ninja room sim
 
 To record all participants in a room:
 ```bash
-python3 publish.py --room myroom123 --record-room --password false
+python3 publish.py --room myroom123 --record-room
 ```
 
 This will:
