@@ -6,6 +6,7 @@ __pycache__/
 # C extensions
 *.so
 .claude
+.actrc
 .claude/
 
 # Distribution / packaging
@@ -23,6 +24,7 @@ lib64/
 parts/
 sdist/
 var/
+venv/
 wheels/
 pip-wheel-metadata/
 share/python-wheels/
