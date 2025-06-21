@@ -27,6 +27,7 @@ Install websocket and gi module. (Installing PyGObject often breaks due to chang
 ```
 pip3 install websockets
 pip3 install cryptography
+pip3 install aiohttp
 sudo apt-get install -y libcairo-dev libgirepository1.0-dev # these dependencies may or may not be needed; it rather depends on the mood of the universe.
 pip3 install PyGObject
 ```
