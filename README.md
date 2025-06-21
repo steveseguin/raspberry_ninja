@@ -5,7 +5,7 @@ Turn your Raspberry Pi, Nvidia Jetson, Orange Pi, Windows PC, Mac, Linux box, or
 
 <img src='https://github.com/steveseguin/raspberry_ninja/assets/2575698/0b3c7140-5aed-4b21-babb-3c842e2bc010' width="400">    <img src='https://github.com/steveseguin/raspberry_ninja/assets/2575698/cf301391-0375-45c9-bb1c-d665dd0fe1bb' width="400">
 
-It also has the ability to record remote VDO.Ninja streams to disk (no transcode step), record multiple room participants simultaneously, broadcast a low-latency video stream to multiple viewers (with a built-in SFU), and because it works with VDO.Ninja, you get access to its ecosystem and related features. There are other cool things available, such as AV1 support, NDI output, OpenCV output, WHIP, and fdsink output.
+It also has the ability to record remote VDO.Ninja streams to disk (no transcode step), record multiple room participants simultaneously, broadcast a low-latency video stream to multiple viewers (with a built-in SFU), and because it works with VDO.Ninja, you get access to its ecosystem and related features. There are other cool things available, such as AV1 support, NDI output, OpenCV output, WHIP, HLS recording, and fdsink output.
 
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
@@ -249,6 +249,7 @@ options:
   --record-streams RECORD_STREAMS
                         Comma-separated list of stream IDs to record from a room. Optional filter for --record-room.
   --room-ndi            Relay all room streams to NDI as separate sources. Requires --room parameter.
+  --use-hls             Enable HLS (HTTP Live Streaming) recording with H.264 transcoding.
   --midi                Transparent MIDI bridge mode; no video or audio.
   --filesrc FILESRC     Provide a media file (local file location) as a source instead of physical device; it can be a
                         transparent webm or whatever. It will be transcoded, which offers the best results.
@@ -332,6 +333,72 @@ Also note, if you run with `sudo`, you might get a permissions error when using 
 ### Auto-starting the script on boot
 
 A guide on how to setup a RPI to auto-stream on boot can be found in the Rasbperry Pi folder, along with details on how to configure the WiFi SSID and password without needing to SSH in first.
+
+### Room Recording
+
+Raspberry Ninja supports recording multiple participants in a VDO.Ninja room simultaneously. This is perfect for recording podcasts, interviews, or group calls where each participant's stream is saved to a separate file.
+
+#### Basic Room Recording
+
+To record all participants in a room:
+```bash
+python3 publish.py --room myroom123 --record-room --password false
+```
+
+This will:
+- Connect to room "myroom123" as a viewer
+- Automatically record each participant's stream to separate files
+- Name files using the pattern: `{room}_{streamID}_{timestamp}.webm`
+- Record both video and audio by default (audio saved as separate .wav files)
+
+#### Selective Room Recording
+
+To record only specific participants:
+```bash
+python3 publish.py --room myroom123 --record-room --record-streams "stream1,stream2" --password false
+```
+
+#### Room NDI Output
+
+To relay all room streams as NDI sources:
+```bash
+python3 publish.py --room myroom123 --room-ndi --password false
+```
+
+Each participant will appear as a separate NDI source named `{room} - {streamID}`.
+
+### HLS Recording
+
+Raspberry Ninja now supports HLS (HTTP Live Streaming) recording, which creates segmented video files and M3U8 playlists. This is useful for streaming platforms or creating video that can be easily served over HTTP.
+
+#### Enable HLS Recording
+
+To record using HLS format:
+```bash
+python3 publish.py --record streamID --use-hls
+```
+
+This will:
+- Transcode VP8 video to H.264 (required for HLS compatibility)
+- Create numbered segment files: `streamID_timestamp_00000.ts`, `streamID_timestamp_00001.ts`, etc.
+- Use 5-second segments by default
+
+#### HLS Implementation Notes
+
+By default, HLS recording uses `splitmuxsink` which creates only TS segment files without an M3U8 playlist. This is simpler and more reliable.
+
+If you need M3U8 playlist generation, you can configure the subprocess to use `hlssink2` instead by modifying the `use_splitmuxsink` configuration in the code.
+
+### Recording Features Summary
+
+- **Single Stream Recording**: Record any VDO.Ninja stream to disk
+- **Room Recording**: Automatically record all participants in a room
+- **Selective Recording**: Filter which room participants to record
+- **Audio Support**: Audio recorded to separate WAV files for maximum compatibility
+- **HLS Support**: Generate HLS-compatible streams with H.264 transcoding
+- **NDI Output**: Relay room streams as NDI sources for professional workflows
+- **No Transcoding**: VP8/VP9 streams are recorded directly without quality loss (except HLS)
+- **Automatic Naming**: Files are named with room, stream ID, and timestamp
 
 ### RTMP output
 
@@ -542,10 +609,12 @@ midi demo video: https://youtu.be/Gry9UFtOTmQ
 ## Recent Changes
 
 ### January 2025
+- **HLS Recording Support**: Added HLS (HTTP Live Streaming) recording with automatic VP8 to H.264 transcoding. Creates segmented TS files and M3U8 playlists for easy HTTP streaming.
 - **Audio Recording Now Enabled by Default**: Audio recording is now enabled by default when recording streams. Use `--noaudio` to disable audio recording. The system saves video (.webm) and audio (.wav) to separate files for maximum compatibility.
 - **Added Combine Recordings Tool**: New `combine_recordings.py` utility that intelligently synchronizes and combines separate audio/video files. Features timestamp-based sync to handle WebRTC negotiation delays (typically 400-600ms).
 - **Fixed TURN Server URL Parsing**: Corrected string slicing logic that was causing malformed TURN URLs and preventing ICE connections.
 - **Fixed Subprocess Selection Bug**: Disabled broken MKV subprocess that was causing recording to hang when audio was enabled.
+- **Improved Test Infrastructure**: Enhanced test_basic_functionality.py with comprehensive tests for HLS, room recording, and NDI features.
 
 ### December 2024
 - **Fixed VP8 recording resolution change issue**: Added video decoding/re-encoding pipeline to handle dynamic resolution changes during recording. This prevents "Caps changes are not supported by Matroska" errors that were causing recording failures.
