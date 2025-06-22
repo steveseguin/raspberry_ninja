@@ -1,5 +1,32 @@
 # Changelog
 
+# Release 1.0.5
+
+**Release Date:** 2025-06-22
+
+## 🐛 Patch Release
+
+This release includes bug fixes and minor improvements.
+
+### Commits
+
+- fix: Add segment event handling for HLS recording on Nvidia Jetson (488ab04)
+- docs(ndi): Update NDI installer URL in readme (eff3a4a)
+- feat(ndi): Relocate scripts and add universal installer (b3d8534)
+- feat: Improve recording and codec handling (6344286)
+- refactor: Enhance GStreamer pipeline configuration and logging (c72e1ce)
+
+### Installation
+
+For installation instructions, please refer to the platform-specific guides:
+- [Raspberry Pi](./raspberry_pi/README.md)
+- [NVIDIA Jetson](./nvidia_jetson/README.md)
+- [Orange Pi](./orangepi/README.md)
+- [Ubuntu](./ubuntu/README.md)
+
+
+---
+
 # Release 1.0.4
 
 **Release Date:** 2025-06-22
