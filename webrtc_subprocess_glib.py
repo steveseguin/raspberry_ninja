@@ -840,21 +840,27 @@ class GLibWebRTCHandler:
                 
                 # Then sync the sink state
                 if hasattr(self, 'hlssink') and self.hlssink:
-                    ret = self.hlssink.sync_state_with_parent()
-                    self.log(f"   HLS sink sync result: {ret}")
+                    # For splitmuxsink, try a different approach
+                    # First ensure it's in NULL state
+                    self.hlssink.set_state(Gst.State.NULL)
+                    self.hlssink.sync_state_with_parent()
                     
-                    # Force sink to PLAYING state
+                    # Give it a moment
+                    import time
+                    time.sleep(0.1)
+                    
+                    # Now force to PLAYING
                     ret = self.hlssink.set_state(Gst.State.PLAYING)
                     ret_name = ret.value_name if hasattr(ret, 'value_name') else str(ret)
                     self.log(f"   HLS sink set_state result: {ret_name}")
                     
-                    # For splitmuxsink, we may need to send a signal to start recording
-                    if hasattr(self.hlssink, 'emit'):
-                        try:
-                            self.hlssink.emit('split-now')
-                            self.log("   📍 Sent split-now signal to splitmuxsink")
-                        except:
-                            pass
+                    # Also try setting some properties that might help
+                    try:
+                        self.hlssink.set_property('send-keyframe-requests', True)
+                        self.hlssink.set_property('async-finalize', True)
+                        self.hlssink.set_property('async-handling', True)
+                    except:
+                        pass
                     
                     # Wait for state changes to complete
                     timeout = 2 * Gst.SECOND
@@ -942,6 +948,9 @@ class GLibWebRTCHandler:
                 self.hlssink.set_property('max-size-time', 5 * Gst.SECOND)
                 self.hlssink.set_property('send-keyframe-requests', True)
                 self.hlssink.set_property('async-finalize', True)
+                # Try to force immediate segment creation
+                self.hlssink.set_property('max-size-bytes', 0)  # Disable byte limit
+                self.hlssink.set_property('start-index', 0)  # Start from segment 0
                 
                 # Create and configure mpegtsmux for splitmuxsink
                 mux = Gst.ElementFactory.make('mpegtsmux', None)
@@ -969,16 +978,25 @@ class GLibWebRTCHandler:
                 
                 # Monitor when new files are created
                 def on_splitmux_sink_new_file(splitmux, filename):
-                    self.log(f"   📁 New HLS segment: {filename}")
+                    self.log(f"   📁 New HLS segment created: {filename}")
                     # Update M3U8 playlist
                     self.add_segment_to_playlist(filename)
                     
-                if hasattr(self.hlssink, 'connect'):
-                    try:
-                        self.hlssink.connect('splitmuxsink-new-file', on_splitmux_sink_new_file)
-                    except:
-                        # Signal might not exist in all versions
-                        pass
+                # Connect to the actual signal name
+                try:
+                    # The signal is called 'format-location-full' for getting the filename
+                    self.hlssink.connect('format-location-full', on_splitmux_sink_new_file)
+                except:
+                    pass
+                    
+                # Also connect to splitmuxsink-fragment-closed which fires when segment is complete
+                def on_fragment_closed(splitmux):
+                    self.log("   📦 HLS segment closed")
+                    
+                try:
+                    self.hlssink.connect('splitmuxsink-fragment-closed', on_fragment_closed)
+                except:
+                    pass
                         
                 # Also set up periodic monitoring for segments
                 self.last_segment_check = 0
@@ -2025,7 +2043,20 @@ class GLibWebRTCHandler:
                             self.log(f"      {os.path.basename(f)} ({size:,} bytes)")
                     else:
                         self.log("   ⚠️  No HLS files created yet")
-                        # Force a split to start recording
+                        # Force a keyframe request
+                        try:
+                            # Try to force a keyframe through the video encoder
+                            event = Gst.Event.new_custom(
+                                Gst.EventType.CUSTOM_UPSTREAM,
+                                Gst.Structure.new_empty("GstForceKeyUnit")
+                            )
+                            if hasattr(self, 'hlssink') and self.hlssink:
+                                self.hlssink.send_event(event)
+                                self.log("   🔑 Sent force-keyframe event")
+                        except Exception as e:
+                            self.log(f"   Failed to send keyframe event: {e}")
+                            
+                        # Also try split-now
                         if hasattr(self.hlssink, 'emit'):
                             try:
                                 self.hlssink.emit('split-now')
