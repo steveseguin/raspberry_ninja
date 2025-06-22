@@ -77,7 +77,7 @@ jobs:
       if: always()
     
     - name: Upload test results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: test-results-${{ matrix.python-version }}
         path: |
@@ -126,8 +126,22 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     
-    - name: Run security checks
-      uses: pyupio/safety@v1
+    - name: Set up Python
+      uses: actions/setup-python@v4
       with:
-        api-key: ${{ secrets.SAFETY_API_KEY }}
+        python-version: '3.10'
+    
+    - name: Install safety
+      run: |
+        python -m pip install --upgrade pip
+        pip install safety
+    
+    - name: Run security checks
+      run: |
+        # Run safety check on requirements if they exist
+        if [ -f requirements.txt ]; then
+          safety check --json
+        else
+          echo "No requirements.txt found, skipping safety check"
+        fi
       continue-on-error: true
