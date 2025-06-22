@@ -990,8 +990,10 @@ class GLibWebRTCHandler:
                 return
         
         # Keep elements in NULL state initially
-        self.hls_mux.set_state(Gst.State.NULL)
-        self.hlssink.set_state(Gst.State.NULL)
+        if self.hls_mux:  # Only if we're using external mux
+            self.hls_mux.set_state(Gst.State.NULL)
+        if self.hlssink:
+            self.hlssink.set_state(Gst.State.NULL)
         
         self.log("   ✅ HLS muxer ready for audio/video streams")
         
