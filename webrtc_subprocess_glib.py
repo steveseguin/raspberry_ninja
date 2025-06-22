@@ -834,8 +834,8 @@ class GLibWebRTCHandler:
         # Add sink to pipeline
         self.pipe.add(self.hlssink)
         
-        # Sync state
-        self.hlssink.sync_state_with_parent()
+        # Don't sync state yet - wait until pads are connected
+        # This prevents the muxer from starting before it has inputs
         
         self.log("   ✅ HLS muxer ready for audio/video streams")
         
@@ -1628,21 +1628,21 @@ class GLibWebRTCHandler:
                 h264_pad = h264parse.get_static_pad('src')
                 if h264_pad:
                     def h264_probe_cb(pad, info):
-                        if not hasattr(self, '_h264_probe_logged'):
-                            self._h264_probe_logged = True
-                            self.log("   ✅ Video data confirmed after h264parse!")
-                            
-                            # Check if this is a buffer (not an event)
-                            if info.type & Gst.PadProbeType.BUFFER:
-                                # Inject a segment event before the first buffer
-                                if not hasattr(self, '_h264_segment_sent'):
-                                    self._h264_segment_sent = True
-                                    # Create segment event
-                                    segment = Gst.Segment()
-                                    segment.init(Gst.Format.TIME)
-                                    event = Gst.Event.new_segment(segment)
-                                    pad.push_event(event)
-                                    self.log("   ✅ Injected segment event for HLS")
+                        # Check if this is a buffer (not an event)
+                        if info.type & Gst.PadProbeType.BUFFER:
+                            # Inject a segment event before the first buffer
+                            if not hasattr(self, '_h264_segment_sent'):
+                                self._h264_segment_sent = True
+                                # Create segment event
+                                segment = Gst.Segment()
+                                segment.init(Gst.Format.TIME)
+                                event = Gst.Event.new_segment(segment)
+                                pad.push_event(event)
+                                self.log("   ✅ Injected segment event for HLS video")
+                                
+                            if not hasattr(self, '_h264_probe_logged'):
+                                self._h264_probe_logged = True
+                                self.log("   ✅ Video data confirmed after h264parse!")
                         return Gst.PadProbeReturn.OK
                     h264_pad.add_probe(Gst.PadProbeType.BUFFER, h264_probe_cb)
                     
@@ -1662,6 +1662,14 @@ class GLibWebRTCHandler:
                 video_pad = self.hlssink.request_pad_simple('video')
                 if video_pad:
                     src_pad = video_queue.get_static_pad('src')
+                    
+                    # Send initial segment event before linking
+                    segment = Gst.Segment()
+                    segment.init(Gst.Format.TIME)
+                    event = Gst.Event.new_segment(segment)
+                    video_pad.send_event(event)
+                    self.log("   ✅ Sent initial segment event to HLS video pad")
+                    
                     if src_pad.link(video_pad) == Gst.PadLinkReturn.OK:
                         self.log("   ✅ Video connected to HLS sink")
                         # Check hlssink state
@@ -2061,9 +2069,9 @@ class GLibWebRTCHandler:
             audio_src_pad = audio_queue.get_static_pad('src')
             if audio_src_pad:
                 def audio_segment_probe_cb(pad, info):
-                    if not hasattr(self, '_audio_segment_sent'):
-                        self._audio_segment_sent = True
-                        if info.type & Gst.PadProbeType.BUFFER:
+                    if info.type & Gst.PadProbeType.BUFFER:
+                        if not hasattr(self, '_audio_segment_sent'):
+                            self._audio_segment_sent = True
                             # Inject segment event before first audio buffer
                             segment = Gst.Segment()
                             segment.init(Gst.Format.TIME)
