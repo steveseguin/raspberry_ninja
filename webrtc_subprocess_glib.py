@@ -776,15 +776,46 @@ class GLibWebRTCHandler:
             return True  # Continue the timer
     
     def check_hls_streams_ready(self):
-        """Check if both audio and video are connected and start HLS recording"""
+        """Check if audio and/or video are connected and start HLS recording"""
         if not self.use_hls:
             return
             
-        # Check if both streams are connected
-        if hasattr(self, 'hls_audio_connected') and self.hls_audio_connected and \
-           hasattr(self, 'hls_video_connected') and self.hls_video_connected:
-            
+        # Check if we should start recording
+        has_audio = hasattr(self, 'hls_audio_connected') and self.hls_audio_connected
+        has_video = hasattr(self, 'hls_video_connected') and self.hls_video_connected
+        
+        # Start if we have both, or if we only have one and enough time has passed
+        should_start = False
+        if has_audio and has_video:
             self.log("   ✅ Both audio and video connected - starting HLS recording")
+            should_start = True
+        elif has_video and not has_audio:
+            # Start with video-only after a short delay
+            if not hasattr(self, 'video_only_timer_started'):
+                self.video_only_timer_started = True
+                # Wait 2 seconds for audio, then start anyway
+                def start_video_only():
+                    # Re-check audio status
+                    has_audio_now = hasattr(self, 'hls_audio_connected') and self.hls_audio_connected
+                    if not has_audio_now and hasattr(self, 'hlssink'):
+                        self.log("   ⚠️  No audio stream detected - starting HLS with video only")
+                        self.check_hls_streams_ready()
+                    return False  # Don't repeat
+                GLib.timeout_add(2000, start_video_only)
+                return
+            else:
+                # Timer already fired, start with video only
+                should_start = True
+        elif has_audio and not has_video:
+            # Rare case - audio only
+            self.log("   ℹ️  Audio-only HLS recording")
+            should_start = True
+            
+        if should_start:
+            # Prevent starting multiple times
+            if hasattr(self, 'hls_recording_started') and self.hls_recording_started:
+                return
+            self.hls_recording_started = True
             
             # Add a small delay for segment events to propagate on slower systems
             def delayed_start():
