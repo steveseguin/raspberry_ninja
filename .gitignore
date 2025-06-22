@@ -177,3 +177,8 @@ Thumbs.db
 .Trash-*
 .nfs*
 ndi/gst-plugin-ndi/
+
+# record.py whisper transcriptions output directory
+*_audio.ts
+stt/*.txt
+stt/*.json

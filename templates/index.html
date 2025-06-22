@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Vdo.Ninja Audio to AI</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f0f0f0;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        .container {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+        h1 {
+            color: #333;
+        }
+        p {
+            color: #666;
+        }
+        input[type="text"] {
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            width: 100%;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>VDO.ninja audio to text</h1>
+        <p>Enter vdo.ninja room and push channel</p>
+        <form action="/rec" method="post">
+            <input type="text" name="room" placeholder="Room Name"  value="{{ room }}" required>
+            <input type="text" name="record" placeholder="Record ID" value="{{ record }}" required>
+            <button type="submit">Start Recording</button>
+        </form>
+        <p>code : <a href="https://github.com/papiche/raspberry_ninja/">https://github.com/papiche/raspberry_ninja/</a></p>
+    </div>
+</body>
+</html>
