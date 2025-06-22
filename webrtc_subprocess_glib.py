@@ -821,6 +821,13 @@ class GLibWebRTCHandler:
             def delayed_start():
                 self.log("   ⏳ Starting HLS elements...")
                 
+                # Ensure pipeline is in PLAYING state
+                if hasattr(self, 'pipe') and self.pipe:
+                    current_state = self.pipe.get_state(0)[1]
+                    if current_state != Gst.State.PLAYING:
+                        self.pipe.set_state(Gst.State.PLAYING)
+                        self.log("   ▶️  Set pipeline to PLAYING state for HLS")
+                
                 # First sync the mux state
                 if hasattr(self, 'hls_mux') and self.hls_mux:
                     ret = self.hls_mux.sync_state_with_parent()
@@ -840,6 +847,14 @@ class GLibWebRTCHandler:
                     ret = self.hlssink.set_state(Gst.State.PLAYING)
                     ret_name = ret.value_name if hasattr(ret, 'value_name') else str(ret)
                     self.log(f"   HLS sink set_state result: {ret_name}")
+                    
+                    # For splitmuxsink, we may need to send a signal to start recording
+                    if hasattr(self.hlssink, 'emit'):
+                        try:
+                            self.hlssink.emit('split-now')
+                            self.log("   📍 Sent split-now signal to splitmuxsink")
+                        except:
+                            pass
                     
                     # Wait for state changes to complete
                     timeout = 2 * Gst.SECOND
@@ -1986,6 +2001,18 @@ class GLibWebRTCHandler:
                     state_ret, state, pending = self.hlssink.get_state(0)
                     state_name = state.value_name if hasattr(state, 'value_name') else str(state)
                     self.log(f"   HLS sink status check - State: {state_name}, Video buffers: {getattr(self, '_probe_counter', 0)}")
+                    
+                    # Check splitmuxsink properties
+                    if hasattr(self.hlssink, 'get_property'):
+                        try:
+                            # Log useful properties
+                            location = self.hlssink.get_property('location')
+                            max_size_time = self.hlssink.get_property('max-size-time')
+                            self.log(f"   Sink location: {location}")
+                            self.log(f"   Max size time: {max_size_time / Gst.SECOND:.1f} seconds")
+                        except:
+                            pass
+                    
                     # Check if files are being created
                     import os
                     import glob
@@ -1998,6 +2025,13 @@ class GLibWebRTCHandler:
                             self.log(f"      {os.path.basename(f)} ({size:,} bytes)")
                     else:
                         self.log("   ⚠️  No HLS files created yet")
+                        # Force a split to start recording
+                        if hasattr(self.hlssink, 'emit'):
+                            try:
+                                self.hlssink.emit('split-now')
+                                self.log("   🔄 Forced split-now signal")
+                            except:
+                                pass
                 return False  # Don't repeat
             
             GLib.timeout_add(3000, check_hls_status)  # Check after 3 seconds
