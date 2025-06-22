@@ -799,8 +799,13 @@ class GLibWebRTCHandler:
                 self.hlssink.set_property('location', f"{base_filename}_%05d.ts")
                 self.hlssink.set_property('max-size-time', 5 * Gst.SECOND)  # 5 second segments
                 self.hlssink.set_property('send-keyframe-requests', True)
-                # Tell splitmuxsink to use mpegtsmux internally
-                self.hlssink.set_property('muxer', Gst.ElementFactory.make('mpegtsmux', None))
+                
+                # Create mpegtsmux with proper configuration
+                mpegtsmux = Gst.ElementFactory.make('mpegtsmux', None)
+                if mpegtsmux:
+                    # Set alignment for proper segmentation
+                    mpegtsmux.set_property('alignment', 7)  # Use 7 for proper alignment
+                    self.hlssink.set_property('muxer', mpegtsmux)
                 
                 self.log(f"   Output: {base_filename}_*.ts (5 second segments)")
                 self.base_filename = base_filename
@@ -1534,13 +1539,24 @@ class GLibWebRTCHandler:
                 self.log("Failed to create video queue for HLS", "error")
                 return
                 
+            # Add identity element to help with segment handling
+            video_identity = Gst.ElementFactory.make('identity', 'video_identity')
+            if video_identity:
+                video_identity.set_property('single-segment', True)
+                
             if encoding_name in ['VP8', 'VP9', 'AV1']:
-                # VP8/VP9/AV1: queue -> depay -> decoder -> videoconvert -> x264enc -> h264parse -> video_queue -> mux
-                elements = [queue, depay, decoder, videoconvert_enc, encoder, h264parse, video_queue]
+                # VP8/VP9/AV1: queue -> depay -> decoder -> videoconvert -> x264enc -> h264parse -> identity -> video_queue -> mux
+                if video_identity:
+                    elements = [queue, depay, decoder, videoconvert_enc, encoder, h264parse, video_identity, video_queue]
+                else:
+                    elements = [queue, depay, decoder, videoconvert_enc, encoder, h264parse, video_queue]
             else:  # H264
-                # H264: queue -> depay -> h264parse -> video_queue -> mux
+                # H264: queue -> depay -> h264parse -> identity -> video_queue -> mux
                 self.log("   ✅ H264 codec - no transcoding needed for HLS")
-                elements = [queue, depay, h264parse, video_queue]
+                if video_identity:
+                    elements = [queue, depay, h264parse, video_identity, video_queue]
+                else:
+                    elements = [queue, depay, h264parse, video_queue]
                 
             # Add all elements to pipeline
             for element in elements:
@@ -1564,9 +1580,18 @@ class GLibWebRTCHandler:
                 if not encoder.link(h264parse):
                     self.log("Failed to link encoder to h264parse", "error")
                     return
-                if not h264parse.link(video_queue):
-                    self.log("Failed to link h264parse to video queue", "error")
-                    return
+                # Link with or without identity  
+                if video_identity:
+                    if not h264parse.link(video_identity):
+                        self.log("Failed to link h264parse to identity", "error")
+                        return
+                    if not video_identity.link(video_queue):
+                        self.log("Failed to link identity to video queue", "error")
+                        return
+                else:
+                    if not h264parse.link(video_queue):
+                        self.log("Failed to link h264parse to video queue", "error")
+                        return
             else:  # H264
                 # Link H264 passthrough chain
                 if not queue.link(depay):
@@ -1586,17 +1611,38 @@ class GLibWebRTCHandler:
                         return Gst.PadProbeReturn.OK
                     depay_pad.add_probe(Gst.PadProbeType.BUFFER, depay_probe_cb)
                     
-                if not h264parse.link(video_queue):
-                    self.log("Failed to link h264parse to video queue", "error")
-                    return
+                # Link with or without identity
+                if video_identity:
+                    if not h264parse.link(video_identity):
+                        self.log("Failed to link h264parse to identity", "error")
+                        return
+                    if not video_identity.link(video_queue):
+                        self.log("Failed to link identity to video queue", "error")
+                        return
+                else:
+                    if not h264parse.link(video_queue):
+                        self.log("Failed to link h264parse to video queue", "error")
+                        return
                     
-                # Add probe after h264parse to check flow
+                # Add probe after h264parse to check flow and inject segment if needed
                 h264_pad = h264parse.get_static_pad('src')
                 if h264_pad:
                     def h264_probe_cb(pad, info):
                         if not hasattr(self, '_h264_probe_logged'):
                             self._h264_probe_logged = True
                             self.log("   ✅ Video data confirmed after h264parse!")
+                            
+                            # Check if this is a buffer (not an event)
+                            if info.type & Gst.PadProbeType.BUFFER:
+                                # Inject a segment event before the first buffer
+                                if not hasattr(self, '_h264_segment_sent'):
+                                    self._h264_segment_sent = True
+                                    # Create segment event
+                                    segment = Gst.Segment()
+                                    segment.init(Gst.Format.TIME)
+                                    event = Gst.Event.new_segment(segment)
+                                    pad.push_event(event)
+                                    self.log("   ✅ Injected segment event for HLS")
                         return Gst.PadProbeReturn.OK
                     h264_pad.add_probe(Gst.PadProbeType.BUFFER, h264_probe_cb)
                     
@@ -1903,6 +1949,10 @@ class GLibWebRTCHandler:
                 aacparse = Gst.ElementFactory.make('aacparse', None)
                 # Create a queue before muxer
                 audio_queue = Gst.ElementFactory.make('queue', 'audio_queue_hls')
+                # Add identity element for audio segment handling
+                audio_identity = Gst.ElementFactory.make('identity', 'audio_identity')
+                if audio_identity:
+                    audio_identity.set_property('single-segment', True)
             else:
                 # For non-HLS, save OPUS directly in WebM container without transcoding
                 opusparse = Gst.ElementFactory.make('opusparse', None)
@@ -1923,7 +1973,10 @@ class GLibWebRTCHandler:
                 return
                 
             # Add elements to pipeline
-            elements = [queue, depay, decoder, audioconvert, audioresample, aacenc, aacparse, audio_queue]
+            if audio_identity:
+                elements = [queue, depay, decoder, audioconvert, audioresample, aacenc, aacparse, audio_identity, audio_queue]
+            else:
+                elements = [queue, depay, decoder, audioconvert, audioresample, aacenc, aacparse, audio_queue]
             for element in elements:
                 self.pipe.add(element)
                 
@@ -1946,9 +1999,18 @@ class GLibWebRTCHandler:
             if not aacenc.link(aacparse):
                 self.log("Failed to link aacenc to aacparse", "error")
                 return
-            if not aacparse.link(audio_queue):
-                self.log("Failed to link aacparse to audio queue", "error")
-                return
+            # Link with or without identity
+            if audio_identity:
+                if not aacparse.link(audio_identity):
+                    self.log("Failed to link aacparse to audio identity", "error")
+                    return
+                if not audio_identity.link(audio_queue):
+                    self.log("Failed to link audio identity to audio queue", "error")
+                    return
+            else:
+                if not aacparse.link(audio_queue):
+                    self.log("Failed to link aacparse to audio queue", "error")
+                    return
                 
             # Link audio queue to appropriate sink
             if hasattr(self, 'use_hlssink2') and self.use_hlssink2:
@@ -1994,6 +2056,22 @@ class GLibWebRTCHandler:
             # Sync states
             for element in elements:
                 element.sync_state_with_parent()
+                
+            # Add segment event injection for audio too
+            audio_src_pad = audio_queue.get_static_pad('src')
+            if audio_src_pad:
+                def audio_segment_probe_cb(pad, info):
+                    if not hasattr(self, '_audio_segment_sent'):
+                        self._audio_segment_sent = True
+                        if info.type & Gst.PadProbeType.BUFFER:
+                            # Inject segment event before first audio buffer
+                            segment = Gst.Segment()
+                            segment.init(Gst.Format.TIME)
+                            event = Gst.Event.new_segment(segment)
+                            pad.push_event(event)
+                            self.log("   ✅ Injected segment event for HLS audio")
+                    return Gst.PadProbeReturn.OK
+                audio_src_pad.add_probe(Gst.PadProbeType.BUFFER, audio_segment_probe_cb)
                 
             # Also ensure HLS sink is in correct state for audio
             if hasattr(self, 'hlssink') and self.hlssink:

@@ -1906,6 +1906,7 @@ class WebRTCClient:
         self.room_recording = getattr(params, 'room_recording', False)
         self.record_room = getattr(params, 'record_room', False)
         self.room_ndi = getattr(params, 'room_ndi', False)
+        self.single_stream_recording = getattr(params, 'single_stream_recording', False)
         # NDI direct mode is now the default, use ndi_combine to opt into the problematic combiner
         self.ndi_combine = getattr(params, 'ndi_combine', False)
         self.ndi_direct = not self.ndi_combine  # Direct mode by default
@@ -2348,6 +2349,12 @@ class WebRTCClient:
                     printc("Warning: Could not find client for webrtc element", "F00")
                     if self.puuid:
                         printc("This may occur with custom websocket servers that don't provide proper stream metadata", "F77")
+            
+            # Skip all recording logic if using subprocess mode
+            if self.single_stream_recording:
+                printc("   ⏭️  Skipping main process recording (handled by subprocess)", "77F")
+                return
+                
             if self.ndiout:
                 print("NDI OUT")
                 
@@ -4849,6 +4856,36 @@ class WebRTCClient:
                             else:
                                 printc(f"[Subprocess] ⚠️ Received offer from UUID {UUID}, but no stream mapping found.", "F70")
 
+                        elif self.single_stream_recording:
+                            # Single-stream recording mode - use subprocess
+                            printc("📥 Incoming connection offer (subprocess recording)", "0FF")
+                            
+                            # Create subprocess for recording
+                            stream_id = self.record  # Use the record parameter as stream ID
+                            config = {
+                                'mode': 'record',
+                                'stream_id': stream_id,
+                                'room': None,  # No room for single stream
+                                'record_file': self.record,
+                                'record_audio': not self.noaudio,
+                                'use_hls': self.use_hls,
+                                'use_splitmuxsink': self.use_splitmux,
+                                'password': self.password if self.password else None,
+                                'salt': self.salt if self.salt else ''
+                            }
+                            
+                            # Create and start subprocess
+                            await self.create_recording_subprocess(stream_id, UUID)
+                            
+                            # Map UUID to stream for routing
+                            self.uuid_to_stream_id[UUID] = stream_id
+                            self.stream_id_to_uuid[stream_id] = UUID
+                            
+                            # Route the offer to subprocess
+                            if stream_id in self.subprocess_managers:
+                                printc(f"[Subprocess] Routing offer to recording subprocess for {stream_id}", "0F0")
+                                await self.handle_subprocess_sdp(stream_id, sdp_data)
+                                
                         elif self.streamin:
                             # Standard viewer mode
                             printc("📥 Incoming connection offer", "0FF")
@@ -4875,7 +4912,7 @@ class WebRTCClient:
                     if not isinstance(candidates, list):
                         candidates = [candidates]
 
-                    if self.room_recording:
+                    if self.room_recording or self.single_stream_recording:
                         stream_id = self.uuid_to_stream_id.get(UUID)
                         if stream_id and stream_id in self.subprocess_managers:
                             # Route to the correct subprocess
@@ -4893,16 +4930,30 @@ class WebRTCClient:
                     if msg['request'] not in ['play', 'offerSDP', 'cleanup', 'bye', 'videoaddedtoroom']:
                         printc(f"📨 Request: {msg['request']}", "77F")
                     if 'offerSDP' in  msg['request']:
-                        await self.start_pipeline(UUID)
+                        if not self.single_stream_recording:  # Skip for subprocess recording
+                            await self.start_pipeline(UUID)
                     elif msg['request'] == 'cleanup' or msg['request'] == 'bye':
-                        # Handle room stream cleanup
+                        # Handle cleanup for recording
                         if self.room_recording and UUID in self.room_streams:
                             await self.cleanup_room_stream(UUID)
+                        elif self.single_stream_recording and UUID in self.uuid_to_stream_id:
+                            # Clean up single-stream recording subprocess
+                            stream_id = self.uuid_to_stream_id[UUID]
+                            printc(f"🧹 Cleaning up single-stream recording for {stream_id}", "F77")
+                            if stream_id in self.subprocess_managers:
+                                manager = self.subprocess_managers[stream_id]
+                                await manager.stop()
+                                del self.subprocess_managers[stream_id]
+                            if UUID in self.uuid_to_stream_id:
+                                del self.uuid_to_stream_id[UUID]
+                            if stream_id in self.stream_id_to_uuid:
+                                del self.stream_id_to_uuid[stream_id]
                     elif msg['request'] == "play":
                         # Play request received
                         if 'streamID' in msg:
                             if msg['streamID'] == self.stream_id+self.hashcode:
-                                await self.start_pipeline(UUID)
+                                if not self.single_stream_recording:  # Skip for subprocess recording
+                                    await self.start_pipeline(UUID)
                     elif msg['request'] == "videoaddedtoroom":
                         if 'streamID' in msg:
                             printc(f"📹 Video added to room: {msg['streamID']}", "0FF")
@@ -6419,7 +6470,12 @@ async def main():
         else:
             args.stream_filter = None
     elif args.record:
-        args.streamin = args.record
+        # Single-stream recording mode - use subprocess like room recording
+        args.streamin = "single_stream_recording"  # Special value to indicate subprocess recording
+        args.single_stream_recording = True
+        args.room_recording = False  # Not room recording, but use subprocess
+        args.auto_turn = True  # Automatically use default TURN servers for recording
+        printc(f"📹 Recording mode: {args.record} (using subprocess)", "0FF")
     else:
         args.streamin = False
 
