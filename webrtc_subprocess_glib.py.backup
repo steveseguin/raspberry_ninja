@@ -79,7 +79,6 @@ class GLibWebRTCHandler:
         self.mode = config.get('mode', 'view')
         self.room = config.get('room')
         self.record_file = config.get('record_file')
-        self.record_path = config.get('record_path')
         self.record_audio = config.get('record_audio', False)
         self.room_ndi = config.get('room_ndi', False)
         self.ndi_name = config.get('ndi_name')
@@ -776,7 +775,11 @@ class GLibWebRTCHandler:
             return True  # Continue the timer
     
     def check_hls_streams_ready(self):
+<<<<<<< HEAD
         """Check if both audio and video are connected and start HLS recording"""
+=======
+        """Check if both audio and video are connected and unblock if ready"""
+>>>>>>> c5ce2274fe60e683494e87991e7cb8688ef9a2c8
         if not self.use_hls:
             return
             
@@ -786,6 +789,7 @@ class GLibWebRTCHandler:
             
             self.log("   ✅ Both audio and video connected - starting HLS recording")
             
+<<<<<<< HEAD
             # Add a small delay for segment events to propagate on slower systems
             def delayed_start():
                 self.log("   ⏳ Starting HLS elements...")
@@ -830,6 +834,39 @@ class GLibWebRTCHandler:
                 
             # Schedule the start with a 100ms delay
             GLib.timeout_add(100, delayed_start)
+=======
+            # First sync the HLS sink state
+            if hasattr(self, 'hlssink') and self.hlssink:
+                ret = self.hlssink.sync_state_with_parent()
+                self.log(f"   HLS sink sync result: {ret}")
+                
+                # Ensure it's in PLAYING state
+                state_ret, state, pending = self.hlssink.get_state(0)
+                if state != Gst.State.PLAYING:
+                    self.log(f"   HLS sink not in PLAYING state ({state}), forcing to PLAYING")
+                    ret = self.hlssink.set_state(Gst.State.PLAYING)
+                    self.log(f"   HLS sink set_state result: {ret}")
+                    
+                    # Wait for state change
+                    timeout = 2 * Gst.SECOND
+                    state_ret, state, pending = self.hlssink.get_state(timeout)
+                    self.log(f"   HLS sink final state: {state}")
+            
+            # Now remove the blocking probes to allow data flow
+            if hasattr(self, 'video_probe_id') and hasattr(self, 'video_queue'):
+                video_src = self.video_queue.get_static_pad('src')
+                if video_src:
+                    video_src.remove_probe(self.video_probe_id)
+                    self.log("   ▶️  Unblocked video flow")
+                    
+            if hasattr(self, 'audio_probe_id') and hasattr(self, 'audio_queue'):
+                audio_src = self.audio_queue.get_static_pad('src')
+                if audio_src:
+                    audio_src.remove_probe(self.audio_probe_id)
+                    self.log("   ▶️  Unblocked audio flow")
+                    
+            self.log("   🎬 HLS recording started!")
+>>>>>>> c5ce2274fe60e683494e87991e7cb8688ef9a2c8
     
     def setup_hls_muxer(self):
         """Set up shared mpegtsmux and HLS sink for audio/video"""
@@ -845,27 +882,8 @@ class GLibWebRTCHandler:
             
         # Create HLS sink
         import datetime
-        import os
         timestamp = int(datetime.datetime.now().timestamp())
-        
-        # Determine output directory
-        if hasattr(self, 'record_path') and self.record_path:
-            output_dir = self.record_path
-        else:
-            # Try current directory first
-            output_dir = os.getcwd()
-            # Check if we can write to it
-            test_file = os.path.join(output_dir, f".test_{timestamp}")
-            try:
-                with open(test_file, 'w') as f:
-                    f.write("test")
-                os.remove(test_file)
-            except:
-                # Can't write to current dir, try /tmp
-                output_dir = "/tmp"
-                self.log(f"   ⚠️  Cannot write to current directory, using {output_dir}")
-        
-        base_filename = os.path.join(output_dir, f"{self.room}_{self.stream_id}_{timestamp}")
+        base_filename = f"{self.room}_{self.stream_id}_{timestamp}"
         
         # For Jetson Nano with GStreamer 1.23.0, we need explicit mpegtsmux control
         # Create our own mpegtsmux to ensure proper segment handling
@@ -935,6 +953,7 @@ class GLibWebRTCHandler:
         # Add sink to pipeline
         self.pipe.add(self.hlssink)
         
+<<<<<<< HEAD
         # Link mux to sink
         if not self.use_splitmuxsink:
             # For manual segmentation, link mux to filesink
@@ -944,6 +963,9 @@ class GLibWebRTCHandler:
         
         # Keep elements in NULL state initially
         self.hls_mux.set_state(Gst.State.NULL)
+=======
+        # Keep sink in NULL state until pads are connected
+>>>>>>> c5ce2274fe60e683494e87991e7cb8688ef9a2c8
         self.hlssink.set_state(Gst.State.NULL)
         
         self.log("   ✅ HLS muxer ready for audio/video streams")
@@ -951,19 +973,12 @@ class GLibWebRTCHandler:
     def write_m3u8_header(self):
         """Write initial M3U8 playlist header"""
         if hasattr(self, 'playlist_filename'):
-            try:
-                with open(self.playlist_filename, 'w') as f:
-                    f.write("#EXTM3U\n")
-                    f.write("#EXT-X-VERSION:3\n")
-                    f.write(f"#EXT-X-TARGETDURATION:{int(self.segment_duration)}\n")
-                    f.write("#EXT-X-MEDIA-SEQUENCE:0\n")
-                    f.write("\n")
-                self.log(f"   ✅ Created M3U8 playlist: {self.playlist_filename}")
-            except PermissionError as e:
-                self.log(f"   ❌ Permission denied writing M3U8: {self.playlist_filename}", "error")
-                self.log(f"      Try running with write permissions or specify --record-path", "error")
-                # Disable manual segmentation if we can't write
-                self.use_manual_segmentation = False
+            with open(self.playlist_filename, 'w') as f:
+                f.write("#EXTM3U\n")
+                f.write("#EXT-X-VERSION:3\n")
+                f.write(f"#EXT-X-TARGETDURATION:{int(self.segment_duration)}\n")
+                f.write("#EXT-X-MEDIA-SEQUENCE:0\n")
+                f.write("\n")
         
     def setup_ndi_combiner(self):
         """Set up NDI sink combiner for audio/video multiplexing"""
@@ -1799,6 +1814,7 @@ class GLibWebRTCHandler:
                 if video_pad:
                     src_pad = video_queue.get_static_pad('src')
                     
+<<<<<<< HEAD
                     # Add probe to inject segment event before first buffer
                     def video_segment_probe(pad, info):
                         if info.type & Gst.PadProbeType.BUFFER:
@@ -1820,6 +1836,8 @@ class GLibWebRTCHandler:
                         video_segment_probe
                     )
                     
+=======
+>>>>>>> c5ce2274fe60e683494e87991e7cb8688ef9a2c8
                     if src_pad.link(video_pad) == Gst.PadLinkReturn.OK:
                         self.log("   ✅ Video connected to mpegtsmux")
                         # Store pad reference
@@ -1838,6 +1856,7 @@ class GLibWebRTCHandler:
             for element in elements:
                 element.sync_state_with_parent()
                 
+<<<<<<< HEAD
             # For HLS, ensure proper synchronization
             if self.use_hls:
                 # Explicitly set the pipeline to PLAYING state now that video is connected
@@ -1847,6 +1866,19 @@ class GLibWebRTCHandler:
                     if current_state != Gst.State.PLAYING:
                         self.pipe.set_state(Gst.State.PLAYING)
                         self.log("   ▶️  Set pipeline to PLAYING state after video connection")
+=======
+            # Add blocking probe to video queue to prevent data flow until ready
+            if self.use_hls:
+                video_queue_src = video_queue.get_static_pad('src')
+                if video_queue_src:
+                    def video_block_probe_cb(pad, info):
+                        return Gst.PadProbeReturn.OK  # Just block
+                    self.video_probe_id = video_queue_src.add_probe(
+                        Gst.PadProbeType.BLOCK_DOWNSTREAM,
+                        video_block_probe_cb
+                    )
+                    self.log("   🛑 Blocking video flow until both streams ready")
+>>>>>>> c5ce2274fe60e683494e87991e7cb8688ef9a2c8
                     
             # Track that video is connected
             self.hls_video_connected = True
@@ -2224,6 +2256,20 @@ class GLibWebRTCHandler:
                 element.sync_state_with_parent()
                 
                 
+<<<<<<< HEAD
+=======
+            # Add blocking probe to audio queue to prevent data flow until ready  
+            if self.use_hls:
+                audio_queue_src = audio_queue.get_static_pad('src')
+                if audio_queue_src:
+                    def audio_block_probe_cb(pad, info):
+                        return Gst.PadProbeReturn.OK  # Just block
+                    self.audio_probe_id = audio_queue_src.add_probe(
+                        Gst.PadProbeType.BLOCK_DOWNSTREAM,
+                        audio_block_probe_cb
+                    )
+                    self.log("   🛑 Blocking audio flow until both streams ready")
+>>>>>>> c5ce2274fe60e683494e87991e7cb8688ef9a2c8
                     
             # Track that audio is connected
             self.hls_audio_connected = True
