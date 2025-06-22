@@ -588,13 +588,6 @@ class GLibWebRTCHandler:
                 "allowresources": False
             }
             
-            # If HLS mode is enabled, request H264 codec in the media request
-            if self.use_hls:
-                # VDO.Ninja codec parameters - both for compatibility
-                request["h264"] = True  # Primary H264 flag
-                request["codec"] = "h264"  # Alternative codec specification
-                self.log("   Requesting H264 codec in media request for HLS")
-            
             request_json = json.dumps(request)
             data_channel.send_string(request_json)
             self.log(f"Media request sent: {request_json}")
@@ -1272,7 +1265,8 @@ class GLibWebRTCHandler:
                 if h264parse:
                     h264parse.set_property('config-interval', -1)  # Send config with every keyframe
             else:
-                # Use WebM but with better settings for live streams
+                # Direct VP8 to WebM without transcoding
+                self.log("   📦 Direct VP8 → WebM (no transcoding)")
                 mux = Gst.ElementFactory.make('webmmux', None)
                 # Set properties for better live streaming
                 mux.set_property('streamable', True)
@@ -1293,7 +1287,8 @@ class GLibWebRTCHandler:
                     self.log("   openh264dec not available, using avdec_h264")
                     decoder = Gst.ElementFactory.make('avdec_h264', None)
             elif not self.use_hls:
-                # For H264, we can use MP4
+                # Direct H264 to MP4 without transcoding
+                self.log("   📦 Direct H264 → MP4 (no transcoding)")
                 mux = Gst.ElementFactory.make('mp4mux', None)
                 extension = 'mp4'
         elif encoding_name == 'VP9':
@@ -1315,7 +1310,8 @@ class GLibWebRTCHandler:
                 if h264parse:
                     h264parse.set_property('config-interval', -1)  # Send config with every keyframe
             else:
-                # Use WebM for VP9
+                # Direct VP9 to WebM without transcoding
+                self.log("   📦 Direct VP9 → WebM (no transcoding)")
                 mux = Gst.ElementFactory.make('webmmux', None)
                 mux.set_property('streamable', True)
                 mux.set_property('min-index-interval', 1000000000)  # 1 second
@@ -1908,11 +1904,10 @@ class GLibWebRTCHandler:
                 # Create a queue before muxer
                 audio_queue = Gst.ElementFactory.make('queue', 'audio_queue_hls')
             else:
-                # For non-HLS, decode to raw and save as WAV for maximum compatibility
-                decoder = Gst.ElementFactory.make('opusdec', None)
-                audioconvert = Gst.ElementFactory.make('audioconvert', None)
-                wavenc = Gst.ElementFactory.make('wavenc', None)
-                extension = 'wav'
+                # For non-HLS, save OPUS directly in WebM container without transcoding
+                opusparse = Gst.ElementFactory.make('opusparse', None)
+                webmmux = Gst.ElementFactory.make('webmmux', None)
+                extension = 'webm'
         else:
             self.log(f"   ⚠️  Unsupported audio codec: {encoding_name}, using fakesink")
             fakesink = Gst.ElementFactory.make('fakesink', None)
@@ -2028,10 +2023,10 @@ class GLibWebRTCHandler:
                 self.audio_filename = self.base_filename
             
         else:
-            # Non-HLS mode - original recording code
+            # Non-HLS mode - save OPUS directly without transcoding
             filesink = Gst.ElementFactory.make('filesink', None)
             
-            if not all([queue, depay, decoder, audioconvert, wavenc, filesink]):
+            if not all([queue, depay, opusparse, webmmux, filesink]):
                 self.log("Failed to create audio elements", "error")
                 return
                 
@@ -2040,10 +2035,11 @@ class GLibWebRTCHandler:
             filename = f"{self.room}_{self.stream_id}_{timestamp}_audio.{extension}"
             filesink.set_property('location', filename)
             self.audio_filename = filename
+            self.log(f"   📦 Direct OPUS → WebM (no transcoding)")
             self.log(f"   Output file: {filename}")
             
             # Add elements to pipeline
-            elements = [queue, depay, decoder, audioconvert, wavenc, filesink]
+            elements = [queue, depay, opusparse, webmmux, filesink]
             for element in elements:
                 self.pipe.add(element)
                 
@@ -2051,17 +2047,14 @@ class GLibWebRTCHandler:
             if not queue.link(depay):
                 self.log("Failed to link queue to depay", "error")
                 return
-            if not depay.link(decoder):
-                self.log("Failed to link depay to decoder", "error")
+            if not depay.link(opusparse):
+                self.log("Failed to link depay to opusparse", "error")
                 return
-            if not decoder.link(audioconvert):
-                self.log("Failed to link decoder to audioconvert", "error")
+            if not opusparse.link(webmmux):
+                self.log("Failed to link opusparse to webmmux", "error")
                 return
-            if not audioconvert.link(wavenc):
-                self.log("Failed to link audioconvert to wavenc", "error")
-                return
-            if not wavenc.link(filesink):
-                self.log("Failed to link wavenc to filesink", "error")
+            if not webmmux.link(filesink):
+                self.log("Failed to link webmmux to filesink", "error")
                 return
                 
             # Sync states

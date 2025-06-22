@@ -2435,17 +2435,27 @@ class WebRTCClient:
                     
                     if use_direct_ndi:
                         printc(f"   🎥 NDI VIDEO OUTPUT (Direct Mode) [{video_codec}]", "0F0")
+                        printc(f"   🔄 Transcoding {video_codec} → UYVY for NDI", "FF0")
+                        printc(f"   📐 Output: UYVY @ 30fps", "77F")
+                        printc(f"   🎯 NDI Name: {self.ndiout}", "0FF")
                         printc(f"   ✅ No freezing issues in direct mode", "0F0")
                     else:
                         printc(f"   🎥 NDI VIDEO OUTPUT (Combiner Mode) [{video_codec}]", "FF0")
+                        printc(f"   🔄 Transcoding {video_codec} → UYVY for NDI", "FF0")
+                        printc(f"   📐 Output: UYVY @ 30fps", "77F")
+                        printc(f"   🎯 NDI Name: {self.ndiout}", "0FF")
                         printc(f"   ⚠️  WARNING: Combiner mode freezes after ~1500-2000 buffers", "F00")
                         
                 elif "audio" in name:
                     pad_name = "audio"
                     if use_direct_ndi:
                         printc(f"   🎤 NDI AUDIO OUTPUT (Direct Mode)", "0F0")
+                        printc(f"   🔄 Transcoding OPUS → F32LE for NDI", "FF0")
+                        printc(f"   📐 Output: 48kHz, 2ch, F32LE", "77F")
                     else:
                         printc(f"   🎤 NDI AUDIO OUTPUT (Combiner Mode)", "FF0")
+                        printc(f"   🔄 Transcoding OPUS → F32LE for NDI", "FF0")
+                        printc(f"   📐 Output: 48kHz, 2ch, F32LE", "77F")
                 else:
                     print("Unsupported media type:", name)
                     return
@@ -2806,16 +2816,12 @@ class WebRTCClient:
                                 else:
                                     printc("   ❌ Failed to get source pad from video pipeline", "F00")
                             else:
-                                # VP8 recording to WebM
-                                printc("   🔄 Re-encoding VP8 → WebM (1280x720)", "FF0")
+                                # VP8 recording to WebM - direct copy without re-encoding
+                                printc("   📦 Direct VP8 → WebM (no transcoding)", "0F0")
                                 filename = f"./{self.streamin}_{str(int(time.time()))}.webm"
                                 out = Gst.parse_bin_from_description(
-                                    "queue max-size-buffers=0 max-size-time=0 ! "
+                                    "queue ! "
                                     "rtpvp8depay ! "
-                                    "vp8dec ! "
-                                    "videoscale ! "
-                                    "video/x-raw,width=1280,height=720 ! "
-                                    "vp8enc deadline=1 cpu-used=4 ! "
                                     "matroskamux name=mux1 streamable=true ! "
                                     f"filesink name=filesink location={filename}", True)
                                 printc(f"   📁 Output: {filename}", "77F")
@@ -3007,12 +3013,12 @@ class WebRTCClient:
                                 else:
                                     printc("   ❌ Failed to get source pad from audio pipeline", "F00")
                             else:
-                                # For non-HLS mode, save as WAV for maximum compatibility
-                                printc("   🔄 Decoding OPUS → WAV (uncompressed)", "FF0")
-                                filename = f"{self.streamin}_{str(int(time.time()))}_audio.wav"
+                                # For non-HLS mode, save OPUS in WebM container without transcoding
+                                printc("   📦 Direct OPUS → WebM (no transcoding)", "0F0")
+                                filename = f"{self.streamin}_{str(int(time.time()))}_audio.webm"
                                 out = Gst.parse_bin_from_description(
-                                    "queue ! rtpopusdepay ! opusdec ! audioconvert ! "
-                                    "audio/x-raw,format=S16LE,rate=48000,channels=2 ! wavenc ! "
+                                    "queue ! rtpopusdepay ! opusparse ! "
+                                    "webmmux ! "
                                     f"filesink name=filesinkaudio location={filename}", True)
                                 printc(f"   📁 Output: {filename}", "77F")
 
@@ -3194,6 +3200,7 @@ class WebRTCClient:
                     msg = {"audio":True, "video":False, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
                 else:
                     msg = {"audio":True, "video":True, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
+                
                 self.sendMessage(msg)
             elif self.midi:
                 msg = {"audio":False, "video":False, "allowmidi":True, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
@@ -3806,6 +3813,63 @@ class WebRTCClient:
         msg = {'description': {'type': 'answer', 'sdp': text}, 'UUID': client['UUID'], 'session': client['session']}
         self.sendMessage(msg)
 
+    def prefer_codec(self, sdp: str, codec: str = 'h264') -> str:
+        """Reorder codecs in SDP to prefer a specific codec"""
+        if self.use_hls and codec == 'h264':
+            printc("   🔄 Reordering SDP to prefer H264 codec", "0F0")
+        
+        lines = sdp.split('\n')
+        video_line_index = -1
+        video_codecs = []
+        
+        # Find video m= line
+        for i, line in enumerate(lines):
+            if line.startswith('m=video'):
+                video_line_index = i
+                parts = line.split()
+                if len(parts) > 3:
+                    video_codecs = parts[3:]  # Get codec numbers
+                break
+        
+        if video_line_index < 0 or not video_codecs:
+            return sdp
+            
+        # Find codec details from rtpmap lines
+        codec_map = {}
+        for line in lines:
+            if line.startswith('a=rtpmap:'):
+                parts = line.split()
+                if len(parts) >= 2:
+                    codec_num = parts[0].split(':')[1]
+                    codec_details = parts[1]
+                    if 'VP8/90000' in codec_details:
+                        codec_map['vp8'] = codec_num
+                    elif 'VP9/90000' in codec_details:
+                        codec_map['vp9'] = codec_num
+                    elif 'H264/90000' in codec_details:
+                        codec_map['h264'] = codec_num
+                    elif 'AV1/90000' in codec_details or 'AV1X/90000' in codec_details:
+                        codec_map['av1'] = codec_num
+        
+        # If we found the video line and the preferred codec
+        if video_line_index >= 0 and codec.lower() in codec_map and video_codecs:
+            preferred_codec = codec_map[codec.lower()]
+            
+            # Reorder codecs to put preferred first
+            if preferred_codec in video_codecs:
+                video_codecs.remove(preferred_codec)
+                video_codecs.insert(0, preferred_codec)
+                
+                # Rebuild the m= line
+                m_parts = lines[video_line_index].split()
+                m_parts[3:] = video_codecs
+                lines[video_line_index] = ' '.join(m_parts)
+                
+                if self.use_hls:
+                    printc(f"   ✅ H264 codec moved to preferred position", "0F0")
+        
+        return '\n'.join(lines)
+
     def handle_offer(self, msg, UUID):
         client = self.clients[UUID]
         if not client or not client['webrtc']:
@@ -3813,6 +3877,11 @@ class WebRTCClient:
         if 'sdp' in msg:
             assert(msg['type'] == 'offer')
             sdp = msg['sdp']
+            
+            # If HLS mode, prefer H264 codec in SDP
+            if self.use_hls:
+                sdp = self.prefer_codec(sdp, 'h264')
+            
             res, sdpmsg = GstSdp.SDPMessage.new()
             GstSdp.sdp_message_parse_buffer(bytes(sdp.encode()), sdpmsg)
             offer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.OFFER, sdpmsg)
@@ -4213,6 +4282,10 @@ class WebRTCClient:
                 f"queue ! rtph264depay ! h264parse ! mpegtsmux ! "
                 f"filesink name=filesink_{stream_id} location={recording_file}"
             )
+            printc(f"[{stream_id}] 🎥 ROOM VIDEO RECORDING [{encoding_name}]", "0F0")
+            printc(f"[{stream_id}]    📦 Direct copy (no transcoding)", "0F0")
+            printc(f"[{stream_id}]    📁 Output: {recording_file}", "0FF")
+            printc(f"[{stream_id}]    📐 Format: MPEG-TS container", "77F")
         elif encoding_name == 'VP8':
             # VP8 recording - decode and re-encode to handle resolution changes
             recording_file = f"{self.record}_{stream_id}_{timestamp}.webm"
@@ -4226,18 +4299,24 @@ class WebRTCClient:
                 f"matroskamux streamable=true ! "
                 f"filesink name=filesink_{stream_id} location={recording_file}"
             )
+            printc(f"[{stream_id}] 🎥 ROOM VIDEO RECORDING [{encoding_name}]", "0F0")
+            printc(f"[{stream_id}]    🔄 Transcoding VP8 → VP8 (for resolution stability)", "FF0")
+            printc(f"[{stream_id}]    📁 Output: {recording_file}", "0FF")
+            printc(f"[{stream_id}]    📐 Resolution: 1280x720", "77F")
+            printc(f"[{stream_id}]    📐 Format: WebM container", "77F")
         elif encoding_name == 'VP9':
             recording_file = f"{self.record}_{stream_id}_{timestamp}.mkv"
             pipeline_str = (
                 f"queue ! rtpvp9depay ! matroskamux ! "
                 f"filesink name=filesink_{stream_id} location={recording_file}"
             )
+            printc(f"[{stream_id}] 🎥 ROOM VIDEO RECORDING [{encoding_name}]", "0F0")
+            printc(f"[{stream_id}]    📦 Direct copy (no transcoding)", "0F0")
+            printc(f"[{stream_id}]    📁 Output: {recording_file}", "0FF")
+            printc(f"[{stream_id}]    📐 Format: Matroska (MKV) container", "77F")
         else:
             printc(f"[{stream_id}] Unknown codec: {encoding_name}", "F00")
             return
-            
-        printc(f"[{stream_id}] Recording to: {recording_file}", "0F0")
-        printc(f"[{stream_id}] Pipeline: {pipeline_str}", "77F")
         
         # Create bin from description
         try:
@@ -4273,7 +4352,7 @@ class WebRTCClient:
             recorder['recording_file'] = recording_file
             recorder['filesink'] = pipe.get_by_name(f'filesink_{stream_id}')
             recorder['start_time'] = time.time()
-            printc(f"[{stream_id}] ✅ Recording started", "0F0")
+            printc(f"[{stream_id}] ✅ Recording active - writing to disk", "0F0")
             
             # Update room_streams to show recording status
             async def update_status():
