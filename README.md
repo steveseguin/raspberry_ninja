@@ -696,6 +696,68 @@ Please note, the raspberry_ninja publish.py script can both send and recieve MID
 
 midi demo video: https://youtu.be/Gry9UFtOTmQ
 
+## `record.py` - Audio Recording and Transcription Service
+
+The `record.py` microservice provides audio recording and automatic transcription capabilities using OpenAI's Whisper AI model.
+
+### Features
+
+- **Audio Recording**: Record audio streams from VDO.Ninja rooms
+- **Automatic Transcription**: Transcribe recordings using Whisper AI
+- **REST API**: Start/stop recordings via HTTP endpoints
+- **Process Monitoring**: Automatic timeout to prevent runaway recordings
+- **Command Line Interface**: Direct CLI usage for recording
+
+### Prerequisites
+
+```bash
+# Install Whisper and dependencies
+pip3 install openai-whisper fastapi uvicorn
+```
+
+### Usage
+
+#### Start the FastAPI Server
+
+```bash
+python3 record.py --host 0.0.0.0 --port 8000
+```
+
+#### Start Recording (API)
+
+```bash
+curl -X POST -F "room=myRoom" -F "record=myRecord" http://localhost:8000/rec
+```
+
+#### Stop Recording (API)
+
+```bash
+curl -X POST -F "record=myRecord" -F "process_pid=<PID>" -F "language=en" http://localhost:8000/stop
+```
+
+#### Command Line Recording
+
+```bash
+# Start recording
+python3 record.py --room myRoom --record myRecord
+
+# Stop recording and transcribe
+python3 record.py --stop --pid <PID> --record myRecord --language en
+```
+
+### Systemd Service
+
+To run as a system service:
+
+```bash
+sudo ./setup.ninja_record.systemd.sh
+```
+
+### Output
+
+- Audio files: Saved as `<record_id>_audio.ts`
+- Transcriptions: Saved in `stt/` directory as text files
+
 ### Note:
 
 - Installation from source is pretty slow and problematic on a rpi; using system images makes using this so much easier.
