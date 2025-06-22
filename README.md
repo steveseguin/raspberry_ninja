@@ -696,67 +696,191 @@ Please note, the raspberry_ninja publish.py script can both send and recieve MID
 
 midi demo video: https://youtu.be/Gry9UFtOTmQ
 
-## `record.py` - Audio Recording and Transcription Service
+## Audio Recording and Transcription with `record.py`
 
-The `record.py` microservice provides audio recording and automatic transcription capabilities using OpenAI's Whisper AI model.
+The `record.py` script is a standalone microservice that provides audio recording and automatic transcription capabilities for VDO.Ninja streams using OpenAI's Whisper AI model. This service can run independently of the main `publish.py` script.
 
-### Features
+### What it does
 
-- **Audio Recording**: Record audio streams from VDO.Ninja rooms
-- **Automatic Transcription**: Transcribe recordings using Whisper AI
-- **REST API**: Start/stop recordings via HTTP endpoints
-- **Process Monitoring**: Automatic timeout to prevent runaway recordings
-- **Command Line Interface**: Direct CLI usage for recording
+- **Records Audio Streams**: Captures audio from any VDO.Ninja room participant
+- **Automatic Speech-to-Text**: Transcribes recordings using Whisper AI after recording stops
+- **Web Interface**: Provides a simple web UI for managing recordings
+- **REST API**: Offers HTTP endpoints for programmatic control
+- **Process Safety**: Automatically terminates recordings after 1 hour to prevent runaway processes
+- **Multi-Language Support**: Supports transcription in multiple languages
 
-### Prerequisites
+### Installation
+
+#### 1. Install System Dependencies
 
 ```bash
-# Install Whisper and dependencies
-pip3 install openai-whisper fastapi uvicorn
+# Update system
+sudo apt-get update
+sudo apt-get upgrade -y
+
+# Install Python and audio dependencies
+sudo apt-get install -y python3-pip ffmpeg
 ```
 
-### Usage
+#### 2. Install Python Dependencies
 
-#### Start the FastAPI Server
+```bash
+# Install Whisper AI and web framework
+pip3 install openai-whisper fastapi uvicorn
 
+# For GPU acceleration (optional, requires CUDA)
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+```
+
+#### 3. Configure Whisper Model
+
+The script uses the "medium" Whisper model by default. You can modify this in `record.py` line 22:
+- `tiny` - Fastest, least accurate (39M parameters)
+- `base` - Fast, good accuracy (74M parameters)
+- `small` - Balanced (244M parameters)
+- `medium` - Slower, better accuracy (769M parameters) - **Default**
+- `large` - Slowest, best accuracy (1550M parameters)
+
+First run will download the model (~1.5GB for medium).
+
+### Usage Methods
+
+#### Method 1: Web Interface
+
+1. Start the web server:
+   ```bash
+   python3 record.py --host 0.0.0.0 --port 8000
+   ```
+
+2. Open browser to `http://your-ip:8000`
+
+3. Enter room name and record ID, click "Start Recording"
+
+4. To stop, click "Stop Recording" and wait for transcription
+
+#### Method 2: REST API
+
+Start the server:
 ```bash
 python3 record.py --host 0.0.0.0 --port 8000
 ```
 
-#### Start Recording (API)
-
+Start recording:
 ```bash
-curl -X POST -F "room=myRoom" -F "record=myRecord" http://localhost:8000/rec
+# Returns JSON with process_pid
+curl -X POST \
+  -F "room=myRoomName" \
+  -F "record=myRecordID" \
+  http://localhost:8000/rec
 ```
 
-#### Stop Recording (API)
-
+Stop recording and transcribe:
 ```bash
-curl -X POST -F "record=myRecord" -F "process_pid=<PID>" -F "language=en" http://localhost:8000/stop
+curl -X POST \
+  -F "record=myRecordID" \
+  -F "process_pid=12345" \
+  -F "language=en" \
+  http://localhost:8000/stop
 ```
 
-#### Command Line Recording
-
+Check recording status:
 ```bash
-# Start recording
-python3 record.py --room myRoom --record myRecord
-
-# Stop recording and transcribe
-python3 record.py --stop --pid <PID> --record myRecord --language en
+curl http://localhost:8000/recording/myRecordID
 ```
 
-### Systemd Service
+#### Method 3: Command Line Only
 
-To run as a system service:
+Start recording:
+```bash
+python3 record.py --room myRoomName --record myRecordID
+# Note the PID that's displayed
+```
+
+Stop recording (in another terminal):
+```bash
+python3 record.py --stop --pid 12345 --record myRecordID --language en
+```
+
+### File Output
+
+- **Audio files**: Saved as `{record_id}_audio.ts` in the current directory
+- **Transcriptions**: Saved as `stt/{record_id}_{timestamp}.txt`
+- **Format**: Audio is saved in MPEG-TS format, compatible with most players
+
+### Running as a System Service
+
+For production use, run as a systemd service:
 
 ```bash
+# Install the service
 sudo ./setup.ninja_record.systemd.sh
+
+# Start the service
+sudo systemctl start ninja-record
+
+# Enable auto-start on boot
+sudo systemctl enable ninja-record
+
+# Check status
+sudo systemctl status ninja-record
+
+# View logs
+sudo journalctl -u ninja-record -f
 ```
 
-### Output
+### Configuration Options
 
-- Audio files: Saved as `<record_id>_audio.ts`
-- Transcriptions: Saved in `stt/` directory as text files
+When starting the server:
+- `--host`: IP to bind to (default: 127.0.0.1, use 0.0.0.0 for all interfaces)
+- `--port`: Port number (default: 8000)
+
+When recording:
+- `--room`: VDO.Ninja room name
+- `--record`: Unique record ID (becomes the filename)
+- `--language`: Transcription language code (default: auto-detect)
+  - Examples: `en` (English), `es` (Spanish), `fr` (French), `de` (German), `ja` (Japanese)
+
+### Security Considerations
+
+1. **Authentication**: The API has no authentication by default. For production:
+   - Run behind a reverse proxy with authentication
+   - Modify the code to add API keys
+   - Restrict to localhost only
+
+2. **File Permissions**: Ensure the script has write access to:
+   - Current directory (for audio files)
+   - `stt/` subdirectory (for transcriptions)
+
+3. **Resource Limits**: Whisper can be memory-intensive:
+   - `medium` model uses ~5GB RAM
+   - `large` model uses ~10GB RAM
+   - GPU recommended for faster transcription
+
+### Troubleshooting
+
+1. **Permission Denied**: Run from a directory you own or use sudo
+2. **Out of Memory**: Use a smaller Whisper model
+3. **No Audio**: Check room name and that someone is publishing audio
+4. **Slow Transcription**: Normal on CPU, consider GPU or smaller model
+
+### Example Workflow
+
+```bash
+# Terminal 1: Start the service
+cd ~/recordings
+python3 /path/to/record.py --host 0.0.0.0 --port 8000
+
+# Terminal 2: Start recording a meeting
+curl -X POST -F "room=DailyStandup" -F "record=meeting_2024_01_22" http://localhost:8000/rec
+# Returns: {"process_pid": 12345, "status": "Recording started"}
+
+# Terminal 3: Stop and transcribe after meeting
+curl -X POST -F "record=meeting_2024_01_22" -F "process_pid=12345" -F "language=en" http://localhost:8000/stop
+
+# Find your files:
+# Audio: meeting_2024_01_22_audio.ts
+# Text: stt/meeting_2024_01_22_1705931234.txt
+```
 
 ### Note:
 
