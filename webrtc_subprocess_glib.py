@@ -775,7 +775,7 @@ class GLibWebRTCHandler:
             return True  # Continue the timer
     
     def check_hls_streams_ready(self):
-        """Check if both audio and video are connected and start HLS sink"""
+        """Check if both audio and video are connected and start HLS recording"""
         if not self.use_hls:
             return
             
@@ -785,24 +785,50 @@ class GLibWebRTCHandler:
             
             self.log("   ✅ Both audio and video connected - starting HLS recording")
             
-            # Sync the HLS sink state
-            if hasattr(self, 'hlssink') and self.hlssink:
-                ret = self.hlssink.sync_state_with_parent()
-                self.log(f"   HLS sink sync result: {ret}")
+            # Add a small delay for segment events to propagate on slower systems
+            def delayed_start():
+                self.log("   ⏳ Starting HLS elements...")
                 
-                # Force to PLAYING state
-                ret = self.hlssink.set_state(Gst.State.PLAYING)
-                ret_name = ret.value_name if hasattr(ret, 'value_name') else str(ret)
-                self.log(f"   HLS sink set_state result: {ret_name}")
-                
-                # Wait for state change to complete
-                timeout = 2 * Gst.SECOND
-                state_ret, state, pending = self.hlssink.get_state(timeout)
-                state_name = state.value_name if hasattr(state, 'value_name') else str(state)
-                ret_name = state_ret.value_name if hasattr(state_ret, 'value_name') else str(state_ret)
-                self.log(f"   HLS sink final state: {state_name} (result: {ret_name})")
+                # First sync the mux state
+                if hasattr(self, 'hls_mux') and self.hls_mux:
+                    ret = self.hls_mux.sync_state_with_parent()
+                    self.log(f"   Mpegtsmux sync result: {ret}")
                     
-            self.log("   🎬 HLS recording started!")
+                    # Force mux to PLAYING state
+                    ret = self.hls_mux.set_state(Gst.State.PLAYING)
+                    ret_name = ret.value_name if hasattr(ret, 'value_name') else str(ret)
+                    self.log(f"   Mpegtsmux set_state result: {ret_name}")
+                
+                # Then sync the sink state
+                if hasattr(self, 'hlssink') and self.hlssink:
+                    ret = self.hlssink.sync_state_with_parent()
+                    self.log(f"   HLS sink sync result: {ret}")
+                    
+                    # Force sink to PLAYING state
+                    ret = self.hlssink.set_state(Gst.State.PLAYING)
+                    ret_name = ret.value_name if hasattr(ret, 'value_name') else str(ret)
+                    self.log(f"   HLS sink set_state result: {ret_name}")
+                    
+                    # Wait for state changes to complete
+                    timeout = 2 * Gst.SECOND
+                    
+                    # Check mux state
+                    if hasattr(self, 'hls_mux') and self.hls_mux:
+                        state_ret, state, pending = self.hls_mux.get_state(timeout)
+                        state_name = state.value_name if hasattr(state, 'value_name') else str(state)
+                        self.log(f"   Mpegtsmux final state: {state_name}")
+                    
+                    # Check sink state
+                    state_ret, state, pending = self.hlssink.get_state(timeout)
+                    state_name = state.value_name if hasattr(state, 'value_name') else str(state)
+                    ret_name = state_ret.value_name if hasattr(state_ret, 'value_name') else str(state_ret)
+                    self.log(f"   HLS sink final state: {state_name} (result: {ret_name})")
+                        
+                self.log("   🎬 HLS recording started!")
+                return False  # Don't repeat
+                
+            # Schedule the start with a 100ms delay
+            GLib.timeout_add(100, delayed_start)
     
     def setup_hls_muxer(self):
         """Set up shared mpegtsmux and HLS sink for audio/video"""
@@ -821,41 +847,65 @@ class GLibWebRTCHandler:
         timestamp = int(datetime.datetime.now().timestamp())
         base_filename = f"{self.room}_{self.stream_id}_{timestamp}"
         
-        # For HLS, we need different approaches for playlist vs no-playlist mode
+        # For Jetson Nano with GStreamer 1.23.0, we need explicit mpegtsmux control
+        # Create our own mpegtsmux to ensure proper segment handling
+        self.hls_mux = Gst.ElementFactory.make('mpegtsmux', 'hls_mpegtsmux')
+        if not self.hls_mux:
+            self.log("Failed to create mpegtsmux", "error")
+            return
+            
+        # Configure mpegtsmux for HLS
+        self.hls_mux.set_property('alignment', 7)  # Proper alignment for HLS
+        self.pipe.add(self.hls_mux)
+        
+        # Create filesink or hlssink2 based on mode
         if self.use_splitmuxsink:
-            # Simple segmented recording without playlist
+            # For splitmuxsink, we need to let it manage the mux internally
+            # Remove our explicit mux since splitmuxsink creates its own
+            self.pipe.remove(self.hls_mux)
+            self.hls_mux = None
+            
+            # Use splitmuxsink with internal mux
             self.hlssink = Gst.ElementFactory.make('splitmuxsink', None)
             if self.hlssink:
                 self.hlssink.set_property('location', f"{base_filename}_%05d.ts")
-                self.hlssink.set_property('max-size-time', 5 * Gst.SECOND)  # 5 second segments
+                self.hlssink.set_property('max-size-time', 5 * Gst.SECOND)
                 self.hlssink.set_property('send-keyframe-requests', True)
-                self.hlssink.set_property('async-handling', True)
+                self.hlssink.set_property('async-finalize', True)
                 
-                # Create mpegtsmux with proper configuration
-                mpegtsmux = Gst.ElementFactory.make('mpegtsmux', None)
-                if mpegtsmux:
-                    # Set alignment for proper segmentation
-                    mpegtsmux.set_property('alignment', 7)  # Use 7 for proper alignment
-                    self.hlssink.set_property('muxer', mpegtsmux)
+                # Create and configure mpegtsmux for splitmuxsink
+                mux = Gst.ElementFactory.make('mpegtsmux', None)
+                if mux:
+                    mux.set_property('alignment', 7)
+                    self.hlssink.set_property('muxer', mux)
                 
                 self.log(f"   Output: {base_filename}_*.ts (5 second segments)")
                 self.base_filename = base_filename
+                # Store reference to know we're using internal mux
+                self.use_internal_mux = True
         else:
-            # HLS with m3u8 playlist - use hlssink2 which properly handles segmentation
-            self.hlssink = Gst.ElementFactory.make('hlssink2', None)
+            # For hlssink2, we'll use a different approach
+            # Create a regular filesink and handle segmentation manually
+            self.use_manual_segmentation = True
+            self.segment_counter = 0
+            self.current_segment_start = None
+            
+            # Create initial filesink
+            self.hlssink = Gst.ElementFactory.make('filesink', None)
             if self.hlssink:
-                self.hlssink.set_property('location', f"{base_filename}_%05d.ts")
-                self.hlssink.set_property('playlist-location', f"{base_filename}.m3u8")
-                self.hlssink.set_property('target-duration', 5)  # 5 second segments
-                self.hlssink.set_property('max-files', 0)  # Keep all segments
-                self.hlssink.set_property('playlist-length', 0)  # Keep all in playlist
-                # Enable fragmenting to start writing immediately
-                self.hlssink.set_property('send-keyframe-requests', True)
-                # Set async handling for dynamic pad connections
-                self.hlssink.set_property('async-handling', True)
+                segment_filename = f"{base_filename}_{self.segment_counter:05d}.ts"
+                self.hlssink.set_property('location', segment_filename)
+                self.hlssink.set_property('sync', False)
+                self.hlssink.set_property('async', False)
                 
-                self.log(f"   Playlist: {base_filename}.m3u8")
-                self.log(f"   Segments: {base_filename}_*.ts (5 second chunks)")
+                # Create M3U8 playlist
+                self.playlist_filename = f"{base_filename}.m3u8"
+                self.segment_duration = 5.0
+                self.segments = []
+                self.write_m3u8_header()
+                
+                self.log(f"   Playlist: {self.playlist_filename}")
+                self.log(f"   First segment: {segment_filename}")
                 self.base_filename = base_filename
                 
         if not self.hlssink:
@@ -865,10 +915,28 @@ class GLibWebRTCHandler:
         # Add sink to pipeline
         self.pipe.add(self.hlssink)
         
-        # Keep sink in NULL state until pads are connected
+        # Link mux to sink
+        if not self.use_splitmuxsink:
+            # For manual segmentation, link mux to filesink
+            if not self.hls_mux.link(self.hlssink):
+                self.log("Failed to link mux to sink", "error")
+                return
+        
+        # Keep elements in NULL state initially
+        self.hls_mux.set_state(Gst.State.NULL)
         self.hlssink.set_state(Gst.State.NULL)
         
         self.log("   ✅ HLS muxer ready for audio/video streams")
+        
+    def write_m3u8_header(self):
+        """Write initial M3U8 playlist header"""
+        if hasattr(self, 'playlist_filename'):
+            with open(self.playlist_filename, 'w') as f:
+                f.write("#EXTM3U\n")
+                f.write("#EXT-X-VERSION:3\n")
+                f.write(f"#EXT-X-TARGETDURATION:{int(self.segment_duration)}\n")
+                f.write("#EXT-X-MEDIA-SEQUENCE:0\n")
+                f.write("\n")
         
     def setup_ndi_combiner(self):
         """Set up NDI sink combiner for audio/video multiplexing"""
@@ -1677,41 +1745,66 @@ class GLibWebRTCHandler:
                         return Gst.PadProbeReturn.OK
                     queue_src_pad.add_probe(Gst.PadProbeType.BUFFER, queue_probe_cb)
                     
-            # Link video queue to appropriate sink
-            if hasattr(self, 'use_hlssink2') and self.use_hlssink2:
-                # For hlssink2, request a video pad and connect
-                video_pad = self.hlssink.request_pad_simple('video')
+            # Link video queue to mpegtsmux or sink
+            if hasattr(self, 'use_internal_mux') and self.use_internal_mux:
+                # For splitmuxsink, connect directly to sink
+                if hasattr(self, 'hlssink') and self.hlssink:
+                    video_pad = self.hlssink.request_pad_simple('video')
+                    if video_pad:
+                        src_pad = video_queue.get_static_pad('src')
+                        if src_pad.link(video_pad) == Gst.PadLinkReturn.OK:
+                            self.log("   ✅ Video connected to HLS sink")
+                        else:
+                            self.log("Failed to link video to HLS sink", "error")
+                            return
+                    else:
+                        self.log("Failed to get video pad from HLS sink", "error")
+                        return
+            elif hasattr(self, 'hls_mux') and self.hls_mux:
+                # Request video pad from mpegtsmux
+                video_pad_template = self.hls_mux.get_pad_template('sink_%d')
+                if video_pad_template:
+                    video_pad = self.hls_mux.request_pad(video_pad_template, None, None)
+                else:
+                    # Fallback for different mpegtsmux versions
+                    video_pad = self.hls_mux.request_pad_simple('sink_%d')
+                    
                 if video_pad:
                     src_pad = video_queue.get_static_pad('src')
                     
-                    if src_pad.link(video_pad) == Gst.PadLinkReturn.OK:
-                        self.log("   ✅ Video connected to HLS sink")
-                        # Check hlssink state
-                        state_ret, state, pending = self.hlssink.get_state(0)
-                        state_name = state.value_name if hasattr(state, 'value_name') else str(state)
-                        self.log(f"   HLS sink state after video connect: {state_name}")
-                    else:
-                        self.log("Failed to link video to HLS sink", "error")
-                        return
-                else:
-                    self.log("Failed to get video pad from HLS sink", "error")
-                    return
-            elif hasattr(self, 'hlssink') and self.hlssink:
-                # For splitmuxsink, video is just 'video', not 'video_%u'
-                video_pad = self.hlssink.request_pad_simple('video')
+                    # Add probe to inject segment event before first buffer
+                    def video_segment_probe(pad, info):
+                        if info.type & Gst.PadProbeType.BUFFER:
+                            if not hasattr(self, '_video_segment_injected'):
+                                self._video_segment_injected = True
+                                # Create and send segment event
+                                segment = Gst.Segment()
+                                segment.init(Gst.Format.TIME)
+                                segment.set_running_time(Gst.Format.TIME, 0)
+                                event = Gst.Event.new_segment(segment)
+                                video_pad.send_event(event)
+                                self.log("   ✅ Injected segment event for video mux pad")
+                            # Remove probe after first buffer
+                            return Gst.PadProbeReturn.REMOVE
+                        return Gst.PadProbeReturn.OK
+                        
+                    src_pad.add_probe(
+                        Gst.PadProbeType.BUFFER,
+                        video_segment_probe
+                    )
                     
-                if video_pad:
-                    src_pad = video_queue.get_static_pad('src')
                     if src_pad.link(video_pad) == Gst.PadLinkReturn.OK:
-                        self.log("   ✅ Video connected to sink")
+                        self.log("   ✅ Video connected to mpegtsmux")
+                        # Store pad reference
+                        self.video_mux_pad = video_pad
                     else:
-                        self.log("Failed to link video to sink", "error")
+                        self.log("Failed to link video to mpegtsmux", "error")
                         return
                 else:
-                    self.log("Failed to get video pad from sink", "error")
+                    self.log("Failed to get video pad from mpegtsmux", "error")
                     return
             else:
-                self.log("HLS sink not available", "error")
+                self.log("HLS mux not available", "error")
                 return
                     
             # Sync states for all elements
@@ -2037,45 +2130,66 @@ class GLibWebRTCHandler:
                     self.log("Failed to link aacparse to audio queue", "error")
                     return
                 
-            # Link audio queue to appropriate sink
-            if hasattr(self, 'use_hlssink2') and self.use_hlssink2:
-                # For hlssink2, request an audio pad and connect
-                audio_pad = self.hlssink.request_pad_simple('audio')
-                if audio_pad:
-                    src_pad = audio_queue.get_static_pad('src')
-                    if src_pad.link(audio_pad) == Gst.PadLinkReturn.OK:
-                        self.log("   ✅ Audio connected to HLS sink")
-                    else:
-                        self.log("Failed to link audio to HLS sink", "error")
-                        return
-                else:
-                    self.log("Failed to get audio pad from HLS sink", "error")
-                    return
-            elif hasattr(self, 'hlssink') and self.hlssink:
-                # For splitmuxsink, we need to check which sink type we have
-                if self.use_splitmuxsink:
-                    # splitmuxsink uses template names like audio_%u
-                    audio_pad_template = self.hlssink.get_pad_template('audio_%u')
-                    if audio_pad_template:
-                        audio_pad = self.hlssink.request_pad(audio_pad_template, None, None)
-                    else:
-                        # Fallback to simple request
-                        audio_pad = self.hlssink.request_pad_simple('audio')
-                else:
+            # Link audio queue to mpegtsmux or sink
+            if hasattr(self, 'use_internal_mux') and self.use_internal_mux:
+                # For splitmuxsink, connect directly to sink
+                if hasattr(self, 'hlssink') and self.hlssink:
                     audio_pad = self.hlssink.request_pad_simple('audio')
+                    if audio_pad:
+                        src_pad = audio_queue.get_static_pad('src')
+                        if src_pad.link(audio_pad) == Gst.PadLinkReturn.OK:
+                            self.log("   ✅ Audio connected to HLS sink")
+                        else:
+                            self.log("Failed to link audio to HLS sink", "error")
+                            return
+                    else:
+                        self.log("Failed to get audio pad from HLS sink", "error")
+                        return
+            elif hasattr(self, 'hls_mux') and self.hls_mux:
+                # Request audio pad from mpegtsmux
+                audio_pad_template = self.hls_mux.get_pad_template('sink_%d')
+                if audio_pad_template:
+                    audio_pad = self.hls_mux.request_pad(audio_pad_template, None, None)
+                else:
+                    # Fallback for different mpegtsmux versions
+                    audio_pad = self.hls_mux.request_pad_simple('sink_%d')
                     
                 if audio_pad:
                     src_pad = audio_queue.get_static_pad('src')
+                    
+                    # Add probe to inject segment event before first buffer
+                    def audio_segment_probe(pad, info):
+                        if info.type & Gst.PadProbeType.BUFFER:
+                            if not hasattr(self, '_audio_segment_injected'):
+                                self._audio_segment_injected = True
+                                # Create and send segment event
+                                segment = Gst.Segment()
+                                segment.init(Gst.Format.TIME)
+                                segment.set_running_time(Gst.Format.TIME, 0)
+                                event = Gst.Event.new_segment(segment)
+                                audio_pad.send_event(event)
+                                self.log("   ✅ Injected segment event for audio mux pad")
+                            # Remove probe after first buffer
+                            return Gst.PadProbeReturn.REMOVE
+                        return Gst.PadProbeReturn.OK
+                        
+                    src_pad.add_probe(
+                        Gst.PadProbeType.BUFFER,
+                        audio_segment_probe
+                    )
+                    
                     if src_pad.link(audio_pad) == Gst.PadLinkReturn.OK:
-                        self.log("   ✅ Audio connected to sink")
+                        self.log("   ✅ Audio connected to mpegtsmux")
+                        # Store pad reference
+                        self.audio_mux_pad = audio_pad
                     else:
-                        self.log("Failed to link audio to sink", "error")
+                        self.log("Failed to link audio to mpegtsmux", "error")
                         return
                 else:
-                    self.log("Failed to get audio pad from sink", "error")
+                    self.log("Failed to get audio pad from mpegtsmux", "error")
                     return
             else:
-                self.log("HLS sink not available for audio", "error")
+                self.log("HLS mux not available for audio", "error")
                 return
                 
             # Sync states
