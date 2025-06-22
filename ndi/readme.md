@@ -38,7 +38,7 @@ A comprehensive installer script that sets up NDI (Network Device Interface) SDK
 
 ```bash
 # Download the installer
-curl -LO https://raw.githubusercontent.com/your-repo/ndi-installer/main/install_ndi.sh
+curl -LO https://raw.githubusercontent.com/steveseguin/ndi-installer/main/install_ndi.sh
 
 # Make it executable
 chmod +x install_ndi.sh
@@ -50,7 +50,7 @@ chmod +x install_ndi.sh
 ### One-Line Installation
 
 ```bash
-curl -sSf https://raw.githubusercontent.com/your-repo/ndi-installer/main/install_ndi.sh | bash
+curl -sSf https://raw.githubusercontent.com/steveseguin/ndi-installer/main/install_ndi.sh | bash
 ```
 
 ## What Gets Installed
