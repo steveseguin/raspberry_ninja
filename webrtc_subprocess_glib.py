@@ -775,7 +775,7 @@ class GLibWebRTCHandler:
             return True  # Continue the timer
     
     def check_hls_streams_ready(self):
-        """Check if both audio and video are connected and unblock if ready"""
+        """Check if both audio and video are connected and start HLS sink"""
         if not self.use_hls:
             return
             
@@ -785,35 +785,22 @@ class GLibWebRTCHandler:
             
             self.log("   ✅ Both audio and video connected - starting HLS recording")
             
-            # First sync the HLS sink state
+            # Sync the HLS sink state
             if hasattr(self, 'hlssink') and self.hlssink:
                 ret = self.hlssink.sync_state_with_parent()
                 self.log(f"   HLS sink sync result: {ret}")
                 
-                # Ensure it's in PLAYING state
-                state_ret, state, pending = self.hlssink.get_state(0)
-                if state != Gst.State.PLAYING:
-                    self.log(f"   HLS sink not in PLAYING state ({state}), forcing to PLAYING")
-                    ret = self.hlssink.set_state(Gst.State.PLAYING)
-                    self.log(f"   HLS sink set_state result: {ret}")
-                    
-                    # Wait for state change
-                    timeout = 2 * Gst.SECOND
-                    state_ret, state, pending = self.hlssink.get_state(timeout)
-                    self.log(f"   HLS sink final state: {state}")
-            
-            # Now remove the blocking probes to allow data flow
-            if hasattr(self, 'video_probe_id') and hasattr(self, 'video_queue'):
-                video_src = self.video_queue.get_static_pad('src')
-                if video_src:
-                    video_src.remove_probe(self.video_probe_id)
-                    self.log("   ▶️  Unblocked video flow")
-                    
-            if hasattr(self, 'audio_probe_id') and hasattr(self, 'audio_queue'):
-                audio_src = self.audio_queue.get_static_pad('src')
-                if audio_src:
-                    audio_src.remove_probe(self.audio_probe_id)
-                    self.log("   ▶️  Unblocked audio flow")
+                # Force to PLAYING state
+                ret = self.hlssink.set_state(Gst.State.PLAYING)
+                ret_name = ret.value_name if hasattr(ret, 'value_name') else str(ret)
+                self.log(f"   HLS sink set_state result: {ret_name}")
+                
+                # Wait for state change to complete
+                timeout = 2 * Gst.SECOND
+                state_ret, state, pending = self.hlssink.get_state(timeout)
+                state_name = state.value_name if hasattr(state, 'value_name') else str(state)
+                ret_name = state_ret.value_name if hasattr(state_ret, 'value_name') else str(state_ret)
+                self.log(f"   HLS sink final state: {state_name} (result: {ret_name})")
                     
             self.log("   🎬 HLS recording started!")
     
@@ -842,6 +829,7 @@ class GLibWebRTCHandler:
                 self.hlssink.set_property('location', f"{base_filename}_%05d.ts")
                 self.hlssink.set_property('max-size-time', 5 * Gst.SECOND)  # 5 second segments
                 self.hlssink.set_property('send-keyframe-requests', True)
+                self.hlssink.set_property('async-handling', True)
                 
                 # Create mpegtsmux with proper configuration
                 mpegtsmux = Gst.ElementFactory.make('mpegtsmux', None)
@@ -1699,8 +1687,9 @@ class GLibWebRTCHandler:
                     if src_pad.link(video_pad) == Gst.PadLinkReturn.OK:
                         self.log("   ✅ Video connected to HLS sink")
                         # Check hlssink state
-                        state = self.hlssink.get_state(0)
-                        self.log(f"   HLS sink state after video connect: {state[1]}")
+                        state_ret, state, pending = self.hlssink.get_state(0)
+                        state_name = state.value_name if hasattr(state, 'value_name') else str(state)
+                        self.log(f"   HLS sink state after video connect: {state_name}")
                     else:
                         self.log("Failed to link video to HLS sink", "error")
                         return
@@ -1729,17 +1718,15 @@ class GLibWebRTCHandler:
             for element in elements:
                 element.sync_state_with_parent()
                 
-            # Add blocking probe to video queue to prevent data flow until ready
+            # For HLS, ensure proper synchronization
             if self.use_hls:
-                video_queue_src = video_queue.get_static_pad('src')
-                if video_queue_src:
-                    def video_block_probe_cb(pad, info):
-                        return Gst.PadProbeReturn.OK  # Just block
-                    self.video_probe_id = video_queue_src.add_probe(
-                        Gst.PadProbeType.BLOCK_DOWNSTREAM,
-                        video_block_probe_cb
-                    )
-                    self.log("   🛑 Blocking video flow until both streams ready")
+                # Explicitly set the pipeline to PLAYING state now that video is connected
+                # This helps ensure segment events propagate properly
+                if hasattr(self, 'pipe') and self.pipe:
+                    current_state = self.pipe.get_state(0)[1]
+                    if current_state != Gst.State.PLAYING:
+                        self.pipe.set_state(Gst.State.PLAYING)
+                        self.log("   ▶️  Set pipeline to PLAYING state after video connection")
                     
             # Track that video is connected
             self.hls_video_connected = True
@@ -1766,7 +1753,8 @@ class GLibWebRTCHandler:
             def check_hls_status():
                 if hasattr(self, 'hlssink') and self.hlssink:
                     state_ret, state, pending = self.hlssink.get_state(0)
-                    self.log(f"   HLS sink status check - State: {state}, Video buffers: {getattr(self, '_probe_counter', 0)}")
+                    state_name = state.value_name if hasattr(state, 'value_name') else str(state)
+                    self.log(f"   HLS sink status check - State: {state_name}, Video buffers: {getattr(self, '_probe_counter', 0)}")
                     # Check if files are being created
                     import os
                     import glob
@@ -2095,17 +2083,6 @@ class GLibWebRTCHandler:
                 element.sync_state_with_parent()
                 
                 
-            # Add blocking probe to audio queue to prevent data flow until ready  
-            if self.use_hls:
-                audio_queue_src = audio_queue.get_static_pad('src')
-                if audio_queue_src:
-                    def audio_block_probe_cb(pad, info):
-                        return Gst.PadProbeReturn.OK  # Just block
-                    self.audio_probe_id = audio_queue_src.add_probe(
-                        Gst.PadProbeType.BLOCK_DOWNSTREAM,
-                        audio_block_probe_cb
-                    )
-                    self.log("   🛑 Blocking audio flow until both streams ready")
                     
             # Track that audio is connected
             self.hls_audio_connected = True
