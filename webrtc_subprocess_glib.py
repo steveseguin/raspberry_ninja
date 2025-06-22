@@ -85,7 +85,7 @@ class GLibWebRTCHandler:
         self.ndi_name = config.get('ndi_name')
         self.ndi_direct = config.get('ndi_direct', False)  # Direct NDI mode flag
         self.use_hls = config.get('use_hls', False)
-        self.use_splitmuxsink = config.get('use_splitmuxsink', True)  # Use splitmuxsink for now
+        self.use_splitmuxsink = config.get('use_splitmuxsink', True)  # Use splitmuxsink for proper HLS segmentation
         self.password = config.get('password')
         self.salt = config.get('salt', '')
         
@@ -839,6 +839,10 @@ class GLibWebRTCHandler:
             
         self.log("Setting up HLS muxer for audio/video")
         
+        # Force splitmuxsink for HLS to ensure proper segmentation
+        if self.use_hls:
+            self.use_splitmuxsink = True
+            
         # Initialize use_hlssink2 based on use_splitmuxsink setting
         self.use_hlssink2 = not self.use_splitmuxsink
         self.log(f"   use_splitmuxsink={self.use_splitmuxsink}, use_hlssink2={self.use_hlssink2}")
@@ -903,6 +907,49 @@ class GLibWebRTCHandler:
                 self.base_filename = base_filename
                 # Store reference to know we're using internal mux
                 self.use_internal_mux = True
+                
+                # Create M3U8 playlist for splitmuxsink
+                self.playlist_filename = f"{base_filename}.m3u8"
+                self.segment_duration = 5.0
+                self.segments = []
+                self.segment_counter = 0
+                self.write_m3u8_header()
+                
+                # Connect to splitmuxsink's format-location signal to track segments
+                def on_format_location(splitmux, fragment_id):
+                    return f"{base_filename}_{fragment_id:05d}.ts"
+                    
+                self.hlssink.connect('format-location', on_format_location)
+                
+                # Monitor when new files are created
+                def on_splitmux_sink_new_file(splitmux, filename):
+                    self.log(f"   📁 New HLS segment: {filename}")
+                    # Update M3U8 playlist
+                    self.add_segment_to_playlist(filename)
+                    
+                if hasattr(self.hlssink, 'connect'):
+                    try:
+                        self.hlssink.connect('splitmuxsink-new-file', on_splitmux_sink_new_file)
+                    except:
+                        # Signal might not exist in all versions
+                        pass
+                        
+                # Also set up periodic monitoring for segments
+                self.last_segment_check = 0
+                def check_for_new_segments():
+                    import glob
+                    import os
+                    current_segments = sorted(glob.glob(f"{base_filename}_*.ts"))
+                    if len(current_segments) > self.last_segment_check:
+                        # New segments found
+                        for seg in current_segments[self.last_segment_check:]:
+                            if os.path.getsize(seg) > 0:  # Only add non-empty segments
+                                self.add_segment_to_playlist(seg)
+                        self.last_segment_check = len(current_segments)
+                    return True  # Keep timer running
+                    
+                # Check every 2 seconds for new segments
+                GLib.timeout_add(2000, check_for_new_segments)
         else:
             # For hlssink2, we'll use a different approach
             # Create a regular filesink and handle segmentation manually
@@ -964,6 +1011,37 @@ class GLibWebRTCHandler:
                 self.log(f"      Try running with write permissions or specify --record-path", "error")
                 # Disable manual segmentation if we can't write
                 self.use_manual_segmentation = False
+                
+    def add_segment_to_playlist(self, filename):
+        """Add a new segment to the M3U8 playlist"""
+        if hasattr(self, 'playlist_filename'):
+            try:
+                # Extract just the filename from the full path
+                import os
+                segment_name = os.path.basename(filename)
+                
+                # Add to segments list
+                self.segments.append({
+                    'filename': segment_name,
+                    'duration': self.segment_duration
+                })
+                
+                # Rewrite the entire playlist
+                with open(self.playlist_filename, 'w') as f:
+                    f.write("#EXTM3U\n")
+                    f.write("#EXT-X-VERSION:3\n")
+                    f.write(f"#EXT-X-TARGETDURATION:{int(self.segment_duration)}\n")
+                    f.write(f"#EXT-X-MEDIA-SEQUENCE:0\n")
+                    f.write("\n")
+                    
+                    # Write all segments
+                    for segment in self.segments:
+                        f.write(f"#EXTINF:{segment['duration']:.3f},\n")
+                        f.write(f"{segment['filename']}\n")
+                        
+                self.segment_counter += 1
+            except Exception as e:
+                self.log(f"   ❌ Error updating M3U8 playlist: {e}", "error")
         
     def setup_ndi_combiner(self):
         """Set up NDI sink combiner for audio/video multiplexing"""
