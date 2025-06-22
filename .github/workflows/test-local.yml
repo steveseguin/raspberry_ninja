@@ -62,7 +62,7 @@ jobs:
         python3 test_summary.py
     
     - name: Upload test results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: quick-test-results
