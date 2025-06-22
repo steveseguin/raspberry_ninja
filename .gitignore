@@ -146,8 +146,8 @@ dmypy.json
 *.tmp
 *.bak
 *.orig
-test_*.py
-*_test.py
+# test_*.py  # Commented out - we want to track test files
+# *_test.py  # Commented out - we want to track test files
 *_old.py
 *_backup.py
 
