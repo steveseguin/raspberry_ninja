@@ -49,6 +49,7 @@ It also has the ability to record remote VDO.Ninja streams to disk (no transcode
     - [NDI Combiner Mode (Optional)](#ndi-combiner-mode-optional)
     - [NDI Installation](#ndi-installation)
   - [OpenCV / Tensorflow / FFMPEG / FDSink / Framebuffer support](#opencv--tensorflow--ffmpeg--fdsink--framebuffer-support)
+  - [Audio Recording and Transcription with `record.py`](#audio-recording-and-transcription-with-recordpy)
 - [Hardware options](#hardware-options)
   - [Camera options](#camera-options)
   - [360-degree cameras](#360-degree-cameras)
