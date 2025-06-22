@@ -10,6 +10,8 @@ import json
 import gi
 import time
 import threading
+import os
+import hashlib
 from typing import Optional, Dict, Any
 
 gi.require_version('Gst', '1.0')
@@ -19,9 +21,53 @@ from gi.repository import GstWebRTC
 gi.require_version('GstSdp', '1.0')
 from gi.repository import GstSdp
 
+# Try to import cryptography for decryption support
+try:
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.primitives import padding
+    from cryptography.hazmat.backends import default_backend
+    HAS_CRYPTO = True
+except ImportError:
+    HAS_CRYPTO = False
+
 
 # Initialize GStreamer
 Gst.init(None)
+
+
+# Decryption helper functions (if crypto is available)
+if HAS_CRYPTO:
+    def to_byte_array(hex_str):
+        return bytes.fromhex(hex_str)
+    
+    def generate_key(phrase):
+        return hashlib.sha256(phrase.encode()).digest()
+    
+    def unpad_message(padded_message):
+        unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+        try:
+            data = unpadder.update(padded_message) + unpadder.finalize()
+            return data
+        except ValueError as e:
+            print(f"Padding error: {e}")
+            return None
+    
+    def decrypt_message(encrypted_data, iv, phrase):
+        key = generate_key(phrase)
+        encrypted_data_bytes = to_byte_array(encrypted_data)
+        iv_bytes = to_byte_array(iv)
+        cipher = Cipher(algorithms.AES(key), modes.CBC(iv_bytes), backend=default_backend())
+        decryptor = cipher.decryptor()
+        try:
+            decrypted_padded_message = decryptor.update(encrypted_data_bytes) + decryptor.finalize()
+            unpadded_message = unpad_message(decrypted_padded_message)
+            if unpadded_message is not None:
+                return unpadded_message.decode('utf-8')
+            else:
+                return None
+        except (UnicodeDecodeError, ValueError) as e:
+            print(f"Error decoding message: {e}")
+            return None
 
 
 class GLibWebRTCHandler:
@@ -39,9 +85,16 @@ class GLibWebRTCHandler:
         self.ndi_direct = config.get('ndi_direct', False)  # Direct NDI mode flag
         self.use_hls = config.get('use_hls', False)
         self.use_splitmuxsink = config.get('use_splitmuxsink', True)  # Use splitmuxsink for now
+        self.password = config.get('password')
+        self.salt = config.get('salt', '')
         
         # Debug log the config
         self.log(f"DEBUG: Config received: record_audio={config.get('record_audio', 'NOT SET')}, room_ndi={config.get('room_ndi', False)}, use_hls={config.get('use_hls', False)}")
+        self.log(f"DEBUG: Password in config: {'YES' if 'password' in config else 'NO'}, value: {'SET' if config.get('password') else 'NOT SET'}")
+        if self.password:
+            self.log(f"DEBUG: Password encryption enabled (salt: {len(self.salt)} chars)")
+        else:
+            self.log(f"DEBUG: No password set for encryption")
         
         self.pipe = None
         self.webrtc = None
@@ -604,6 +657,30 @@ class GLibWebRTCHandler:
             # Check if it's an SDP offer
             if 'description' in data:
                 desc = data['description']
+                
+                # Check if we need to decrypt
+                if isinstance(desc, str) and 'vector' in data:
+                    self.log(f"DEBUG: Encrypted SDP detected. Password: {'SET' if self.password else 'NOT SET'}, HAS_CRYPTO: {HAS_CRYPTO}")
+                    if self.password and HAS_CRYPTO:
+                        # Decrypt the description
+                        try:
+                            self.log(f"DEBUG: Attempting decryption with password length {len(self.password)} and salt length {len(self.salt)}")
+                            decrypted_json = decrypt_message(desc, data['vector'], self.password + self.salt)
+                            if decrypted_json:
+                                desc = json.loads(decrypted_json)
+                                self.log("Successfully decrypted SDP from data channel")
+                            else:
+                                self.log("Failed to decrypt SDP from data channel - decrypt returned None")
+                                return
+                        except Exception as e:
+                            self.log(f"Error decrypting SDP: {e}")
+                            import traceback
+                            self.log(f"Traceback: {traceback.format_exc()}")
+                            return
+                    else:
+                        self.log(f"Cannot decrypt: Password={'not set' if not self.password else 'set'}, Crypto={'not available' if not HAS_CRYPTO else 'available'}")
+                        return
+                
                 if isinstance(desc, dict) and desc.get('type') == 'offer':
                     self.log("Received renegotiation offer via data channel")
                     
@@ -614,21 +691,37 @@ class GLibWebRTCHandler:
                     # Use GLib.idle_add to handle in main thread context
                     GLib.idle_add(self.handle_renegotiation_offer, sdp_text)
                 elif isinstance(desc, str):
-                    # This is an encrypted offer - we can't handle renegotiation with encryption
-                    self.log("WARNING: Received encrypted SDP via data channel - renegotiation not supported with passwords enabled")
+                    # This is an encrypted offer but we couldn't decrypt it
+                    self.log("WARNING: Received encrypted SDP via data channel - decryption failed or not available")
             elif 'candidates' in data:
                 # Handle ICE candidates from data channel
                 candidates = data['candidates']
+                
+                # Check if we need to decrypt
+                if isinstance(candidates, str) and 'vector' in data and self.password and HAS_CRYPTO:
+                    # Decrypt the candidates
+                    try:
+                        decrypted_json = decrypt_message(candidates, data['vector'], self.password + self.salt)
+                        if decrypted_json:
+                            candidates = json.loads(decrypted_json)
+                            self.log(f"Successfully decrypted {len(candidates) if isinstance(candidates, list) else 1} ICE candidates from data channel")
+                        else:
+                            self.log("Failed to decrypt ICE candidates from data channel")
+                            return
+                    except Exception as e:
+                        self.log(f"Error decrypting ICE candidates: {e}")
+                        return
+                
                 if isinstance(candidates, list):
-                    self.log(f"Received {len(candidates)} ICE candidates via data channel")
+                    self.log(f"Processing {len(candidates)} ICE candidates via data channel")
                     for candidate in candidates:
                         if isinstance(candidate, dict) and 'candidate' in candidate and 'sdpMLineIndex' in candidate:
                             self.webrtc.emit('add-ice-candidate', 
                                            candidate['sdpMLineIndex'], 
                                            candidate['candidate'])
                 elif isinstance(candidates, str):
-                    # Encrypted candidates - can't process them
-                    self.log(f"Received encrypted ICE candidates via data channel (length: {len(candidates)})")
+                    # This is still encrypted but we couldn't decrypt it
+                    self.log(f"WARNING: Received encrypted ICE candidates - decryption failed or not available")
                         
         except json.JSONDecodeError as e:
             # Not JSON, might be a different type of message

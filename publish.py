@@ -1680,6 +1680,8 @@ class WebRTCSubprocessManager:
             'room_ndi': self.config.get('room_ndi', False),  # Pass NDI mode flag
             'ndi_name': self.config.get('ndi_name'),  # Pass NDI stream name
             'ndi_direct': self.config.get('ndi_direct', True),  # Default to direct mode
+            'password': self.config.get('password'),  # Pass password for decryption
+            'salt': self.config.get('salt', ''),  # Pass salt for decryption
         }
         
         # Start subprocess
@@ -2280,14 +2282,49 @@ class WebRTCClient:
         self.processing = False
         return False    
    
+    def setup_hls_recording(self):
+        """Set up shared HLS sink for audio/video muxing"""
+        if hasattr(self, 'hls_sink') and self.hls_sink:
+            return  # Already set up
+            
+        timestamp = str(int(time.time()))
+        base_filename = f"{self.streamin}_{timestamp}"
+        
+        printc("🎬 Setting up HLS recording with audio/video muxing", "0F0")
+        
+        # Create HLS sink with m3u8 playlist
+        self.hls_sink = Gst.ElementFactory.make('hlssink2', 'hlssink')
+        if self.hls_sink:
+            self.hls_sink.set_property('location', f"{base_filename}_%05d.ts")
+            self.hls_sink.set_property('playlist-location', f"{base_filename}.m3u8")
+            self.hls_sink.set_property('target-duration', 5)  # 5 second segments
+            self.hls_sink.set_property('max-files', 0)  # Keep all segments
+            self.hls_sink.set_property('playlist-length', 0)  # Keep all in playlist
+            self.hls_sink.set_property('send-keyframe-requests', True)
+            self.pipe.add(self.hls_sink)
+            self.hls_sink.sync_state_with_parent()
+            
+            printc(f"   📹 HLS recording configured:", "0F0")
+            printc(f"      Playlist: {base_filename}.m3u8", "0F0")
+            printc(f"      Segments: {base_filename}_*.ts", "0F0")
+            self.hls_base_filename = base_filename
+        else:
+            printc("❌ Failed to create HLS sink", "F00")
+    
     def on_incoming_stream(self, webrtc, pad):
+        global time  # Ensure time refers to the global module
         try:
             if Gst.PadDirection.SRC != pad.direction:
-                print("pad direction wrong?")
+                # Wrong pad direction, skip silently
                 return
             caps = pad.get_current_caps()
             name = caps.to_string()
-            print(f"Incoming stream caps: {name}")
+            # Parse codec info from caps
+            codec_info = ""
+            if "encoding-name=" in name:
+                codec = name.split("encoding-name=(string)")[1].split(",")[0].split(")")[0]
+                codec_info = f" [{codec}]"
+            print(f"Incoming stream{codec_info}: {name}")
             
             # In room recording mode, find the client from webrtc element
             if self.room_recording:
@@ -2384,7 +2421,6 @@ class WebRTCClient:
                         return
 
                 if "video" in name:
-                    print("NDI VIDEO OUT (Direct Mode)" if use_direct_ndi else "NDI VIDEO OUT (Combiner Mode)")
                     pad_name = "video"
                     # Detect video codec from caps
                     if "VP8" in name:
@@ -2396,9 +2432,20 @@ class WebRTCClient:
                     else:
                         print(f"Unknown video codec in caps: {name}")
                         video_codec = "VP8"  # Default fallback
+                    
+                    if use_direct_ndi:
+                        printc(f"   🎥 NDI VIDEO OUTPUT (Direct Mode) [{video_codec}]", "0F0")
+                        printc(f"   ✅ No freezing issues in direct mode", "0F0")
+                    else:
+                        printc(f"   🎥 NDI VIDEO OUTPUT (Combiner Mode) [{video_codec}]", "FF0")
+                        printc(f"   ⚠️  WARNING: Combiner mode freezes after ~1500-2000 buffers", "F00")
+                        
                 elif "audio" in name:
-                    print("NDI AUDIO OUT (Direct Mode)" if use_direct_ndi else "NDI AUDIO OUT (Combiner Mode)")
                     pad_name = "audio"
+                    if use_direct_ndi:
+                        printc(f"   🎤 NDI AUDIO OUTPUT (Direct Mode)", "0F0")
+                    else:
+                        printc(f"   🎤 NDI AUDIO OUTPUT (Combiner Mode)", "FF0")
                 else:
                     print("Unsupported media type:", name)
                     return
@@ -2708,7 +2755,6 @@ class WebRTCClient:
                     pad.link(sink)
                     
                 else:
-                    printc('VIDEO record setup', "88F")
                     if self.pipe.get_by_name('filesink'):
                         print("VIDEO setup")
                         if "VP8" in name:
@@ -2723,29 +2769,116 @@ class WebRTCClient:
                         pad.link(sink)
                     else:
                         if "VP8" in name:
-                            # VP8 recording - use videoscale and caps to handle resolution changes
-                            out = Gst.parse_bin_from_description(
-                                "queue max-size-buffers=0 max-size-time=0 ! "
-                                "rtpvp8depay ! "
-                                "vp8dec ! "
-                                "videoscale ! "
-                                "video/x-raw,width=1280,height=720 ! "
-                                "vp8enc deadline=1 cpu-used=4 ! "
-                                "matroskamux name=mux1 streamable=true ! "
-                                "filesink name=filesink location=" + "./" + self.streamin + "_"+str(int(time.time()))+".webm", True)
+                            if self.use_hls:
+                                # For HLS with VP8, transcode to H264 and use shared HLS sink
+                                printc("   🔄 Transcoding VP8 → H264 for HLS recording", "FF0")
+                                printc("   📐 Output resolution: 1280x720", "77F")
+                                self.setup_hls_recording()
+                                out = Gst.parse_bin_from_description(
+                                    "queue max-size-buffers=0 max-size-time=0 ! "
+                                    "rtpvp8depay ! vp8dec ! videoscale ! "
+                                    "video/x-raw,width=1280,height=720 ! "
+                                    "x264enc tune=zerolatency ! h264parse ! queue name=video_queue", True)
+                                
+                                self.pipe.add(out)
+                                out.sync_state_with_parent()
+                                
+                                # Get the source pad from the bin
+                                src_pad = out.get_static_pad('src')
+                                if not src_pad:
+                                    # For bins, we might need to get the ghost pad
+                                    video_queue = out.get_by_name('video_queue')
+                                    if video_queue:
+                                        src_pad = video_queue.get_static_pad('src')
+                                
+                                if src_pad:
+                                    # Request video pad from HLS sink
+                                    video_pad = self.hls_sink.request_pad_simple('video')
+                                    if video_pad:
+                                        if src_pad.link(video_pad) == Gst.PadLinkReturn.OK:
+                                            sink = out.get_static_pad('sink')
+                                            pad.link(sink)
+                                            printc("   ✅ Video connected to HLS muxer", "0F0")
+                                        else:
+                                            printc("   ❌ Failed to link video to HLS sink", "F00")
+                                    else:
+                                        printc("   ❌ Failed to get video pad from HLS sink", "F00")
+                                else:
+                                    printc("   ❌ Failed to get source pad from video pipeline", "F00")
+                            else:
+                                # VP8 recording to WebM
+                                printc("   🔄 Re-encoding VP8 → WebM (1280x720)", "FF0")
+                                filename = f"./{self.streamin}_{str(int(time.time()))}.webm"
+                                out = Gst.parse_bin_from_description(
+                                    "queue max-size-buffers=0 max-size-time=0 ! "
+                                    "rtpvp8depay ! "
+                                    "vp8dec ! "
+                                    "videoscale ! "
+                                    "video/x-raw,width=1280,height=720 ! "
+                                    "vp8enc deadline=1 cpu-used=4 ! "
+                                    "matroskamux name=mux1 streamable=true ! "
+                                    f"filesink name=filesink location={filename}", True)
+                                printc(f"   📁 Output: {filename}", "77F")
 
                         elif "H264" in name:
-                            out = Gst.parse_bin_from_description("queue ! rtph264depay ! h264parse ! mpegtsmux name=mux1 ! queue ! "
-            + "hlssink name=hlssink max-files=0 "
-            + "target-duration=10 playlist-length=0 "
-            + "location=" + "./" + self.streamin + "_"+str(int(time.time()))+"_segment_%05d.ts "
-            + "playlist-location=" + "./" + self.streamin + "_"+str(int(time.time()))+".video.m3u8 " , True)
+                            if self.use_hls:
+                                # For HLS with H264, use shared HLS sink
+                                printc("   ✅ Direct H264 → HLS (no transcoding)", "0F0")
+                                self.setup_hls_recording()
+                                out = Gst.parse_bin_from_description(
+                                    "queue ! rtph264depay ! h264parse ! queue name=video_queue", True)
+                                
+                                self.pipe.add(out)
+                                out.sync_state_with_parent()
+                                
+                                # Get the source pad from the bin
+                                src_pad = out.get_static_pad('src')
+                                if not src_pad:
+                                    # For bins, we might need to get the ghost pad
+                                    video_queue = out.get_by_name('video_queue')
+                                    if video_queue:
+                                        src_pad = video_queue.get_static_pad('src')
+                                
+                                if src_pad:
+                                    # Request video pad from HLS sink
+                                    video_pad = self.hls_sink.request_pad_simple('video')
+                                    if video_pad:
+                                        if src_pad.link(video_pad) == Gst.PadLinkReturn.OK:
+                                            sink = out.get_static_pad('sink')
+                                            pad.link(sink)
+                                            printc("   ✅ Video connected to HLS muxer", "0F0")
+                                        else:
+                                            printc("   ❌ Failed to link video to HLS sink", "F00")
+                                    else:
+                                        printc("   ❌ Failed to get video pad from HLS sink", "F00")
+                                else:
+                                    printc("   ❌ Failed to get source pad from video pipeline", "F00")
+                            else:
+                                # For non-HLS mode, save as MP4
+                                printc("   ✅ Direct H264 → MP4 (no transcoding)", "0F0")
+                                filename = f"./{self.streamin}_{str(int(time.time()))}.mp4"
+                                out = Gst.parse_bin_from_description(
+                                    "queue ! rtph264depay ! h264parse ! mp4mux name=mux1 ! "
+                                    f"filesink name=filesink location={filename}", True)
+                                printc(f"   📁 Output: {filename}", "77F")
 
                         self.pipe.add(out)
                         out.sync_state_with_parent()
                         sink = out.get_static_pad('sink')
                         pad.link(sink)
                     printc("   ✅ Video recording configured", "0F0")
+                    
+                    # Show recording status after a short delay
+                    if not hasattr(self, '_recording_status_shown'):
+                        self._recording_status_shown = True
+                        def show_recording_status():
+                            if self.use_hls and hasattr(self, 'hls_base_filename'):
+                                printc(f"\n🔴 RECORDING ACTIVE (HLS)", "F00")
+                                printc(f"   📁 Files: {self.hls_base_filename}.m3u8 + segments", "77F")
+                            else:
+                                printc(f"\n🔴 RECORDING ACTIVE", "F00")
+                            return False
+                        GLib.timeout_add(1000, show_recording_status)
 
                 if self.framebuffer:
                     frame_shape = (720, 1280, 3)
@@ -2838,9 +2971,50 @@ class WebRTCClient:
                                 mux = None  # Fall through to separate file
                     
                     if not mux:  # No muxer or incompatible muxer
-                        printc("   📼 Recording audio to separate file...", "FFF")
                         if "OPUS" in name:
-                            out = Gst.parse_bin_from_description("queue ! rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,rate=48000 ! mpegtsmux name=mux2 ! queue ! multifilesink name=filesinkaudio sync=true location="+self.streamin+"_"+str(int(time.time()))+"_audio.%02d.ts next-file=5 max-file-duration="+str(10*Gst.SECOND), True)
+                            if self.use_hls:
+                                # For HLS mode, transcode to AAC and connect to shared HLS sink
+                                printc("   🔄 Transcoding OPUS → AAC for HLS", "FF0")
+                                self.setup_hls_recording()
+                                out = Gst.parse_bin_from_description(
+                                    "queue ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! "
+                                    "avenc_aac ! aacparse ! queue name=audio_queue", True)
+                                
+                                self.pipe.add(out)
+                                out.sync_state_with_parent()
+                                
+                                # Get the source pad from the bin
+                                src_pad = out.get_static_pad('src')
+                                if not src_pad:
+                                    # For bins, we might need to get the ghost pad
+                                    audio_queue = out.get_by_name('audio_queue')
+                                    if audio_queue:
+                                        src_pad = audio_queue.get_static_pad('src')
+                                
+                                if src_pad:
+                                    # Request audio pad from HLS sink
+                                    audio_pad = self.hls_sink.request_pad_simple('audio')
+                                    if audio_pad:
+                                        if src_pad.link(audio_pad) == Gst.PadLinkReturn.OK:
+                                            sink = out.get_static_pad('sink')
+                                            pad.link(sink)
+                                            printc("   ✅ Audio connected to HLS muxer", "0F0")
+                                            return  # Important: return to avoid falling through
+                                        else:
+                                            printc("   ❌ Failed to link audio to HLS sink", "F00")
+                                    else:
+                                        printc("   ❌ Failed to get audio pad from HLS sink", "F00")
+                                else:
+                                    printc("   ❌ Failed to get source pad from audio pipeline", "F00")
+                            else:
+                                # For non-HLS mode, save as WAV for maximum compatibility
+                                printc("   🔄 Decoding OPUS → WAV (uncompressed)", "FF0")
+                                filename = f"{self.streamin}_{str(int(time.time()))}_audio.wav"
+                                out = Gst.parse_bin_from_description(
+                                    "queue ! rtpopusdepay ! opusdec ! audioconvert ! "
+                                    "audio/x-raw,format=S16LE,rate=48000,channels=2 ! wavenc ! "
+                                    f"filesink name=filesinkaudio location={filename}", True)
+                                printc(f"   📁 Output: {filename}", "77F")
 
                         self.pipe.add(out)
                         out.sync_state_with_parent()
@@ -2855,9 +3029,6 @@ class WebRTCClient:
 
             traceback.print_exc()
 
-        # Add this debugging information at the end of the function
-        print("Pipeline state after setup:")
-        print(self.pipe.get_state(0))
 
             
     async def createPeer(self, UUID):
@@ -3003,7 +3174,7 @@ class WebRTCClient:
                 printc('      └─ No data channel available', "F44")
                 return
             else:
-                printc('      └─ Data channel setup', "0F0")
+                pass
             channel.connect('on-open', on_data_channel_open)
             channel.connect('on-error', on_data_channel_error)
             channel.connect('on-close', on_data_channel_close)
@@ -3179,25 +3350,9 @@ class WebRTCClient:
             stats = stats.to_string()
             stats = stats.replace("\\", "")
             
-            # Debug: print full stats to understand structure
-            if not hasattr(client, '_stats_logged'):
-                print("\n=== FULL STATS STRUCTURE ===")
-                print(stats)
-                print("=========================\n")
-                client['_stats_logged'] = True
-            
-            # Additional debug every 30 seconds to check for changes
+            # Only log periodic stats updates, not the full structure
             if not hasattr(client, '_last_full_stats_log'):
                 client['_last_full_stats_log'] = 0
-            
-            if time.time() - client['_last_full_stats_log'] > 30:
-                print(f"\n=== STATS UPDATE at {time.strftime('%H:%M:%S')} ===")
-                if "bitrate" in stats:
-                    print("Found bitrate fields in stats")
-                if "video" in stats.lower():
-                    print("Found video-related fields in stats")
-                if "packets-sent" in stats:
-                    print("Found packets-sent field")
             
             # Calculate bitrate from bytes sent
             bitrate_sent = 0
@@ -3274,16 +3429,10 @@ class WebRTCClient:
             client['_last_video_bytes'] = video_bytes_sent
             client['_last_audio_bytes'] = audio_bytes_sent
             
-            # Log debug info after extracting all values
+            # Only show warning if video is not sending but audio is
             if time.time() - client['_last_full_stats_log'] > 30:
-                print(f"Total bitrate: {bitrate_sent} kbps")
-                print(f"Total bytes sent: {bytes_sent}")
-                print(f"Video bytes sent: {video_bytes_sent}")
-                print(f"Audio bytes sent: {audio_bytes_sent}")
-                print(f"Packets sent: {packets_sent}")
-                if video_bytes_sent == 0 and audio_bytes_sent > 0:
-                    print("⚠️ WARNING: Video bytes = 0 but audio is sending!")
-                print("================================\n")
+                if video_bytes_sent == 0 and audio_bytes_sent > 0 and bitrate_sent > 0:
+                    printc("⚠️ WARNING: Video stream not sending data (audio-only stream detected)", "F70")
                 client['_last_full_stats_log'] = time.time()
             
             # Log bitrate periodically
@@ -3291,13 +3440,14 @@ class WebRTCClient:
             if not hasattr(client, '_last_bitrate_log'):
                 client['_last_bitrate_log'] = 0
             
-            if current_time - client['_last_bitrate_log'] > 5:  # Log every 5 seconds
-                if video_bytes_sent == 0 and audio_bytes_sent > 0:
-                    printc(f"📊 Stats: ⚠️ VIDEO NOT SENDING! Audio: {audio_bytes_sent:,} bytes, Video: 0 bytes", "F00")
-                elif bitrate_sent > 0 or packets_sent > 0:
-                    printc(f"📊 Stats: Bitrate={bitrate_sent} kbps, Video={video_bytes_sent:,} bytes, Audio={audio_bytes_sent:,} bytes", "07F")
-                elif packets_sent == 0:
-                    printc(f"📊 Stats: No packets sent yet (bitrate=0 kbps)", "F70")
+            if current_time - client['_last_bitrate_log'] > 10:  # Log every 10 seconds
+                if bitrate_sent > 0:
+                    printc(f"📊 Streaming at {bitrate_sent} kbps", "07F")
+                elif current_time - client.get('_connection_time', current_time) < 5:
+                    # Don't show "no packets" message in first 5 seconds
+                    pass
+                else:
+                    printc(f"📊 Waiting for stream data...", "F70")
                 client['_last_bitrate_log'] = current_time
             
             stats = stats.split("fraction-lost=(double)")
@@ -3643,7 +3793,6 @@ class WebRTCClient:
             print("UNEXPECTED INCOMING")
 
     def on_answer_created(self, promise, _, client):
-        print("ON ANSWER CREATED")
         promise.wait()
         reply = promise.get_reply()
         answer = reply.get_value('answer')
@@ -3653,19 +3802,15 @@ class WebRTCClient:
         promise = Gst.Promise.new()
         client['webrtc'].emit('set-local-description', answer, promise)
         promise.interrupt()
-        print("SEND SDP ANSWER")
         text = answer.sdp.as_text()
         msg = {'description': {'type': 'answer', 'sdp': text}, 'UUID': client['UUID'], 'session': client['session']}
         self.sendMessage(msg)
 
     def handle_offer(self, msg, UUID):
-        print("HANDLE SDP OFFER")
-        print("-----")
         client = self.clients[UUID]
         if not client or not client['webrtc']:
             return
         if 'sdp' in msg:
-            print("INCOMDING OFFER SDP TYPE: "+msg['type'])
             assert(msg['type'] == 'offer')
             sdp = msg['sdp']
             res, sdpmsg = GstSdp.SDPMessage.new()
@@ -4865,6 +5010,13 @@ class WebRTCClient:
              self.uuid_to_stream_id[uuid] = stream_id
              self.stream_id_to_uuid[stream_id] = uuid  # Add reverse mapping
              printc(f"[Subprocess] Mapping UUID {uuid} to stream {stream_id}", "77F")
+             
+             # Also map the stream ID without hash suffix for encrypted messages
+             # Stream IDs in encrypted messages often come without the hash suffix
+             if len(stream_id) > 8:  # Likely has a hash suffix
+                 base_stream_id = stream_id[:-6] if len(stream_id) > 12 else stream_id[:8]
+                 self.stream_id_to_uuid[base_stream_id] = uuid
+                 printc(f"[Subprocess] Also mapping base stream ID {base_stream_id} to UUID {uuid}", "77F")
         
         default_turn = self._get_default_turn_server()
         if default_turn:
@@ -4901,8 +5053,12 @@ class WebRTCClient:
             'room_ndi': self.room_ndi,  # Pass NDI mode flag
             'ndi_direct': self.ndi_direct if hasattr(self, 'ndi_direct') else True,  # Default to direct mode
             'ndi_name': f"{self.room_name}_{stream_id}" if self.room_ndi else None,  # NDI stream name
+            'password': self.password,  # Pass password for decryption
+            'salt': self.salt,  # Pass salt for decryption
         }
         printc(f"[{stream_id}] DEBUG: Creating subprocess with record_audio={True if not self.noaudio else False} (noaudio={self.noaudio})", "77F")
+        if self.password:
+            printc(f"[{stream_id}] DEBUG: Password will be passed to subprocess (length: {len(self.password)})", "77F")
         if self.use_hls:
             printc(f"[{stream_id}] Using HLS recording format (audio+video muxing)", "0FF")
 
@@ -5158,88 +5314,141 @@ class WebRTCClient:
     def setup_room_ndi(self, client, pad, name):
         """Setup NDI output for a room stream"""
         stream_id = client['streamID']
-        ndi_name = f"{self.room_name}_{stream_id}"
         
-        # Create individual NDI sink for this stream
-        ndi_sink_name = f"ndi_sink_{client['UUID']}"
+        # Check if we should use direct mode (default) or combiner mode
+        use_direct_ndi = not (hasattr(self.args, 'ndi_combine') and self.args.ndi_combine)
         
-        if "video" in name:
-            # Create NDI sink combiner for this client if not exists
-            ndi_combiner_name = f"ndi_combiner_{client['UUID']}"
-            ndi_combiner = self.pipe.get_by_name(ndi_combiner_name)
-            
-            if not ndi_combiner:
-                ndi_combiner = Gst.ElementFactory.make("ndisinkcombiner", ndi_combiner_name)
-                if not ndi_combiner:
-                    print("Failed to create ndisinkcombiner element")
-                    return
+        if use_direct_ndi:
+            # Direct NDI mode - separate audio/video sinks
+            if "video" in name:
+                ndi_element_name = f"ndi_video_sink_{client['UUID']}"
+                ndi_stream_suffix = "_video"
+            else:  # audio
+                ndi_element_name = f"ndi_audio_sink_{client['UUID']}"
+                ndi_stream_suffix = "_audio"
                 
-                # Create NDI sink for this stream
-                ndi_sink = Gst.ElementFactory.make("ndisink", ndi_sink_name)
+            ndi_name = f"{self.room_name}_{stream_id}{ndi_stream_suffix}"
+            
+            # Check if NDI sink already exists
+            ndi_sink = self.pipe.get_by_name(ndi_element_name)
+            if not ndi_sink:
+                ndi_sink = Gst.ElementFactory.make("ndisink", ndi_element_name)
                 if not ndi_sink:
                     print("Failed to create ndisink element")
+                    print("Make sure gst-plugin-ndi is installed")
                     return
                 
                 ndi_sink.set_property("ndi-name", ndi_name)
-                
-                self.pipe.add(ndi_combiner)
                 self.pipe.add(ndi_sink)
-                
-                ndi_combiner.link(ndi_sink)
-                ndi_combiner.sync_state_with_parent()
                 ndi_sink.sync_state_with_parent()
-                
-                client['ndi_combiner'] = ndi_combiner
-                client['ndi_sink'] = ndi_sink
                 printc(f"Created NDI output: {ndi_name}", "7F7")
+        else:
+            # Combiner mode - use ndisinkcombiner (has freezing issues)
+            ndi_name = f"{self.room_name}_{stream_id}"
+            ndi_combiner_name = f"ndi_combiner_{client['UUID']}"
+            ndi_sink_name = f"ndi_sink_{client['UUID']}"
             
-            # Process video for NDI
+            if "video" in name:
+                # Create NDI sink combiner for this client if not exists
+                ndi_combiner = self.pipe.get_by_name(ndi_combiner_name)
+                
+                if not ndi_combiner:
+                    ndi_combiner = Gst.ElementFactory.make("ndisinkcombiner", ndi_combiner_name)
+                    if not ndi_combiner:
+                        print("Failed to create ndisinkcombiner element")
+                        return
+                    
+                    # Create NDI sink for this stream
+                    ndi_sink = Gst.ElementFactory.make("ndisink", ndi_sink_name)
+                    if not ndi_sink:
+                        print("Failed to create ndisink element")
+                        return
+                    
+                    ndi_sink.set_property("ndi-name", ndi_name)
+                    
+                    self.pipe.add(ndi_combiner)
+                    self.pipe.add(ndi_sink)
+                    
+                    ndi_combiner.link(ndi_sink)
+                    ndi_combiner.sync_state_with_parent()
+                    ndi_sink.sync_state_with_parent()
+                    
+                    client['ndi_combiner'] = ndi_combiner
+                    client['ndi_sink'] = ndi_sink
+                    printc(f"Created NDI output (combiner): {ndi_name}", "7F7")
+        
+        # Process video
+        if "video" in name:
+            # Detect video codec
             if "H264" in name:
-                pipeline_str = "queue ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert"
+                pipeline_str = "queue ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! videoscale ! videorate ! capsfilter name=vcaps"
             elif "VP8" in name:
-                pipeline_str = "queue ! rtpvp8depay ! vp8dec ! videoconvert"
+                pipeline_str = "queue ! rtpvp8depay ! vp8dec ! videoconvert ! videoscale ! videorate ! capsfilter name=vcaps"
+            elif "VP9" in name:
+                pipeline_str = "queue ! rtpvp9depay ! vp9dec ! videoconvert ! videoscale ! videorate ! capsfilter name=vcaps"
             else:
                 printc(f"Unknown video codec for NDI: {name}", "F00")
                 return
             
             out = Gst.parse_bin_from_description(pipeline_str, True)
             self.pipe.add(out)
+            
+            # Set caps for NDI optimal format
+            vcaps = out.get_by_name("vcaps")
+            if vcaps:
+                vcaps.set_property("caps", Gst.Caps.from_string("video/x-raw,format=UYVY,framerate=30/1"))
+            
             out.sync_state_with_parent()
             
-            # Link to NDI combiner
-            ndi_pad = ndi_combiner.get_request_pad("video")
-            if ndi_pad:
-                ghost_src = out.get_static_pad("src")
-                ghost_src.link(ndi_pad)
+            # Link to appropriate sink
+            if use_direct_ndi:
+                # Direct link to NDI sink
+                out.link(ndi_sink)
+            else:
+                # Link to combiner
+                ndi_combiner = self.pipe.get_by_name(ndi_combiner_name)
+                if ndi_combiner:
+                    ndi_pad = ndi_combiner.get_request_pad("video")
+                    if ndi_pad:
+                        ghost_src = out.get_static_pad("src")
+                        ghost_src.link(ndi_pad)
             
             sink = out.get_static_pad('sink')
             pad.link(sink)
             
         elif "audio" in name and not self.noaudio:
-            # Get existing NDI combiner for this client
-            ndi_combiner_name = f"ndi_combiner_{client['UUID']}"
-            ndi_combiner = self.pipe.get_by_name(ndi_combiner_name)
+            # Process audio
+            if "OPUS" in name:
+                pipeline_str = "queue ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! capsfilter name=acaps"
+            else:
+                printc(f"Unknown audio codec for NDI: {name}", "F00")
+                return
             
-            if ndi_combiner:
-                # Process audio for NDI
-                if "OPUS" in name:
-                    pipeline_str = "queue ! rtpopusdepay ! opusdec ! audioconvert ! audioresample"
-                else:
-                    printc(f"Unknown audio codec for NDI: {name}", "F00")
-                    return
-                
-                out = Gst.parse_bin_from_description(pipeline_str, True)
-                self.pipe.add(out)
-                out.sync_state_with_parent()
-                
-                # Link to NDI combiner
-                ndi_pad = ndi_combiner.get_request_pad("audio")
-                if ndi_pad:
-                    ghost_src = out.get_static_pad("src")
-                    ghost_src.link(ndi_pad)
-                
-                sink = out.get_static_pad('sink')
-                pad.link(sink)
+            out = Gst.parse_bin_from_description(pipeline_str, True)
+            self.pipe.add(out)
+            
+            # Set caps for NDI optimal format
+            acaps = out.get_by_name("acaps")
+            if acaps:
+                acaps.set_property("caps", Gst.Caps.from_string("audio/x-raw,format=F32LE,channels=2,rate=48000,layout=interleaved"))
+            
+            out.sync_state_with_parent()
+            
+            # Link to appropriate sink
+            if use_direct_ndi:
+                # Direct link to NDI sink
+                out.link(ndi_sink)
+            else:
+                # Link to combiner
+                ndi_combiner = self.pipe.get_by_name(ndi_combiner_name)
+                if ndi_combiner:
+                    ndi_pad = ndi_combiner.get_request_pad("audio")
+                    if ndi_pad:
+                        ghost_src = out.get_static_pad("src")
+                        ghost_src.link(ndi_pad)
+            
+            sink = out.get_static_pad('sink')
+            pad.link(sink)
     
     async def display_room_stats(self):
         """Periodically display stats for all room streams"""
