@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>HLS VOD Test</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+</head>
+<body>
+    <h1>HLS VOD Playback Test</h1>
+    <p>Testing completed recording as VOD</p>
+    
+    <video id="video" controls width="800"></video>
+    <div id="status"></div>
+    
+    <script>
+        var video = document.getElementById('video');
+        var status = document.getElementById('status');
+        
+        if (Hls.isSupported()) {
+            var hls = new Hls({
+                debug: true
+            });
+            
+            hls.loadSource('http://localhost:8088/hls/asdfasfsdfgasdf_YAPCDUE7808d64_1750672062.m3u8');
+            hls.attachMedia(video);
+            
+            hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                status.textContent = 'Manifest loaded, playing...';
+                video.play().catch(e => {
+                    status.textContent = 'Click to play: ' + e.message;
+                });
+            });
+            
+            hls.on(Hls.Events.ERROR, function (event, data) {
+                console.error('HLS error:', data);
+                status.textContent = 'Error: ' + data.type + ' - ' + data.details;
+            });
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.src = 'http://localhost:8088/hls/asdfasfsdfgasdf_YAPCDUE7808d64_1750672062.m3u8';
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Direct HLS Player</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        video { width: 100%; max-width: 800px; }
+        .info { margin: 10px 0; padding: 10px; background: #f0f0f0; }
+    </style>
+</head>
+<body>
+    <h1>Direct HLS Player</h1>
+    
+    <video id="video" controls></video>
+    
+    <div class="info">
+        <strong>Status:</strong> <span id="status">Initializing...</span><br>
+        <strong>Stream URL:</strong> http://localhost:8088/hls/asdfasfsdfgasdf_YAPCDUE808d64_1750667561.m3u8
+    </div>
+    
+    <div id="log" style="margin-top: 20px; font-family: monospace; font-size: 12px;"></div>
+    
+    <script>
+        var video = document.getElementById('video');
+        var statusEl = document.getElementById('status');
+        var logEl = document.getElementById('log');
+        
+        function log(msg) {
+            var time = new Date().toLocaleTimeString();
+            logEl.innerHTML = time + ' - ' + msg + '<br>' + logEl.innerHTML;
+        }
+        
+        if (Hls.isSupported()) {
+            var hls = new Hls({
+                debug: false,
+                liveSyncDurationCount: 3,
+                liveMaxLatencyDurationCount: 10,
+                fragLoadingTimeOut: 20000,
+                fragLoadingMaxRetry: 6,
+                manifestLoadingTimeOut: 10000,
+                manifestLoadingMaxRetry: 3,
+                startLevel: -1,
+                startFragPrefetch: true
+            });
+            
+            var videoSrc = 'http://localhost:8088/hls/asdfasfsdfgasdf_YAPCDUE808d64_1750667561.m3u8';
+            
+            hls.on(Hls.Events.MEDIA_ATTACHING, function() {
+                log('Attaching media...');
+                statusEl.textContent = 'Attaching media...';
+            });
+            
+            hls.on(Hls.Events.MANIFEST_LOADING, function() {
+                log('Loading manifest...');
+                statusEl.textContent = 'Loading manifest...';
+            });
+            
+            hls.on(Hls.Events.MANIFEST_LOADED, function(event, data) {
+                log('Manifest loaded. Live: ' + data.live);
+                statusEl.textContent = 'Manifest loaded';
+            });
+            
+            hls.on(Hls.Events.MANIFEST_PARSED, function(event, data) {
+                log('Manifest parsed. Levels: ' + data.levels.length);
+                statusEl.textContent = 'Playing...';
+                video.play().catch(e => {
+                    statusEl.textContent = 'Click video to play';
+                    log('Autoplay blocked: ' + e.message);
+                });
+            });
+            
+            hls.on(Hls.Events.LEVEL_LOADED, function(event, data) {
+                log('Level loaded. Live: ' + data.details.live + ', Segments: ' + data.details.fragments.length);
+            });
+            
+            hls.on(Hls.Events.FRAG_LOADING, function(event, data) {
+                log('Loading fragment: ' + data.frag.url);
+            });
+            
+            hls.on(Hls.Events.FRAG_LOADED, function(event, data) {
+                log('Fragment loaded: ' + data.frag.url);
+            });
+            
+            hls.on(Hls.Events.ERROR, function(event, data) {
+                if (data.fatal) {
+                    log('FATAL ERROR: ' + data.type + ' - ' + data.details);
+                    statusEl.textContent = 'Fatal error: ' + data.details;
+                    
+                    switch(data.type) {
+                        case Hls.ErrorTypes.NETWORK_ERROR:
+                            log('Fatal network error, trying to recover...');
+                            hls.startLoad();
+                            break;
+                        case Hls.ErrorTypes.MEDIA_ERROR:
+                            log('Fatal media error, trying to recover...');
+                            hls.recoverMediaError();
+                            break;
+                        default:
+                            log('Unrecoverable error');
+                            hls.destroy();
+                            break;
+                    }
+                } else {
+                    log('Non-fatal error: ' + data.details);
+                    if (data.details === 'fragParsingError') {
+                        statusEl.textContent = 'Buffering...';
+                    }
+                }
+            });
+            
+            log('Loading source: ' + videoSrc);
+            hls.loadSource(videoSrc);
+            hls.attachMedia(video);
+            
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.src = 'http://localhost:8088/hls/asdfasfsdfgasdf_YAPCDUE808d64_1750667561.m3u8';
+        }
+    </script>
+</body>
+</html>

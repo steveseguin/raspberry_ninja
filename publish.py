@@ -539,6 +539,7 @@ class WebServer:
                     <video id="hlsVideo" controls style="width: 100%; max-width: 800px; background: #000;"></video>
                     <div style="margin-top: 10px;">
                         <button onclick="closeHLSPlayer()" style="background: #f44336;">Close Player</button>
+                        <button onclick="toggleHLSDebug()" style="background: #2196F3; margin-left: 10px;">Toggle Debug</button>
                         <span id="hlsPlayerStatus" style="margin-left: 20px;"></span>
                     </div>
                     <div style="margin-top: 15px; padding: 10px; background: #2a2a2a; border-radius: 4px;">
@@ -582,10 +583,18 @@ class WebServer:
                     
                     if (Hls.isSupported()) {
                         hls = new Hls({
-                            debug: false,
+                            debug: true,  // Enable debug logging to console
                             enableWorker: true,
                             lowLatencyMode: true,
-                            backBufferLength: 90
+                            backBufferLength: 90,
+                            liveSyncDurationCount: 3,        // For live streams
+                            liveMaxLatencyDurationCount: 10, // Maximum live latency
+                            manifestLoadingTimeOut: 10000,   // 10 second timeout
+                            manifestLoadingMaxRetry: 3,      // Retry 3 times
+                            fragLoadingTimeOut: 20000,       // 20 second timeout for fragments
+                            fragLoadingMaxRetry: 6,          // Retry fragments 6 times
+                            startLevel: -1,                  // Auto select quality
+                            startFragPrefetch: true          // Prefetch next fragment
                         });
                         
                         hls.loadSource(fullUrl);
@@ -593,18 +602,65 @@ class WebServer:
                         
                         hls.on(Hls.Events.MEDIA_ATTACHED, function () {
                             status.textContent = 'Loading stream...';
+                            console.log('HLS: Media attached');
+                        });
+                        
+                        hls.on(Hls.Events.MANIFEST_LOADING, function () {
+                            status.textContent = 'Loading manifest...';
+                            console.log('HLS: Loading manifest from:', fullUrl);
+                        });
+                        
+                        hls.on(Hls.Events.MANIFEST_LOADED, function (event, data) {
+                            status.textContent = 'Manifest loaded, parsing...';
+                            console.log('HLS: Manifest loaded, details:', data);
                         });
                         
                         hls.on(Hls.Events.MANIFEST_PARSED, function (event, data) {
                             status.textContent = 'Stream loaded, playing...';
+                            console.log('HLS: Manifest parsed, levels:', data);
                             video.play().catch(e => {
                                 status.textContent = 'Click video to play (autoplay blocked)';
+                                console.log('Autoplay failed:', e);
                             });
                         });
                         
+                        hls.on(Hls.Events.LEVEL_LOADED, function (event, data) {
+                            console.log('HLS: Level loaded, details:', data);
+                        });
+                        
+                        hls.on(Hls.Events.FRAG_LOADING, function (event, data) {
+                            console.log('HLS: Loading fragment:', data.frag.url);
+                        });
+                        
                         hls.on(Hls.Events.ERROR, function (event, data) {
+                            console.error('HLS Error:', data);
                             if (data.fatal) {
-                                status.textContent = 'Error: ' + data.details;
+                                switch(data.type) {
+                                    case Hls.ErrorTypes.NETWORK_ERROR:
+                                        status.textContent = 'Network Error: ' + data.details;
+                                        console.error('Fatal network error encountered, trying to recover...');
+                                        hls.startLoad();
+                                        break;
+                                    case Hls.ErrorTypes.MEDIA_ERROR:
+                                        status.textContent = 'Media Error: ' + data.details;
+                                        console.error('Fatal media error encountered, trying to recover...');
+                                        hls.recoverMediaError();
+                                        break;
+                                    default:
+                                        status.textContent = 'Error: ' + data.details;
+                                        console.error('Fatal error, cannot recover');
+                                        hls.destroy();
+                                        break;
+                                }
+                            } else {
+                                // Non-fatal errors
+                                if (data.details === 'fragParsingError') {
+                                    // Common with live streams, usually recovers automatically
+                                    status.textContent = 'Buffering live stream...';
+                                    console.log('Fragment parsing error (common with live streams), will retry...');
+                                } else {
+                                    status.textContent = 'Non-fatal error: ' + data.details;
+                                }
                             }
                         });
                     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
@@ -647,6 +703,15 @@ class WebServer:
                         } else {
                             alert('Copy not supported. Please select and copy manually.');
                         }
+                    }
+                }
+                
+                function toggleHLSDebug() {
+                    if (hls && hls.config) {
+                        hls.config.debug = !hls.config.debug;
+                        const status = document.getElementById('hlsPlayerStatus');
+                        status.textContent = 'Debug mode: ' + (hls.config.debug ? 'ON' : 'OFF');
+                        console.log('HLS.js debug mode:', hls.config.debug);
                     }
                 }
                 
@@ -1045,9 +1110,20 @@ class WebServer:
                         }
                         
                         hlsDiv.innerHTML = streams.map(stream => {
-                            const status = stream.status === 'recording' ? 
-                                '<span style="color: #ff4444;">● RECORDING</span>' : 
-                                '<span style="color: #4CAF50;">✓ Complete</span>';
+                            let status;
+                            if (stream.status === 'recording') {
+                                status = '<span style="color: #ff4444;">● RECORDING</span>';
+                            } else if (stream.status === 'live') {
+                                status = '<span style="color: #ff8800;">● LIVE</span>';
+                            } else if (stream.status === 'complete' && stream.is_complete) {
+                                status = '<span style="color: #4CAF50;">✓ Complete</span>';
+                            } else if (stream.status === 'incomplete') {
+                                status = '<span style="color: #ff8800;">⚠️ Incomplete (no ENDLIST)</span>';
+                            } else if (!stream.has_segments) {
+                                status = '<span style="color: #ff4444;">❌ Empty/Invalid</span>';
+                            } else {
+                                status = '<span style="color: #999;">◐ Unknown</span>';
+                            }
                             
                             const modified = new Date(stream.modified * 1000).toLocaleString();
                             
@@ -1559,6 +1635,16 @@ class WebServer:
                 stream_info['stream_id'] = parts[1]
                 stream_info['timestamp'] = parts[2]
             
+            # Check if playlist has EXT-X-ENDLIST (is complete)
+            try:
+                with open(playlist, 'r') as f:
+                    content = f.read()
+                    stream_info['is_complete'] = '#EXT-X-ENDLIST' in content
+                    stream_info['has_segments'] = '#EXTINF:' in content
+            except:
+                stream_info['is_complete'] = False
+                stream_info['has_segments'] = False
+            
             # Count segments
             base_name = playlist.replace('.m3u8', '')
             segments = glob.glob(f"{base_name}_*.ts")
@@ -1566,8 +1652,34 @@ class WebServer:
             
             # Check if still recording (recently modified)
             import time
-            if time.time() - stat.st_mtime < 10:  # Modified in last 10 seconds
+            current_time = time.time()
+            
+            # Check both playlist and most recent segment modification times
+            time_since_playlist_modified = current_time - stat.st_mtime
+            
+            # Find most recent segment modification time
+            most_recent_segment_time = 0
+            if segments:
+                for segment in segments:
+                    try:
+                        seg_mtime = os.stat(segment).st_mtime
+                        if seg_mtime > most_recent_segment_time:
+                            most_recent_segment_time = seg_mtime
+                    except:
+                        pass
+            
+            # Use the most recent modification time (playlist or segment)
+            most_recent_activity = max(stat.st_mtime, most_recent_segment_time) if most_recent_segment_time else stat.st_mtime
+            time_since_activity = current_time - most_recent_activity
+            
+            # Determine status based on activity and completion
+            if time_since_activity < 10:  # Activity in last 10 seconds
                 stream_info['status'] = 'recording'
+            elif time_since_activity < 60 and not stream_info['is_complete']:  # Activity in last minute and no ENDLIST
+                stream_info['status'] = 'live'
+            elif not stream_info['is_complete'] and stream_info['has_segments']:
+                # Has segments but no ENDLIST and no recent activity
+                stream_info['status'] = 'incomplete'
             else:
                 stream_info['status'] = 'complete'
                 
@@ -1597,13 +1709,19 @@ class WebServer:
             headers = {
                 'Cache-Control': 'no-cache, no-store, must-revalidate',
                 'Pragma': 'no-cache',
-                'Expires': '0'
+                'Expires': '0',
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET, OPTIONS',
+                'Access-Control-Allow-Headers': 'Content-Type'
             }
         else:  # .ts files
             content_type = 'video/mp2t'
             # Cache segments
             headers = {
-                'Cache-Control': 'public, max-age=3600'
+                'Cache-Control': 'public, max-age=3600',
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET, OPTIONS',
+                'Access-Control-Allow-Headers': 'Content-Type'
             }
             
         # Read and serve file

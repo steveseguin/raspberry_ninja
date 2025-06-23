@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>HLS Test</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+</head>
+<body>
+    <h1>HLS Test Player</h1>
+    <video id="video" controls width="640" height="480"></video>
+    <br>
+    <div id="status">Loading...</div>
+    <br>
+    <button onclick="playStream()">Play Stream</button>
+    
+    <script>
+        function playStream() {
+            var video = document.getElementById('video');
+            var status = document.getElementById('status');
+            var videoSrc = 'http://localhost:8088/hls/asdfasfsdfgasdf_YAPCDUE808d64_1750667561.m3u8';
+            
+            if (Hls.isSupported()) {
+                var hls = new Hls({
+                    debug: true,
+                    liveSyncDurationCount: 3,
+                    liveMaxLatencyDurationCount: 10,
+                    fragLoadingTimeOut: 20000,
+                    fragLoadingMaxRetry: 6,
+                    startLevel: -1,
+                    startFragPrefetch: true
+                });
+                
+                hls.loadSource(videoSrc);
+                hls.attachMedia(video);
+                
+                hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                    status.textContent = 'Manifest parsed, starting playback...';
+                    video.play().catch(e => {
+                        status.textContent = 'Click video to play: ' + e.message;
+                    });
+                });
+                
+                hls.on(Hls.Events.ERROR, function(event, data) {
+                    status.textContent = 'Error: ' + data.type + ' - ' + data.details;
+                    console.error('HLS error:', data);
+                });
+                
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = videoSrc;
+                video.addEventListener('loadedmetadata', function() {
+                    video.play();
+                });
+            }
+        }
+        
+        // Auto-play on load
+        window.onload = function() {
+            playStream();
+        };
+    </script>
+</body>
+</html>

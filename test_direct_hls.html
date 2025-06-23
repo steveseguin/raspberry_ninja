@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Direct HLS Test</title>
+</head>
+<body>
+    <h1>Direct HLS Playback Test</h1>
+    <p>Testing with latest recording: asdfasfsdfgasdf_YAPCDUE808d64_1750670767.m3u8</p>
+    
+    <video id="video" controls width="800"></video>
+    
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script>
+        var video = document.getElementById('video');
+        if (Hls.isSupported()) {
+            var hls = new Hls();
+            hls.loadSource('asdfasfsdfgasdf_YAPCDUE808d64_1750670767.m3u8');
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                video.play();
+            });
+        }
+        // HLS.js is not supported on platforms that do not have Media Source Extensions (MSE) enabled.
+        // When the browser has built-in HLS support (check using `canPlayType`), we can provide an HLS manifest (i.e. .m3u8 URL) directly to the video element through the `src` property.
+        // This is using the built-in support of the plain video element, without using HLS.js.
+        else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.src = 'asdfasfsdfgasdf_YAPCDUE808d64_1750670767.m3u8';
+        }
+    </script>
+    
+    <p>If video doesn't play, check browser console for errors.</p>
+</body>
+</html>

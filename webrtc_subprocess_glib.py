@@ -85,7 +85,7 @@ class GLibWebRTCHandler:
         self.ndi_name = config.get('ndi_name')
         self.ndi_direct = config.get('ndi_direct', False)  # Direct NDI mode flag
         self.use_hls = config.get('use_hls', False)
-        self.use_splitmuxsink = config.get('use_splitmuxsink', True)  # Use splitmuxsink for proper HLS segmentation
+        self.use_splitmuxsink = config.get('use_splitmuxsink', True)  # Default to True - splitmuxsink handles audio/video sync better
         self.password = config.get('password')
         self.salt = config.get('salt', '')
         
@@ -775,6 +775,22 @@ class GLibWebRTCHandler:
             self.log("Still not in stable state, will retry")
             return True  # Continue the timer
     
+    def is_jetson(self):
+        """Check if running on Nvidia Jetson platform"""
+        try:
+            # Check for Jetson-specific files
+            if os.path.exists('/etc/nv_tegra_release'):
+                return True
+            # Also check /proc/device-tree/model
+            if os.path.exists('/proc/device-tree/model'):
+                with open('/proc/device-tree/model', 'r') as f:
+                    model = f.read().lower()
+                    if 'jetson' in model or 'tegra' in model:
+                        return True
+        except:
+            pass
+        return False
+    
     def check_hls_streams_ready(self):
         """Check if audio and/or video are connected and start HLS recording"""
         if not self.use_hls:
@@ -828,50 +844,91 @@ class GLibWebRTCHandler:
                         self.pipe.set_state(Gst.State.PLAYING)
                         self.log("   ▶️  Set pipeline to PLAYING state for HLS")
                 
-                # First sync the mux state
-                if hasattr(self, 'hls_mux') and self.hls_mux:
-                    ret = self.hls_mux.sync_state_with_parent()
-                    self.log(f"   Mpegtsmux sync result: {ret}")
-                    
-                    # Force mux to PLAYING state
-                    ret = self.hls_mux.set_state(Gst.State.PLAYING)
-                    ret_name = ret.value_name if hasattr(ret, 'value_name') else str(ret)
-                    self.log(f"   Mpegtsmux set_state result: {ret_name}")
-                
-                # Then sync the sink state
+                # For splitmuxsink, we need a different approach
                 if hasattr(self, 'hlssink') and self.hlssink:
-                    # For splitmuxsink, try a different approach
-                    # First ensure it's in NULL state
-                    self.hlssink.set_state(Gst.State.NULL)
-                    self.hlssink.sync_state_with_parent()
-                    
-                    # Give it a moment
-                    import time
-                    time.sleep(0.1)
-                    
-                    # Now force to PLAYING
-                    ret = self.hlssink.set_state(Gst.State.PLAYING)
-                    ret_name = ret.value_name if hasattr(ret, 'value_name') else str(ret)
-                    self.log(f"   HLS sink set_state result: {ret_name}")
-                    
-                    # Also try setting some properties that might help
-                    try:
-                        self.hlssink.set_property('send-keyframe-requests', True)
-                        self.hlssink.set_property('async-finalize', True)
-                        self.hlssink.set_property('async-handling', True)
-                    except:
-                        pass
-                    
+                    if hasattr(self, 'use_internal_mux') and self.use_internal_mux:
+                        # For splitmuxsink, only set the pipeline state
+                        # The element will sync automatically
+                        
+                        # Ensure pipeline is PLAYING
+                        if self.pipe.get_state(0)[1] != Gst.State.PLAYING:
+                            self.pipe.set_state(Gst.State.PLAYING)
+                            self.log("   ▶️  Set pipeline to PLAYING state")
+                        
+                        # Check splitmuxsink state after a moment
+                        # Use a short timeout to get current state
+                        state_ret, state, pending = self.hlssink.get_state(100 * Gst.MSECOND)
+                        state_name = state.value_name if hasattr(state, 'value_name') else str(state)
+                        pending_name = pending.value_name if pending and hasattr(pending, 'value_name') else str(pending)
+                        self.log(f"   Splitmuxsink state: {state_name}, pending: {pending_name}")
+                        
+                        # Request keyframe to start recording
+                        if hasattr(self, 'video_queue'):
+                            # Send force keyframe event
+                            event = Gst.Event.new_custom(
+                                Gst.EventType.CUSTOM_UPSTREAM,
+                                Gst.Structure.new_empty("GstForceKeyUnit")
+                            )
+                            self.video_queue.send_event(event)
+                            self.log("   🔑 Sent initial keyframe request")
+                            
+                            # Also try sending splitmuxsink-specific signal
+                            try:
+                                # Signal splitmuxsink to split at next keyframe
+                                self.hlssink.emit('split-now')
+                                self.log("   ✅ Sent split-now signal to splitmuxsink")
+                            except Exception as e:
+                                self.log(f"   ⚠️  Could not send split-now signal: {e}")
+                            
+                            # Set up periodic keyframe requests to align with segment duration
+                            def request_keyframe():
+                                if hasattr(self, 'video_queue') and self.video_queue:
+                                    event = Gst.Event.new_custom(
+                                        Gst.EventType.CUSTOM_UPSTREAM,
+                                        Gst.Structure.new_empty("GstForceKeyUnit")
+                                    )
+                                    self.video_queue.send_event(event)
+                                    self.log("   🔑 Periodic keyframe requested")
+                                return True  # Keep repeating
+                            
+                            # Request keyframe every 5 seconds to match segment duration
+                            GLib.timeout_add(5000, request_keyframe)
+                                
+                        # Additional check - make sure video pad is linked
+                        if hasattr(self, 'video_queue'):
+                            # Check if video queue is linked to splitmuxsink
+                            video_src_pad = self.video_queue.get_static_pad('src')
+                            if video_src_pad and not video_src_pad.is_linked():
+                                self.log("   ⚠️  Video queue not linked to splitmuxsink!")
+                                # Try to request video pad again
+                                video_sink_pad = self.hlssink.request_pad_simple('video')
+                                if video_sink_pad:
+                                    if video_src_pad.link(video_sink_pad) == Gst.PadLinkReturn.OK:
+                                        self.log("   ✅ Re-linked video to splitmuxsink")
+                                    else:
+                                        self.log("   ❌ Failed to re-link video", "error")
+                    else:
+                        # Manual segmentation mode
+                        self.log("   📝 Using manual segmentation mode")
+                        
+                        # Ensure pipeline is PLAYING first
+                        if self.pipe.get_state(0)[1] != Gst.State.PLAYING:
+                            self.pipe.set_state(Gst.State.PLAYING)
+                            self.log("   ▶️  Set pipeline to PLAYING state")
+                        
+                        # Force both mux and sink to PLAYING state
+                        if hasattr(self, 'hls_mux') and self.hls_mux:
+                            ret = self.hls_mux.set_state(Gst.State.PLAYING)
+                            ret_name = ret.value_name if hasattr(ret, 'value_name') else str(ret)
+                            self.log(f"   Mpegtsmux set_state(PLAYING): {ret_name}")
+                        
+                        if hasattr(self, 'hlssink') and self.hlssink:
+                            ret = self.hlssink.set_state(Gst.State.PLAYING)
+                            ret_name = ret.value_name if hasattr(ret, 'value_name') else str(ret)
+                            self.log(f"   Filesink set_state(PLAYING): {ret_name}")
+                        
                     # Wait for state changes to complete
                     timeout = 2 * Gst.SECOND
-                    
-                    # Check mux state
-                    if hasattr(self, 'hls_mux') and self.hls_mux:
-                        state_ret, state, pending = self.hls_mux.get_state(timeout)
-                        state_name = state.value_name if hasattr(state, 'value_name') else str(state)
-                        self.log(f"   Mpegtsmux final state: {state_name}")
-                    
-                    # Check sink state
                     state_ret, state, pending = self.hlssink.get_state(timeout)
                     state_name = state.value_name if hasattr(state, 'value_name') else str(state)
                     ret_name = state_ret.value_name if hasattr(state_ret, 'value_name') else str(state_ret)
@@ -880,19 +937,28 @@ class GLibWebRTCHandler:
                 self.log("   🎬 HLS recording started!")
                 return False  # Don't repeat
                 
-            # Schedule the start with a 100ms delay
-            GLib.timeout_add(100, delayed_start)
+            # Schedule the start with a 100ms delay (200ms for Jetson)
+            delay = 200 if self.is_jetson() else 100
+            GLib.timeout_add(delay, delayed_start)
     
     def setup_hls_muxer(self):
         """Set up shared mpegtsmux and HLS sink for audio/video"""
-        if hasattr(self, 'hls_mux'):
-            # Already set up
+        # Check if already set up by looking for any HLS-related attributes
+        if hasattr(self, 'hlssink') and self.hlssink:
+            self.log("   ⚠️  HLS sink already exists, skipping setup")
+            return
+        if hasattr(self, 'base_filename') and self.base_filename:
+            self.log("   ⚠️  HLS recording already started (base_filename exists), skipping setup")
             return
             
         self.log("Setting up HLS muxer for audio/video")
         
-        # Force splitmuxsink for HLS to ensure proper segmentation
-        if self.use_hls:
+        # Determine best approach based on requirements
+        # IMPORTANT: Force splitmuxsink for audio/video muxing
+        # Manual segmentation with mpegtsmux is broken when both streams are present
+        if self.use_hls and not self.use_splitmuxsink:
+            self.log("   ⚠️  WARNING: Manual segmentation doesn't work with audio+video")
+            self.log("   🔄 Forcing splitmuxsink mode for proper muxing")
             self.use_splitmuxsink = True
             
         # Initialize use_hlssink2 based on use_splitmuxsink setting
@@ -925,21 +991,45 @@ class GLibWebRTCHandler:
         
         # For Jetson Nano with GStreamer 1.23.0, we need explicit mpegtsmux control
         # Create our own mpegtsmux to ensure proper segment handling
-        self.hls_mux = Gst.ElementFactory.make('mpegtsmux', 'hls_mpegtsmux')
-        if not self.hls_mux:
-            self.log("Failed to create mpegtsmux", "error")
-            return
+        if not self.use_splitmuxsink:
+            self.hls_mux = Gst.ElementFactory.make('mpegtsmux', 'hls_mpegtsmux')
+            if not self.hls_mux:
+                self.log("Failed to create mpegtsmux", "error")
+                return
+                
+            # Configure mpegtsmux for HLS
+            self.hls_mux.set_property('alignment', 7)  # Proper alignment for HLS
             
-        # Configure mpegtsmux for HLS
-        self.hls_mux.set_property('alignment', 7)  # Proper alignment for HLS
-        self.pipe.add(self.hls_mux)
+            # Configure for live streaming with minimal latency
+            try:
+                # Set properties for better live muxing
+                self.hls_mux.set_property('latency', 0)  # No added latency
+                self.hls_mux.set_property('prog-map', 'video/x-h264=2048,audio/mpeg=2049')  # Map streams
+            except Exception as e:
+                self.log(f"   Note: Some mux properties not available: {e}")
+                pass
+            
+            # IMPORTANT: Set properties for proper timestamp handling
+            try:
+                # This ensures timestamps start from 0 when streams connect
+                self.hls_mux.set_property('start-time-selection', 0)  # 0 = "zero"
+                # Set a small latency to allow timestamp synchronization
+                self.hls_mux.set_property('latency', 100000000)  # 100ms
+                # Ensure we're not dropping data
+                self.hls_mux.set_property('drop-on-latency', False)
+            except Exception as e:
+                self.log(f"   Note: Some timestamp properties not available: {e}")
+                pass
+                
+            self.pipe.add(self.hls_mux)
         
         # Create filesink or hlssink2 based on mode
         if self.use_splitmuxsink:
             # For splitmuxsink, we need to let it manage the mux internally
             # Remove our explicit mux since splitmuxsink creates its own
-            self.pipe.remove(self.hls_mux)
-            self.hls_mux = None
+            if hasattr(self, 'hls_mux') and self.hls_mux:
+                self.pipe.remove(self.hls_mux)
+                self.hls_mux = None
             
             # Use splitmuxsink with internal mux
             self.hlssink = Gst.ElementFactory.make('splitmuxsink', None)
@@ -948,14 +1038,28 @@ class GLibWebRTCHandler:
                 self.hlssink.set_property('max-size-time', 5 * Gst.SECOND)
                 self.hlssink.set_property('send-keyframe-requests', True)
                 self.hlssink.set_property('async-finalize', True)
-                # Try to force immediate segment creation
                 self.hlssink.set_property('max-size-bytes', 0)  # Disable byte limit
                 self.hlssink.set_property('start-index', 0)  # Start from segment 0
+                # Force alignment on keyframes to prevent split video segments
+                self.hlssink.set_property('alignment-threshold', 2 * Gst.SECOND)  # Allow 2s flexibility for keyframe alignment
+                # Critical: Only split on keyframes to ensure video is in sync
+                self.hlssink.set_property('split-at-running-time', False)
+                
+                # For splitmuxsink, we need to handle async start properly
+                # This is critical for Jetson boards
+                self.hlssink.set_property('async-handling', True)
                 
                 # Create and configure mpegtsmux for splitmuxsink
                 mux = Gst.ElementFactory.make('mpegtsmux', None)
                 if mux:
                     mux.set_property('alignment', 7)
+                    # For live streaming, disable latency
+                    mux.set_property('latency', 0)
+                    # Set prog-map for better stream identification
+                    try:
+                        mux.set_property('prog-map', 'video/x-h264=2048,audio/mpeg=2049')
+                    except:
+                        pass
                     self.hlssink.set_property('muxer', mux)
                 
                 self.log(f"   Output: {base_filename}_*.ts (5 second segments)")
@@ -970,17 +1074,43 @@ class GLibWebRTCHandler:
                 self.segment_counter = 0
                 self.write_m3u8_header()
                 
+                # Add the first segment after a short delay to ensure it has data
+                def add_first_segment():
+                    first_seg = f"{base_filename}_00000.ts"
+                    if os.path.exists(first_seg) and os.path.getsize(first_seg) > 0:
+                        self.log(f"   📎 Adding first segment: {os.path.basename(first_seg)}")
+                        self.add_segment_to_playlist(first_seg)
+                        return False  # Don't repeat
+                    return True  # Try again
+                
+                # Check for first segment after 1 second
+                GLib.timeout_add(1000, add_first_segment)
+                
                 # Connect to splitmuxsink's format-location signal to track segments
                 def on_format_location(splitmux, fragment_id):
                     return f"{base_filename}_{fragment_id:05d}.ts"
                     
                 self.hlssink.connect('format-location', on_format_location)
                 
+                # Track current and previous segments
+                self.current_segment_id = -1
+                self.pending_segments = []
+                
                 # Monitor when new files are created
-                def on_splitmux_sink_new_file(splitmux, filename):
-                    self.log(f"   📁 New HLS segment created: {filename}")
-                    # Update M3U8 playlist
-                    self.add_segment_to_playlist(filename)
+                def on_splitmux_sink_new_file(splitmux, fragment_id, sample):
+                    # When a new segment starts, the previous one is complete
+                    if self.current_segment_id >= 0:
+                        # Add the previous segment to playlist (it's now complete)
+                        prev_filename = f"{base_filename}_{self.current_segment_id:05d}.ts"
+                        self.log(f"   ✅ Previous segment complete: {prev_filename}")
+                        self.add_segment_to_playlist(prev_filename)
+                    
+                    # Update current segment ID
+                    self.current_segment_id = fragment_id
+                    filename = f"{base_filename}_{fragment_id:05d}.ts"
+                    self.log(f"   📁 New HLS segment started: {filename}")
+                    # Mark recording as active
+                    self.hls_recording_active = True
                     
                 # Connect to the actual signal name
                 try:
@@ -992,6 +1122,9 @@ class GLibWebRTCHandler:
                 # Also connect to splitmuxsink-fragment-closed which fires when segment is complete
                 def on_fragment_closed(splitmux):
                     self.log("   📦 HLS segment closed")
+                    # Force playlist update
+                    if hasattr(self, 'write_playlist'):
+                        self.write_playlist()
                     
                 try:
                     self.hlssink.connect('splitmuxsink-fragment-closed', on_fragment_closed)
@@ -1039,6 +1172,39 @@ class GLibWebRTCHandler:
                 self.log(f"   First segment: {segment_filename}")
                 self.base_filename = base_filename
                 
+                # Set up segment rotation timer
+                def rotate_segment():
+                    if self.use_manual_segmentation:
+                        self.rotate_hls_segment()
+                    return True  # Keep timer running
+                    
+                # Rotate segments every 5 seconds
+                GLib.timeout_add(int(self.segment_duration * 1000), rotate_segment)
+                
+                # Also check for initial segment creation
+                def check_initial_segment():
+                    if hasattr(self, 'hlssink') and self.hlssink:
+                        filename = self.hlssink.get_property('location')
+                        if filename:
+                            import os
+                            if os.path.exists(filename):
+                                size = os.path.getsize(filename)
+                                if size > 0:
+                                    self.log(f"   ✅ Initial HLS segment has data: {os.path.basename(filename)} ({size} bytes)")
+                                    # Check if it's real data or just padding
+                                    if size == 65800:
+                                        self.log("   ⚠️  Segment size is exactly 65800 - might be empty TS padding")
+                                    # Add first segment to playlist if not already added
+                                    if hasattr(self, 'segment_counter') and self.segment_counter == 0:
+                                        if not hasattr(self, '_first_segment_added'):
+                                            self._first_segment_added = True
+                                            self.add_segment_to_playlist(filename)
+                                    return False  # Stop checking
+                    return True  # Keep checking
+                    
+                # Check every 500ms for initial segment
+                GLib.timeout_add(500, check_initial_segment)
+                
         if not self.hlssink:
             self.log("Failed to create HLS sink", "error")
             return
@@ -1046,18 +1212,66 @@ class GLibWebRTCHandler:
         # Add sink to pipeline
         self.pipe.add(self.hlssink)
         
+        # For splitmuxsink, let the pipeline manage its state
+        # Do NOT set state manually - it will sync with parent automatically
+        if self.use_splitmuxsink:
+            self.log("   Splitmuxsink added to pipeline, will sync with parent state")
+        
         # Link mux to sink
         if not self.use_splitmuxsink:
             # For manual segmentation, link mux to filesink
             if not self.hls_mux.link(self.hlssink):
                 self.log("Failed to link mux to sink", "error")
                 return
+                
+            # Add probe to monitor mux output
+            mux_src_pad = self.hls_mux.get_static_pad('src')
+            if mux_src_pad:
+                self._mux_output_count = 0
+                self._mux_first_buffer = True
+                self._mux_last_pts = None
+                def mux_probe_cb(pad, info):
+                    self._mux_output_count += 1
+                    buffer = info.get_buffer()
+                    if buffer:
+                        if self._mux_first_buffer:
+                            self._mux_first_buffer = False
+                            self.log("   ✅ First buffer from mpegtsmux!")
+                            self.log(f"      Mux output buffer size: {buffer.get_size()} bytes")
+                            self.log(f"      Buffer PTS: {buffer.pts}, DTS: {buffer.dts}")
+                        elif self._mux_output_count % 50 == 0:
+                            self.log(f"   📊 Mpegtsmux output: {self._mux_output_count} buffers")
+                            if self._mux_last_pts:
+                                time_diff = (buffer.pts - self._mux_last_pts) / Gst.SECOND
+                                self.log(f"      Time since last log: {time_diff:.2f}s")
+                        self._mux_last_pts = buffer.pts
+                    return Gst.PadProbeReturn.OK
+                mux_src_pad.add_probe(Gst.PadProbeType.BUFFER, mux_probe_cb)
+                self.log("   ✅ Added probe to monitor mpegtsmux output")
+                
+            # Also add event probe to monitor segment events
+            if mux_src_pad:
+                def mux_event_probe_cb(pad, info):
+                    event = info.get_event()
+                    if event.type == Gst.EventType.SEGMENT:
+                        self.log("   📍 Segment event passed through mpegtsmux")
+                    return Gst.PadProbeReturn.OK
+                mux_src_pad.add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, mux_event_probe_cb)
         
-        # Keep elements in NULL state initially
-        if self.hls_mux:  # Only if we're using external mux
-            self.hls_mux.set_state(Gst.State.NULL)
-        if self.hlssink:
-            self.hlssink.set_state(Gst.State.NULL)
+        # Sync elements with pipeline state
+        if self.use_splitmuxsink:
+            # For splitmuxsink, it will automatically sync when the pipeline plays
+            # No manual state management needed
+            if hasattr(self, 'hlssink') and self.hlssink:
+                # Make sure it syncs with parent pipeline
+                self.hlssink.sync_state_with_parent()
+                self.log("   Splitmuxsink synced with parent pipeline")
+        else:
+            # For manual segmentation, sync states immediately
+            if hasattr(self, 'hls_mux') and self.hls_mux:
+                self.hls_mux.sync_state_with_parent()
+            if hasattr(self, 'hlssink') and self.hlssink:
+                self.hlssink.sync_state_with_parent()
         
         self.log("   ✅ HLS muxer ready for audio/video streams")
         
@@ -1072,6 +1286,8 @@ class GLibWebRTCHandler:
                     f.write("#EXT-X-MEDIA-SEQUENCE:0\n")
                     f.write("\n")
                 self.log(f"   ✅ Created M3U8 playlist: {self.playlist_filename}")
+                # Mark recording as active for live updates
+                self.hls_recording_active = True
             except PermissionError as e:
                 self.log(f"   ❌ Permission denied writing M3U8: {self.playlist_filename}", "error")
                 self.log(f"      Try running with write permissions or specify --record-path", "error")
@@ -1086,28 +1302,155 @@ class GLibWebRTCHandler:
                 import os
                 segment_name = os.path.basename(filename)
                 
+                # Check if this segment already exists
+                existing_segments = [s['filename'] for s in self.segments]
+                if segment_name in existing_segments:
+                    self.log(f"   ⚠️  Segment {segment_name} already in playlist, skipping duplicate")
+                    return
+                
                 # Add to segments list
                 self.segments.append({
                     'filename': segment_name,
-                    'duration': self.segment_duration
+                    'duration': self.segment_duration,
+                    'time_added': time.time()
                 })
                 
-                # Rewrite the entire playlist
-                with open(self.playlist_filename, 'w') as f:
-                    f.write("#EXTM3U\n")
-                    f.write("#EXT-X-VERSION:3\n")
-                    f.write(f"#EXT-X-TARGETDURATION:{int(self.segment_duration)}\n")
-                    f.write(f"#EXT-X-MEDIA-SEQUENCE:0\n")
-                    f.write("\n")
-                    
-                    # Write all segments
-                    for segment in self.segments:
-                        f.write(f"#EXTINF:{segment['duration']:.3f},\n")
-                        f.write(f"{segment['filename']}\n")
-                        
+                # Update the playlist
+                self.write_playlist()
+                
                 self.segment_counter += 1
+                
+                # Schedule next playlist update for live streaming
+                if not hasattr(self, '_playlist_updater_scheduled'):
+                    self._playlist_updater_scheduled = True
+                    self.schedule_playlist_updates()
+                    
             except Exception as e:
                 self.log(f"   ❌ Error updating M3U8 playlist: {e}", "error")
+                
+    def write_playlist(self):
+        """Write the M3U8 playlist file with proper live stream markers"""
+        if not hasattr(self, 'playlist_filename'):
+            return
+            
+        try:
+            with open(self.playlist_filename, 'w') as f:
+                f.write("#EXTM3U\n")
+                f.write("#EXT-X-VERSION:3\n")
+                f.write(f"#EXT-X-TARGETDURATION:{int(self.segment_duration)}\n")
+                
+                # For live streams, we need to maintain a sliding window
+                # Keep only the last N segments for live streaming
+                max_segments = 6  # Keep last 6 segments in live playlist (30 seconds)
+                if len(self.segments) > max_segments:
+                    # Calculate media sequence offset
+                    sequence_offset = len(self.segments) - max_segments
+                    segments_to_write = self.segments[-max_segments:]
+                else:
+                    sequence_offset = 0
+                    segments_to_write = self.segments
+                
+                f.write(f"#EXT-X-MEDIA-SEQUENCE:{sequence_offset}\n")
+                f.write("\n")
+                
+                # Write segments
+                for segment in segments_to_write:
+                    f.write(f"#EXTINF:{segment['duration']:.3f},\n")
+                    f.write(f"{segment['filename']}\n")
+                    
+                # For live streams, we don't add ENDLIST
+                # The absence of ENDLIST indicates the stream is still live
+                
+        except Exception as e:
+            self.log(f"   ❌ Error writing M3U8 playlist: {e}", "error")
+            
+    def schedule_playlist_updates(self):
+        """Schedule periodic playlist updates for live streaming"""
+        def update_playlist():
+            if hasattr(self, 'hls_recording_active') and self.hls_recording_active:
+                # Rewrite playlist to keep it fresh
+                self.write_playlist()
+                # Schedule next update
+                return True  # Continue scheduling
+            else:
+                self._playlist_updater_scheduled = False
+                return False  # Stop scheduling
+                
+        # Update playlist every 2 seconds for live streams
+        GLib.timeout_add(2000, update_playlist)
+                
+    def rotate_hls_segment(self):
+        """Rotate to a new HLS segment file"""
+        if not hasattr(self, 'use_manual_segmentation') or not self.use_manual_segmentation:
+            return
+            
+        if not hasattr(self, 'hlssink') or not self.hlssink:
+            return
+            
+        # Check if HLS recording has actually started
+        if not hasattr(self, 'hls_recording_started') or not self.hls_recording_started:
+            self.log("   ⏸️  HLS recording not started yet, skipping rotation")
+            return
+            
+        try:
+            # Check current state first
+            state_ret, state, pending = self.hlssink.get_state(0)
+            state_name = state.value_name if hasattr(state, 'value_name') else str(state)
+            
+            if state != Gst.State.PLAYING:
+                self.log(f"   ⚠️  HLS sink not in PLAYING state ({state_name}), skipping rotation")
+                return
+            
+            # Get the current segment filename before changing
+            old_filename = self.hlssink.get_property('location')
+            
+            # Check if current segment has data
+            import os
+            if old_filename and os.path.exists(old_filename):
+                size = os.path.getsize(old_filename)
+                if size > 0:
+                    # We have data, proceed with rotation
+                    self.segment_counter += 1
+                    new_segment_filename = f"{self.base_filename}_{self.segment_counter:05d}.ts"
+                    
+                    self.log(f"   🔄 Rotating HLS segment: {os.path.basename(old_filename)} ({size:,} bytes) -> {os.path.basename(new_segment_filename)}")
+                    
+                    # Set the filesink to NULL state
+                    self.hlssink.set_state(Gst.State.NULL)
+                    
+                    # Change location
+                    self.hlssink.set_property('location', new_segment_filename)
+                    
+                    # Set back to PLAYING
+                    self.hlssink.set_state(Gst.State.PLAYING)
+                    
+                    # Add the completed segment to playlist
+                    self.add_segment_to_playlist(old_filename)
+                    
+                    # Check if mux is stuck after audio was added
+                    if hasattr(self, '_mux_output_count'):
+                        if not hasattr(self, '_last_mux_check'):
+                            self._last_mux_check = self._mux_output_count
+                        elif self._mux_output_count == self._last_mux_check:
+                            self.log("   ⚠️  Mux appears stuck - no output since last rotation")
+                            # Try to unstick by requesting keyframe
+                            if hasattr(self, 'video_queue'):
+                                event = Gst.Event.new_custom(
+                                    Gst.EventType.CUSTOM_UPSTREAM,
+                                    Gst.Structure.new_empty("GstForceKeyUnit")
+                                )
+                                self.video_queue.send_event(event)
+                                self.log("   🔑 Sent force-keyframe to try unsticking mux")
+                        self._last_mux_check = self._mux_output_count
+                else:
+                    self.log("   ⏸️  Current segment is empty, waiting for data...")
+            else:
+                self.log("   ⏸️  No current segment file yet")
+                
+        except Exception as e:
+            self.log(f"   ❌ Error rotating HLS segment: {e}", "error")
+            import traceback
+            self.log(traceback.format_exc())
         
     def setup_ndi_combiner(self):
         """Set up NDI sink combiner for audio/video multiplexing"""
@@ -1491,6 +1834,16 @@ class GLibWebRTCHandler:
             
     def handle_video_pad(self, pad):
         """Handle video pad - set up recording"""
+        # Check if we already have video connected for HLS
+        if self.use_hls and hasattr(self, 'hls_video_connected') and self.hls_video_connected:
+            self.log("   ⚠️  Video already connected for HLS, ignoring duplicate pad")
+            # Just connect to fakesink to prevent pipeline errors
+            fakesink = Gst.ElementFactory.make('fakesink', None)
+            self.pipe.add(fakesink)
+            fakesink.sync_state_with_parent()
+            pad.link(fakesink.get_static_pad('sink'))
+            return
+            
         # Get codec info from caps
         caps = pad.get_current_caps()
         structure = caps.get_structure(0)
@@ -1808,13 +2161,21 @@ class GLibWebRTCHandler:
             if not video_queue:
                 self.log("Failed to create video queue for HLS", "error")
                 return
+            # Configure queue for live streaming with minimal buffering
+            video_queue.set_property('max-size-time', 500000000)  # 500ms
+            video_queue.set_property('max-size-buffers', 0)
+            video_queue.set_property('max-size-bytes', 0)
+            video_queue.set_property('leaky', 0)  # Don't drop buffers
             # Store reference for later access
             self.video_queue = video_queue
                 
-            # Add identity element to help with segment handling
+            # Add identity element for segment handling
             video_identity = Gst.ElementFactory.make('identity', 'video_identity')
             if video_identity:
                 video_identity.set_property('single-segment', True)
+                # Don't sync here - let mpegtsmux handle synchronization
+                video_identity.set_property('sync', False)
+                self.log("   ✅ Added identity element for video segment handling")
                 
             if encoding_name in ['VP8', 'VP9', 'AV1']:
                 # VP8/VP9/AV1: queue -> depay -> decoder -> videoconvert -> x264enc -> h264parse -> identity -> video_queue -> mux
@@ -1918,18 +2279,26 @@ class GLibWebRTCHandler:
                     
             # Link video queue to mpegtsmux or sink
             if hasattr(self, 'use_internal_mux') and self.use_internal_mux:
-                # For splitmuxsink, connect directly to sink
+                # For splitmuxsink, request a sink pad
                 if hasattr(self, 'hlssink') and self.hlssink:
-                    video_pad = self.hlssink.request_pad_simple('video')
-                    if video_pad:
-                        src_pad = video_queue.get_static_pad('src')
-                        if src_pad.link(video_pad) == Gst.PadLinkReturn.OK:
-                            self.log("   ✅ Video connected to HLS sink")
-                        else:
-                            self.log("Failed to link video to HLS sink", "error")
-                            return
+                    # Get source pad from video queue
+                    video_src_pad = video_queue.get_static_pad('src')
+                    if not video_src_pad:
+                        self.log("Failed to get src pad from video queue", "error")
+                        return
+                    
+                    # Request video pad from splitmuxsink
+                    video_sink_pad = self.hlssink.request_pad_simple('video')
+                    if not video_sink_pad:
+                        self.log("Failed to get video pad from splitmuxsink", "error")
+                        return
+                    
+                    # Link the pads
+                    ret = video_src_pad.link(video_sink_pad)
+                    if ret == Gst.PadLinkReturn.OK:
+                        self.log("   ✅ Video connected to splitmuxsink")
                     else:
-                        self.log("Failed to get video pad from HLS sink", "error")
+                        self.log(f"Failed to link video to splitmuxsink: {ret}", "error")
                         return
             elif hasattr(self, 'hls_mux') and self.hls_mux:
                 # Request video pad from mpegtsmux
@@ -1944,23 +2313,29 @@ class GLibWebRTCHandler:
                     src_pad = video_queue.get_static_pad('src')
                     
                     # Add probe to inject segment event before first buffer
+                    # This is critical for Jetson compatibility
                     def video_segment_probe(pad, info):
-                        if info.type & Gst.PadProbeType.BUFFER:
-                            if not hasattr(self, '_video_segment_injected'):
-                                self._video_segment_injected = True
-                                # Create and send segment event
-                                segment = Gst.Segment()
-                                segment.init(Gst.Format.TIME)
+                        if not hasattr(self, '_video_segment_injected'):
+                            self._video_segment_injected = True
+                            # Create and send segment event with current time
+                            segment = Gst.Segment()
+                            segment.init(Gst.Format.TIME)
+                            # Use buffer PTS as base time for better sync
+                            buffer = info.get_buffer()
+                            if buffer and buffer.pts != Gst.CLOCK_TIME_NONE:
+                                segment.set_running_time(Gst.Format.TIME, buffer.pts)
+                                self.log(f"   🕰 Video segment base time: {buffer.pts / Gst.SECOND:.3f}s")
+                            else:
                                 segment.set_running_time(Gst.Format.TIME, 0)
-                                event = Gst.Event.new_segment(segment)
-                                video_pad.send_event(event)
-                                self.log("   ✅ Injected segment event for video mux pad")
-                            # Remove probe after first buffer
-                            return Gst.PadProbeReturn.REMOVE
-                        return Gst.PadProbeReturn.OK
+                            event = Gst.Event.new_segment(segment)
+                            video_pad.send_event(event)
+                            self.log("   ✅ Injected segment event for video mux pad")
+                        # Remove probe after first buffer
+                        return Gst.PadProbeReturn.REMOVE
                         
+                    # Use blocking buffer probe to ensure segment injection happens before data
                     src_pad.add_probe(
-                        Gst.PadProbeType.BUFFER,
+                        Gst.PadProbeType.BUFFER | Gst.PadProbeType.BLOCK,
                         video_segment_probe
                     )
                     
@@ -1995,8 +2370,19 @@ class GLibWebRTCHandler:
             # Track that video is connected
             self.hls_video_connected = True
             
-            # Check if both streams are ready to start
-            self.check_hls_streams_ready()
+            # For manual segmentation, we can start immediately with video only
+            if hasattr(self, 'use_manual_segmentation') and self.use_manual_segmentation:
+                self.log("   🎬 Starting HLS recording immediately (manual segmentation mode)")
+                self.hls_recording_started = True
+                # The elements are already in sync state, just need to ensure pipeline is PLAYING
+                if hasattr(self, 'pipe') and self.pipe:
+                    current_state = self.pipe.get_state(0)[1]
+                    if current_state != Gst.State.PLAYING:
+                        self.pipe.set_state(Gst.State.PLAYING)
+                        self.log("   ▶️  Set pipeline to PLAYING state for HLS")
+            else:
+                # For splitmuxsink, always check if streams are ready
+                self.check_hls_streams_ready()
                 
             # Link incoming pad to queue
             sink_pad = queue.get_static_pad('sink')
@@ -2196,6 +2582,16 @@ class GLibWebRTCHandler:
         
     def handle_audio_pad(self, pad):
         """Handle audio pad"""
+        # Check if we already have audio connected for HLS
+        if self.use_hls and hasattr(self, 'hls_audio_connected') and self.hls_audio_connected:
+            self.log("   ⚠️  Audio already connected for HLS, ignoring duplicate pad")
+            # Just connect to fakesink to prevent pipeline errors
+            fakesink = Gst.ElementFactory.make('fakesink', None)
+            self.pipe.add(fakesink)
+            fakesink.sync_state_with_parent()
+            pad.link(fakesink.get_static_pad('sink'))
+            return
+            
         # Get codec info from caps
         caps = pad.get_current_caps()
         structure = caps.get_structure(0)
@@ -2239,8 +2635,33 @@ class GLibWebRTCHandler:
         if self.use_hls:
             # For HLS, we need to transcode audio to AAC and mux with video
             self.log("   ℹ️  Audio will be muxed with video in HLS stream")
-            # Ensure HLS muxer is set up
-            self.setup_hls_muxer()
+            # Check if HLS recording is already set up
+            hls_already_setup = False
+            if hasattr(self, 'hlssink') and self.hlssink:
+                # hlssink exists - recording is set up
+                hls_already_setup = True
+            elif hasattr(self, 'base_filename') and self.base_filename:
+                # base_filename exists - recording was started
+                hls_already_setup = True
+                
+            if not hls_already_setup:
+                # Check if video already created the HLS setup
+                if hasattr(self, 'hls_video_connected') and self.hls_video_connected:
+                    self.log("   ✅ Video already set up HLS, audio will join existing muxer")
+                    hls_already_setup = True
+                else:
+                    self.log("   🆕 Creating new HLS muxer for audio")
+                    self.setup_hls_muxer()
+            else:
+                self.log("   ✅ Using existing HLS muxer")
+                if hasattr(self, 'base_filename'):
+                    self.log(f"      Existing recording: {self.base_filename}")
+                if hasattr(self, 'hls_mux') and self.hls_mux:
+                    self.log("      Mux element exists: YES")
+                elif hasattr(self, 'use_internal_mux') and self.use_internal_mux:
+                    self.log("      Using internal mux (splitmuxsink)")
+                if hasattr(self, 'hlssink') and self.hlssink:
+                    self.log("      Sink element exists: YES")
         else:
             # For non-HLS, just record audio alongside video in separate files
             self.log("   ℹ️  Audio recording is currently saved separately from video")
@@ -2268,12 +2689,20 @@ class GLibWebRTCHandler:
                 aacparse = Gst.ElementFactory.make('aacparse', None)
                 # Create a queue before muxer
                 audio_queue = Gst.ElementFactory.make('queue', 'audio_queue_hls')
+                # Configure queue for live streaming with minimal buffering
+                audio_queue.set_property('max-size-time', 500000000)  # 500ms
+                audio_queue.set_property('max-size-buffers', 0)
+                audio_queue.set_property('max-size-bytes', 0)
+                audio_queue.set_property('leaky', 0)  # Don't drop buffers
                 # Store reference for later access
                 self.audio_queue = audio_queue
-                # Add identity element for audio segment handling
+                # Add identity element for segment handling
                 audio_identity = Gst.ElementFactory.make('identity', 'audio_identity')
                 if audio_identity:
                     audio_identity.set_property('single-segment', True)
+                    # Don't sync here - let mpegtsmux handle synchronization
+                    audio_identity.set_property('sync', False)
+                    self.log("   ✅ Added identity element for audio segment handling")
             else:
                 # For non-HLS, save OPUS directly in WebM container without transcoding
                 opusparse = Gst.ElementFactory.make('opusparse', None)
@@ -2335,18 +2764,26 @@ class GLibWebRTCHandler:
                 
             # Link audio queue to mpegtsmux or sink
             if hasattr(self, 'use_internal_mux') and self.use_internal_mux:
-                # For splitmuxsink, connect directly to sink
+                # For splitmuxsink, request a sink pad
                 if hasattr(self, 'hlssink') and self.hlssink:
-                    audio_pad = self.hlssink.request_pad_simple('audio')
-                    if audio_pad:
-                        src_pad = audio_queue.get_static_pad('src')
-                        if src_pad.link(audio_pad) == Gst.PadLinkReturn.OK:
-                            self.log("   ✅ Audio connected to HLS sink")
-                        else:
-                            self.log("Failed to link audio to HLS sink", "error")
-                            return
+                    # Get source pad from audio queue
+                    audio_src_pad = audio_queue.get_static_pad('src')
+                    if not audio_src_pad:
+                        self.log("Failed to get src pad from audio queue", "error")
+                        return
+                    
+                    # Request audio pad from splitmuxsink
+                    audio_sink_pad = self.hlssink.request_pad_simple('audio_%u')
+                    if not audio_sink_pad:
+                        self.log("Failed to get audio pad from splitmuxsink", "error")
+                        return
+                    
+                    # Link the pads
+                    ret = audio_src_pad.link(audio_sink_pad)
+                    if ret == Gst.PadLinkReturn.OK:
+                        self.log("   ✅ Audio connected to splitmuxsink")
                     else:
-                        self.log("Failed to get audio pad from HLS sink", "error")
+                        self.log(f"Failed to link audio to splitmuxsink: {ret}", "error")
                         return
             elif hasattr(self, 'hls_mux') and self.hls_mux:
                 # Request audio pad from mpegtsmux
@@ -2361,23 +2798,29 @@ class GLibWebRTCHandler:
                     src_pad = audio_queue.get_static_pad('src')
                     
                     # Add probe to inject segment event before first buffer
+                    # This is critical for Jetson compatibility
                     def audio_segment_probe(pad, info):
-                        if info.type & Gst.PadProbeType.BUFFER:
-                            if not hasattr(self, '_audio_segment_injected'):
-                                self._audio_segment_injected = True
-                                # Create and send segment event
-                                segment = Gst.Segment()
-                                segment.init(Gst.Format.TIME)
+                        if not hasattr(self, '_audio_segment_injected'):
+                            self._audio_segment_injected = True
+                            # Create and send segment event with current time
+                            segment = Gst.Segment()
+                            segment.init(Gst.Format.TIME)
+                            # Use buffer PTS as base time for better sync
+                            buffer = info.get_buffer()
+                            if buffer and buffer.pts != Gst.CLOCK_TIME_NONE:
+                                segment.set_running_time(Gst.Format.TIME, buffer.pts)
+                                self.log(f"   🕰 Audio segment base time: {buffer.pts / Gst.SECOND:.3f}s")
+                            else:
                                 segment.set_running_time(Gst.Format.TIME, 0)
-                                event = Gst.Event.new_segment(segment)
-                                audio_pad.send_event(event)
-                                self.log("   ✅ Injected segment event for audio mux pad")
-                            # Remove probe after first buffer
-                            return Gst.PadProbeReturn.REMOVE
-                        return Gst.PadProbeReturn.OK
+                            event = Gst.Event.new_segment(segment)
+                            audio_pad.send_event(event)
+                            self.log("   ✅ Injected segment event for audio mux pad")
+                        # Remove probe after first buffer
+                        return Gst.PadProbeReturn.REMOVE
                         
+                    # Use blocking buffer probe to ensure segment injection happens before data
                     src_pad.add_probe(
-                        Gst.PadProbeType.BUFFER,
+                        Gst.PadProbeType.BUFFER | Gst.PadProbeType.BLOCK,
                         audio_segment_probe
                     )
                     
@@ -2385,6 +2828,33 @@ class GLibWebRTCHandler:
                         self.log("   ✅ Audio connected to mpegtsmux")
                         # Store pad reference
                         self.audio_mux_pad = audio_pad
+                        
+                        # For manual segmentation with existing video, handle timestamp sync
+                        if hasattr(self, 'use_manual_segmentation') and self.use_manual_segmentation:
+                            if hasattr(self, 'hls_video_connected') and self.hls_video_connected:
+                                self.log("   🔄 Audio joining existing video stream")
+                                
+                                self.log("   🔄 Audio joining video stream - forcing segment rotation")
+                                
+                                # When audio joins, we need to handle timestamp synchronization
+                                self.log("   ⌚ Synchronizing timestamps for audio/video muxing")
+                                
+                                # Don't send flush events - they can disrupt the mux
+                                # Instead, let mpegtsmux handle timestamp synchronization internally
+                                    
+                                # Then rotate segment and force keyframe
+                                if hasattr(self, 'rotate_hls_segment'):
+                                    # First, complete the current video-only segment
+                                    self.rotate_hls_segment()
+                                    
+                                    # Force a keyframe on video to ensure clean start
+                                    if hasattr(self, 'video_queue'):
+                                        event = Gst.Event.new_custom(
+                                            Gst.EventType.CUSTOM_UPSTREAM,
+                                            Gst.Structure.new_empty("GstForceKeyUnit")
+                                        )
+                                        self.video_queue.send_event(event)
+                                        self.log("   🔑 Sent force-keyframe for clean segment start")
                     else:
                         self.log("Failed to link audio to mpegtsmux", "error")
                         return
@@ -2404,8 +2874,17 @@ class GLibWebRTCHandler:
             # Track that audio is connected
             self.hls_audio_connected = True
             
-            # Check if both streams are ready to start
-            self.check_hls_streams_ready()
+            # For manual segmentation, audio can be added immediately if video is already connected
+            if hasattr(self, 'use_manual_segmentation') and self.use_manual_segmentation:
+                if hasattr(self, 'hls_video_connected') and self.hls_video_connected:
+                    self.log("   🎬 Audio added to existing HLS stream (manual segmentation mode)")
+                    # No need to restart recording, just continue
+                else:
+                    # Audio arrived first, we'll wait for video
+                    self.log("   ⏳ Audio ready, waiting for video stream...")
+            else:
+                # Check if both streams are ready to start
+                self.check_hls_streams_ready()
                 
             # Link incoming pad to queue
             sink_pad = queue.get_static_pad('sink')
