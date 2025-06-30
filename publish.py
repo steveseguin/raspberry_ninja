@@ -1998,7 +1998,7 @@ class WebRTCClient:
         self.password = params.password
         self.hostname = params.hostname
         self.hashcode = ""
-        self.salt = ""
+        self.salt = getattr(params, 'salt', None)  # Get salt from params if provided
         self.aom = params.aom
         self.av1 = params.av1
         self.socketout = params.socketout
@@ -2056,14 +2056,15 @@ class WebRTCClient:
         
         try:
             if self.password:
-                # Use hostname or default
-                hostname_to_parse = self.hostname if self.hostname else "wss://wss.vdo.ninja:443"
-                parsed_url = urlparse(hostname_to_parse)
-                if parsed_url.hostname:
-                    hostname_parts = parsed_url.hostname.split(".")
-                    self.salt = ".".join(hostname_parts[-2:])
-                else:
-                    self.salt = "vdo.ninja"  # Default salt
+                # Use provided salt or derive from hostname
+                if not self.salt:  # Only derive salt if not provided via command line
+                    hostname_to_parse = self.hostname if self.hostname else "wss://wss.vdo.ninja:443"
+                    parsed_url = urlparse(hostname_to_parse)
+                    if parsed_url.hostname:
+                        hostname_parts = parsed_url.hostname.split(".")
+                        self.salt = ".".join(hostname_parts[-2:])
+                    else:
+                        self.salt = "vdo.ninja"  # Default salt
                     
                 self.hashcode = generateHash(self.password+self.salt, 6)
 
@@ -6461,6 +6462,7 @@ async def main():
     parser.add_argument('--debug', action='store_true', help='Show added debug information from Gsteamer and other aspects of the app')
     parser.add_argument('--buffer',  type=int, default=200, help='The jitter buffer latency in milliseconds; default is 200ms, minimum is 10ms. (gst +v1.18)')
     parser.add_argument('--password', type=str, nargs='?', default="someEncryptionKey123", required=False, const='', help='Specify a custom password. If setting to false, password/encryption will be disabled.')
+    parser.add_argument('--salt', type=str, default=None, help='Specify a custom salt for encryption. If not provided, will be derived from hostname (default: vdo.ninja)')
     parser.add_argument('--hostname', type=str, default='https://vdo.ninja/', help='Your URL for vdo.ninja, if self-hosting the website code')
     parser.add_argument('--video-pipeline', type=str, default=None, help='Custom GStreamer video source pipeline')
     parser.add_argument('--audio-pipeline', type=str, default=None, help='Custom GStreamer audio source pipeline')
