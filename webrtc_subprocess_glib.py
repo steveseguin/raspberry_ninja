@@ -85,7 +85,7 @@ class GLibWebRTCHandler:
         self.ndi_name = config.get('ndi_name')
         self.ndi_direct = config.get('ndi_direct', False)  # Direct NDI mode flag
         self.use_hls = config.get('use_hls', False)
-        self.use_splitmuxsink = config.get('use_splitmuxsink', True)  # Default to True - splitmuxsink handles audio/video sync better
+        self.use_splitmuxsink = config.get('use_splitmuxsink', False)  # Default to False - manual segmentation with better control
         self.password = config.get('password')
         self.salt = config.get('salt', '')
         
@@ -957,9 +957,9 @@ class GLibWebRTCHandler:
         # IMPORTANT: Force splitmuxsink for audio/video muxing
         # Manual segmentation with mpegtsmux is broken when both streams are present
         if self.use_hls and not self.use_splitmuxsink:
-            self.log("   ⚠️  WARNING: Manual segmentation doesn't work with audio+video")
-            self.log("   🔄 Forcing splitmuxsink mode for proper muxing")
-            self.use_splitmuxsink = True
+            self.log("   ℹ️  Using manual segmentation for audio+video muxing")
+            # Keep manual segmentation for now
+            # self.use_splitmuxsink = True
             
         # Initialize use_hlssink2 based on use_splitmuxsink setting
         self.use_hlssink2 = not self.use_splitmuxsink
@@ -1041,9 +1041,10 @@ class GLibWebRTCHandler:
                 self.hlssink.set_property('max-size-bytes', 0)  # Disable byte limit
                 self.hlssink.set_property('start-index', 0)  # Start from segment 0
                 # Force alignment on keyframes to prevent split video segments
-                self.hlssink.set_property('alignment-threshold', 2 * Gst.SECOND)  # Allow 2s flexibility for keyframe alignment
-                # Critical: Only split on keyframes to ensure video is in sync
-                self.hlssink.set_property('split-at-running-time', False)
+                try:
+                    self.hlssink.set_property('alignment-threshold', 2 * Gst.SECOND)  # Allow 2s flexibility for keyframe alignment
+                except:
+                    self.log("   ℹ️  alignment-threshold property not available in this GStreamer version")
                 
                 # For splitmuxsink, we need to handle async start properly
                 # This is critical for Jetson boards
@@ -2300,6 +2301,11 @@ class GLibWebRTCHandler:
                     else:
                         self.log(f"Failed to link video to splitmuxsink: {ret}", "error")
                         return
+                else:
+                    self.log("   ⚠️  Splitmuxsink not available, attempting to recreate", "warning")
+                    # Try to set up HLS muxer again if it failed before
+                    self.setup_hls_muxer()
+                    return
             elif hasattr(self, 'hls_mux') and self.hls_mux:
                 # Request video pad from mpegtsmux
                 video_pad_template = self.hls_mux.get_pad_template('sink_%d')
