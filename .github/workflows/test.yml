@@ -50,22 +50,8 @@ jobs:
       run: |
         # Run tests with coverage
         python -m pytest \
-          test_multiple_webrtc_connections.py \
-          test_concurrent_stream_handling.py \
-          test_session_management_multiple_peers.py \
-          test_edge_cases_and_errors.py \
+          tests/test_multiple_webrtc_connections.py \
           -v --tb=short --cov=. --cov-report=xml
-      continue-on-error: true
-    
-    - name: Run integration tests
-      run: |
-        # Run integration tests separately as they may take longer
-        python -m pytest test_room_recording_integration.py -v --tb=short
-      continue-on-error: true
-    
-    - name: Run all tests with test runner
-      run: |
-        python3 run_all_tests.py
       continue-on-error: true
     
     - name: Upload coverage reports

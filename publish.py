@@ -6476,9 +6476,42 @@ async def main():
     parser.add_argument('--h265', action='store_true', help='Prioritize h265/hevc encoding over h264')
     parser.add_argument('--hevc', action='store_true', help='Prioritize h265/hevc encoding over h264 (same as --h265)')
     parser.add_argument('--x265', action='store_true', help='Prioritizes x265 software encoder over hardware encoders')
+    parser.add_argument('--config', type=str, default=None, help='Path to JSON configuration file')
 
 
     args = parser.parse_args()
+    
+    # Load config file if specified
+    if args.config:
+        config_path = os.path.expanduser(args.config)
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                
+                # Override args with config values (but command line args take precedence)
+                for key, value in config.items():
+                    if hasattr(args, key) and getattr(args, key) == parser.get_default(key):
+                        # Only override if the current value is the default
+                        if key == 'audio_enabled' and value is False:
+                            setattr(args, 'noaudio', True)
+                        elif key == 'video_source':
+                            if value == 'test':
+                                setattr(args, 'test', True)
+                            elif value == 'libcamera':
+                                setattr(args, 'libcamera', True)
+                            elif value == 'v4l2':
+                                setattr(args, 'v4l2', '/dev/video0')
+                            elif value == 'custom' and 'custom_video_pipeline' in config:
+                                setattr(args, 'video_pipeline', config['custom_video_pipeline'])
+                        elif key != 'platform' and key != 'auto_start' and key != 'audio_enabled' and key != 'video_source' and key != 'custom_video_pipeline':
+                            setattr(args, key, value)
+                
+                print(f"Loaded configuration from: {config_path}")
+            except Exception as e:
+                print(f"Error loading config file: {e}")
+        else:
+            print(f"Config file not found: {config_path}")
     
     # Display header
     printc("\n╔═══════════════════════════════════════════════╗", "0FF")

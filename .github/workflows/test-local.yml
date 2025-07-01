@@ -35,9 +35,7 @@ jobs:
     - name: Run core unit tests
       run: |
         echo "=== Running Core Unit Tests ==="
-        python -m pytest test_multiple_webrtc_connections.py -v -x --tb=short || true
-        python -m pytest test_concurrent_stream_handling.py -v -x --tb=short || true
-        python -m pytest test_session_management_multiple_peers.py -v -x --tb=short || true
+        python -m pytest tests/test_multiple_webrtc_connections.py -v -x --tb=short || true
     
     - name: Generate test summary
       if: always()

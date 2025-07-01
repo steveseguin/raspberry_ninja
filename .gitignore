@@ -182,3 +182,23 @@ ndi/gst-plugin-ndi/
 *_audio.ts
 stt/*.txt
 stt/*.json
+
+# GitHub Pages specific files
+CNAME
+_config.yml
+
+# GitHub Actions specific
+.github/workflows/test-local.yml
+
+# Package files that users should generate themselves
+package-lock.json
+
+# Development/testing artifacts
+.actrc
+tests/run_hls_test.sh
+test_summary.py
+quick_test_results.json
+recording_test.py
+
+# macOS specific
+.DS_Store

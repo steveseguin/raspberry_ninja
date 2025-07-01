@@ -94,7 +94,29 @@ Recent updates to Raspberry Ninja have added improved error correction and video
 
 ## Install options
 
-See below for different install options
+### Quick Install (Universal Installer)
+
+For the easiest installation experience, use our universal installer that works across all platforms:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/installers/install.sh | bash
+```
+
+Or download and run manually:
+```bash
+wget https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/installers/install.sh
+chmod +x install.sh
+./install.sh
+```
+
+The installer will:
+- Auto-detect your platform (Raspberry Pi, Orange Pi, Jetson, WSL, etc.)
+- Install all required dependencies
+- Guide you through configuration
+- Set up auto-start on boot (optional)
+- Create a config file for easy re-use
+
+See below for platform-specific install options if you prefer manual installation.
 
 ### Setup for a Raspberry Pi
 
@@ -107,7 +129,7 @@ A Raspberry Pi works fairly well with a CSI-connected camera, but USB-based came
 
 ### Setup for an Nvidia Jetson
 
-Please see the `nvidia_jetson` folder for details on installation. [Jump there now](nvidia_jetson/README.md)
+Please see the `installers/nvidia_jetson` folder for details on installation. [Jump there now](installers/nvidia_jetson/README.md)
 
 ![image](https://user-images.githubusercontent.com/2575698/127804651-fc8ce68e-3510-4cd0-9d5a-1953c6aac0d8.png) 
 
@@ -131,7 +153,7 @@ You can actually run Raspberry Ninja on a Windows PC via the WSL virtual machine
 
 Still, it might be useful if you want to pull a stream from a remote Raspberry.Ninja system, recording the stream to disk or using it for local machine learning.
 
-See the WSL install script here: [Jump there now](wsl/)
+See the WSL install script here: [Jump there now](installers/wsl/)
 
 It is possible to install Gstreamer for Windows natively, but due to the difficultly in that all, I'm not supporting it officially at present. The main challenge is `cairo` fails to compile, so that needs to be fixed first.
 
@@ -139,7 +161,7 @@ It is possible to install Gstreamer for Windows natively, but due to the difficu
 
 Raspberry.Ninja can even run on a Mac! Although it's not as streamlined a  process as it could be, I'd say the difficulty is 4/10.
 
-See the Mac OS X install script here: [Jump there now](mac/)
+See the Mac OS X install script here: [Jump there now](installers/mac/)
 
 ### Generic quick-install method
 
@@ -199,10 +221,15 @@ Updates are usually optional, as they typically just focus on added features or 
 
 ## Usage
 
-You should be able to run the publshing script simply with `python3 publish.py`, however lots of options are available for customizing as desired.
+You should be able to run the publishing script simply with `python3 publish.py`, however lots of options are available for customizing as desired.
 
 ```
 $ python3 publish.py
+```
+
+If you used the universal installer, you can run with your saved configuration:
+```
+$ python3 publish.py --config ~/.raspberry_ninja/config.json
 ```
 
 To get the list of supported commands with your version of the code, run `python3 publish.py --help`.
@@ -613,13 +640,13 @@ python3 publish.py --room myroom123 --room-ndi --ndi-combine --password false
 
 #### NDI Installation
 
-For Windows WSL, there's an install script here: https://github.com/steveseguin/raspberry_ninja/blob/main/wsl/install_ndi.sh, however please make sure Rust (cargo) is installed first.
+For Windows WSL, there's an install script here: https://github.com/steveseguin/raspberry_ninja/blob/main/installers/wsl/install_ndi.sh, however please make sure Rust (cargo) is installed first.
 
 You can access WSL on Window by typing `wsl` into the Windows command prompt. Once you install Raspberry.Ninja, as per the WSL install instructions, you can install the NDI support, with the following:
 ```
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.bashrc
-wget https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/wsl/install_ndi.sh
+wget https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/installers/wsl/install_ndi.sh
 chmod +x install_ndi.sh
 ./install_ndi.sh
 ```
@@ -676,7 +703,7 @@ https://fulekan.aliexpress.com/store/1862644
 Support for the Theta 4k 360 USB camera has been added. Has been tested with the Jetson. It is likely too slow to use with a Raspberry Pi though.
 
 Install script and brief usage example found here:
-https://github.com/steveseguin/raspberry_ninja/blob/main/nvidia_jetson/theta_z1_install.sh
+https://github.com/steveseguin/raspberry_ninja/blob/main/installers/nvidia_jetson/theta_z1_install.sh
 
 ### HDMI Input options
 
