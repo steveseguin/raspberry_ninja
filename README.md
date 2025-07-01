@@ -1,3 +1,35 @@
+<!-- START doctoc generated TOC please keep comment here to allow auto update -->
+<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+**Table of Contents**
+
+- [<img src='https://github.com/user-attachments/assets/db676147-1888-44fe-a5a0-5c04921d2c06' height="50"> Raspberry Ninja](#img-srchttpsgithubcomuser-attachmentsassetsdb676147-1888-44fe-a5a0-5c04921d2c06-height50-raspberry-ninja)
+  - [🚀 Quick Start](#-quick-start)
+  - [📖 What is Raspberry Ninja?](#-what-is-raspberry-ninja)
+    - [Key Features:](#key-features)
+    - [Perfect for:](#perfect-for)
+  - [💻 Supported Platforms](#-supported-platforms)
+  - [📥 Installation](#-installation)
+    - [Option 1: Universal Installer (Recommended)](#option-1-universal-installer-recommended)
+    - [Option 2: Manual Installation](#option-2-manual-installation)
+    - [Option 3: Quick Dependencies Only](#option-3-quick-dependencies-only)
+  - [🎬 Basic Usage](#-basic-usage)
+    - [Test your setup:](#test-your-setup)
+    - [Stream with auto-generated ID:](#stream-with-auto-generated-id)
+    - [Stream to specific ID:](#stream-to-specific-id)
+    - [Join a room:](#join-a-room)
+    - [View your stream:](#view-your-stream)
+  - [📚 Documentation](#-documentation)
+  - [🛠️ Common Use Cases](#-common-use-cases)
+    - [IRL Streaming](#irl-streaming)
+    - [Security Camera](#security-camera)
+    - [Multi-Camera Production](#multi-camera-production)
+  - [❓ Troubleshooting](#-troubleshooting)
+  - [🤝 Contributing](#-contributing)
+  - [📞 Support](#-support)
+  - [📜 License](#-license)
+
+<!-- END doctoc generated TOC please keep comment here to allow auto update -->
+
 # <img src='https://github.com/user-attachments/assets/db676147-1888-44fe-a5a0-5c04921d2c06' height="50"> Raspberry Ninja
 
 **Turn any device into a low-latency streaming camera for VDO.Ninja**
