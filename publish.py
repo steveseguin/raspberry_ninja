@@ -53,12 +53,6 @@ from gi.repository import GstWebRTC
 gi.require_version('GstSdp', '1.0')
 from gi.repository import GstSdp
 
-# Import room recording manager for multi-stream support
-try:
-    from room_recording_manager import RoomRecordingManager
-except ImportError:
-    RoomRecordingManager = None
-    print("Warning: RoomRecordingManager not available. Room recording will use fallback mode.")
 
 try:
     from gi.repository import GLib
