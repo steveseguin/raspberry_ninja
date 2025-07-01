@@ -1,128 +1,64 @@
-# Raspberry Ninja Installation Guide
+# Platform-Specific Installers
 
-This guide provides installation instructions for Raspberry Ninja on various platforms.
+This directory contains platform-specific installation guides and scripts for advanced users who need hardware-specific optimizations.
 
-## Universal Installer (Recommended)
-
-For the easiest installation experience across all platforms, use our universal installer:
+## 🚀 Most Users Should Use the Universal Installer
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/installers/install.sh | bash
-```
-
-Or run locally:
-```bash
-chmod +x install.sh
+# From the repository root:
 ./install.sh
 ```
 
-The universal installer provides:
-- Automatic platform detection
-- Interactive configuration wizard
-- Dependency installation
-- Auto-start setup
-- Configuration file management
-
-## Quick Install (Recommended for Most Systems)
-
-This method works for Ubuntu 22+, Debian 12+, Raspberry Pi OS, and other modern Debian-based distributions:
-
+Or use the one-liner:
 ```bash
-# Update system packages
-sudo apt-get update && sudo apt upgrade -y
-
-# For Debian 12-based systems, you may need to remove this file or use a virtual environment
-sudo rm /usr/lib/python3.11/EXTERNALLY-MANAGED
-
-# Install Python pip
-sudo apt-get install python3-pip -y
-
-# Install GStreamer and dependencies
-sudo apt-get install -y \
-    libgstreamer1.0-dev \
-    libgstreamer-plugins-base1.0-dev \
-    libgstreamer-plugins-bad1.0-dev \
-    gstreamer1.0-plugins-base \
-    gstreamer1.0-plugins-good \
-    gstreamer1.0-plugins-bad \
-    gstreamer1.0-plugins-ugly \
-    gstreamer1.0-libav \
-    gstreamer1.0-tools \
-    gstreamer1.0-x \
-    python3-pyqt5 \
-    python3-opengl \
-    gstreamer1.0-alsa \
-    gstreamer1.0-gl \
-    gstreamer1.0-qt5 \
-    gstreamer1.0-gtk3 \
-    gstreamer1.0-pulseaudio \
-    gstreamer1.0-nice \
-    gstreamer1.0-plugins-base-apps
-
-# Install Python dependencies
-pip3 install --break-system-packages websockets cryptography
-
-# Optional dependencies
-sudo apt-get install -y libcairo-dev
-pip3 install PyGObject
-pip3 install aiohttp --break-system-packages
-
-# Clone and run Raspberry Ninja
-git clone https://github.com/steveseguin/raspberry_ninja.git
-cd raspberry_ninja
-python3 publish.py --test
+curl -sSL https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/install.sh | bash
 ```
 
-## Platform-Specific Installers
+The universal installer automatically detects your platform and handles everything for you.
 
-For platform-specific installations with hardware optimization and additional features:
+## 📁 Platform-Specific Guides
 
-- **[Raspberry Pi](./raspberry_pi/README.md)** - Optimized for Raspberry Pi hardware with CSI camera support
-- **[Ubuntu Desktop](./ubuntu/README.md)** - Full desktop Linux installation with GUI support
-- **[Nvidia Jetson](./nvidia_jetson/README.md)** - Hardware acceleration for Jetson boards
-- **[Orange Pi](./orangepi/README.md)** - Support for Orange Pi boards
-- **[macOS](./mac/readme.md)** - Installation for Mac computers
-- **[Windows (WSL)](./wsl/README.md)** - Running on Windows via WSL2
+These guides are for users who need:
+- Hardware-specific optimizations
+- Custom configurations
+- Manual control over the installation process
 
-## Verifying Installation
+### Available Platforms:
 
-After installation, test your setup:
+- **[raspberry_pi/](./raspberry_pi/)** - Raspberry Pi specific optimizations
+  - CSI camera support
+  - GPIO features
+  - Hardware encoding on Pi 4
 
-```bash
-# Test with virtual sources
-python3 publish.py --test
+- **[nvidia_jetson/](./nvidia_jetson/)** - Nvidia Jetson optimizations
+  - NVENC hardware encoding
+  - DeepStream integration
+  - CSI camera support
 
-# List available video devices
-gst-device-monitor-1.0
+- **[ubuntu/](./ubuntu/)** - Desktop Ubuntu/Debian
+  - Full desktop integration
+  - Multiple camera support
 
-# Check GStreamer version
-gst-launch-1.0 --version
-```
+- **[orangepi/](./orangepi/)** - Orange Pi boards
+  - Board-specific fixes
+  - Hardware encoding where available
 
-## Common Issues
+- **[mac/](./mac/)** - macOS installation
+  - Homebrew-based setup
+  - macOS-specific adaptations
 
-1. **Python Package Management**: Modern Debian/Ubuntu systems use PEP 668. Either:
-   - Use `--break-system-packages` flag with pip
-   - Use a Python virtual environment
-   - Remove the EXTERNALLY-MANAGED file (not recommended for production)
+- **[wsl/](./wsl/)** - Windows Subsystem for Linux
+  - WSL2 configuration
+  - Windows integration tips
 
-2. **Missing Dependencies**: If you encounter GStreamer errors, ensure all plugins are installed:
-   ```bash
-   sudo apt-get install gstreamer1.0-plugins-* gstreamer1.0-libav
-   ```
+## 📋 Manual Installation Steps
 
-3. **Permission Issues**: Some hardware devices may require adding your user to specific groups:
-   ```bash
-   sudo usermod -a -G video,audio $USER
-   # Log out and back in for changes to take effect
-   ```
+If you prefer complete manual control:
 
-## Next Steps
+1. **Install GStreamer** (1.16 or newer)
+2. **Install Python 3** and pip
+3. **Install Python packages**: `websockets`, `cryptography`, `aiohttp`
+4. **Clone this repository**
+5. **Run**: `python3 publish.py --test`
 
-After installation:
-- Run `python3 publish.py --help` to see all available options
-- Check the main [README](../README.md) for usage examples
-- Configure auto-start on boot if needed
-- Set up your camera and audio devices
-
-For detailed documentation and troubleshooting, visit the [Raspberry Ninja GitHub repository](https://github.com/steveseguin/raspberry_ninja).
+See each platform's README for specific package names and commands.
