@@ -113,31 +113,21 @@ print_header() {
 setup_repository() {
     if [ -z "$SCRIPT_DIR" ]; then
         # We're running from curl, need to find or clone the repo
-        print_color "$YELLOW" "Locating Raspberry Ninja repository..."
+        print_color "$YELLOW" "Checking for Raspberry Ninja repository..."
         
-        # Check common locations
-        if [ -f "$HOME/raspberry_ninja/publish.py" ]; then
-            SCRIPT_DIR="$HOME/raspberry_ninja"
-            print_color "$GREEN" "✓ Found existing installation at: $SCRIPT_DIR"
+        # Check if we're already in the repo
+        if [ -f "$(pwd)/publish.py" ]; then
+            SCRIPT_DIR="$(pwd)"
+            print_color "$GREEN" "✓ Already in Raspberry Ninja repository at: $SCRIPT_DIR"
         elif [ -f "$(pwd)/raspberry_ninja/publish.py" ]; then
             SCRIPT_DIR="$(pwd)/raspberry_ninja"
             print_color "$GREEN" "✓ Found existing installation at: $SCRIPT_DIR"
-        elif [ -f "$(pwd)/publish.py" ]; then
-            SCRIPT_DIR="$(pwd)"
-            print_color "$GREEN" "✓ Found existing installation at: $SCRIPT_DIR"
         else
-            # Need to clone the repository
-            print_color "$YELLOW" "Raspberry Ninja repository not found. Installing..."
+            # Need to clone the repository to current directory
+            print_color "$YELLOW" "Raspberry Ninja repository not found. Installing to current directory..."
             
-            # Default installation directory
-            DEFAULT_DIR="$HOME/raspberry_ninja"
-            
-            if [ "$NON_INTERACTIVE" = true ]; then
-                INSTALL_DIR="$DEFAULT_DIR"
-            else
-                safe_read "Installation directory [$DEFAULT_DIR]: " "" "$DEFAULT_DIR"
-                INSTALL_DIR="${REPLY:-$DEFAULT_DIR}"
-            fi
+            # Clone to current directory
+            INSTALL_DIR="$(pwd)/raspberry_ninja"
             
             # Clone the repository
             print_color "$YELLOW" "Cloning repository to $INSTALL_DIR..."
@@ -168,28 +158,18 @@ setup_repository() {
         # Verify it's actually the raspberry_ninja directory
         if [ ! -f "$SCRIPT_DIR/publish.py" ]; then
             # Not in the right directory, find or clone
-            print_color "$YELLOW" "Current directory is not the Raspberry Ninja repository. Locating..."
+            print_color "$YELLOW" "Current directory is not the Raspberry Ninja repository..."
             
-            # Check common locations
-            if [ -f "$HOME/raspberry_ninja/publish.py" ]; then
-                SCRIPT_DIR="$HOME/raspberry_ninja"
-                print_color "$GREEN" "✓ Found existing installation at: $SCRIPT_DIR"
-            elif [ -f "$(pwd)/raspberry_ninja/publish.py" ]; then
+            # Check if raspberry_ninja exists in current directory
+            if [ -f "$(pwd)/raspberry_ninja/publish.py" ]; then
                 SCRIPT_DIR="$(pwd)/raspberry_ninja"
                 print_color "$GREEN" "✓ Found existing installation at: $SCRIPT_DIR"
             else
-                # Need to clone the repository
-                print_color "$YELLOW" "Raspberry Ninja repository not found. Installing..."
+                # Need to clone the repository to current directory
+                print_color "$YELLOW" "Cloning Raspberry Ninja to current directory..."
                 
-                # Default installation directory
-                DEFAULT_DIR="$HOME/raspberry_ninja"
-                
-                if [ "$NON_INTERACTIVE" = true ]; then
-                    INSTALL_DIR="$DEFAULT_DIR"
-                else
-                    safe_read "Installation directory [$DEFAULT_DIR]: " "" "$DEFAULT_DIR"
-                    INSTALL_DIR="${REPLY:-$DEFAULT_DIR}"
-                fi
+                # Clone to current directory
+                INSTALL_DIR="$(pwd)/raspberry_ninja"
                 
                 # Clone the repository
                 print_color "$YELLOW" "Cloning repository to $INSTALL_DIR..."
@@ -733,6 +713,14 @@ print_summary() {
         echo
         print_color "$YELLOW" "Quick Start Examples:"
         echo
+        
+        # Check if we need to cd into the directory
+        if [ "$(pwd)" != "$SCRIPT_DIR" ]; then
+            echo "First, navigate to the installation directory:"
+            echo "   cd $SCRIPT_DIR"
+            echo
+        fi
+        
         echo "1. Test with virtual sources:"
         echo "   python3 publish.py --test"
         echo
