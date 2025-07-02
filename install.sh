@@ -26,17 +26,12 @@ IS_JETSON=false
 if [ -n "${BASH_SOURCE[0]}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
     SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 else
-    # When piped, try to find the repository directory
-    if [ -f "publish.py" ]; then
-        SCRIPT_DIR="$(pwd)"
-    elif [ -f "raspberry_ninja/publish.py" ]; then
-        SCRIPT_DIR="$(pwd)/raspberry_ninja"
-    else
-        # Default to current directory
-        SCRIPT_DIR="$(pwd)"
-    fi
+    # When piped, we need to find or clone the repository
+    SCRIPT_DIR=""
 fi
-CONFIG_FILE="$HOME/.raspberry_ninja/config.json"
+
+# We'll set CONFIG_FILE after we know the actual directory
+CONFIG_FILE=""
 SERVICE_NAME="raspberry-ninja"
 SETUP_AUTOSTART=false
 install_type=""
@@ -111,6 +106,60 @@ print_header() {
         print_color "$YELLOW" "  chmod +x install.sh"
         print_color "$YELLOW" "  ./install.sh"
         echo
+    fi
+}
+
+# Find or setup the raspberry_ninja directory
+setup_repository() {
+    if [ -z "$SCRIPT_DIR" ]; then
+        # We're running from curl, need to find or clone the repo
+        print_color "$YELLOW" "Locating Raspberry Ninja repository..."
+        
+        # Check common locations
+        if [ -f "$HOME/raspberry_ninja/publish.py" ]; then
+            SCRIPT_DIR="$HOME/raspberry_ninja"
+            print_color "$GREEN" "✓ Found existing installation at: $SCRIPT_DIR"
+        elif [ -f "$(pwd)/raspberry_ninja/publish.py" ]; then
+            SCRIPT_DIR="$(pwd)/raspberry_ninja"
+            print_color "$GREEN" "✓ Found existing installation at: $SCRIPT_DIR"
+        elif [ -f "$(pwd)/publish.py" ]; then
+            SCRIPT_DIR="$(pwd)"
+            print_color "$GREEN" "✓ Found existing installation at: $SCRIPT_DIR"
+        else
+            # Need to clone the repository
+            print_color "$YELLOW" "Raspberry Ninja repository not found. Installing..."
+            
+            # Default installation directory
+            DEFAULT_DIR="$HOME/raspberry_ninja"
+            
+            if [ "$NON_INTERACTIVE" = true ]; then
+                INSTALL_DIR="$DEFAULT_DIR"
+            else
+                safe_read "Installation directory [$DEFAULT_DIR]: " "" "$DEFAULT_DIR"
+                INSTALL_DIR="${REPLY:-$DEFAULT_DIR}"
+            fi
+            
+            # Clone the repository
+            print_color "$YELLOW" "Cloning repository to $INSTALL_DIR..."
+            if command -v git &> /dev/null; then
+                git clone https://github.com/steveseguin/raspberry_ninja.git "$INSTALL_DIR"
+                SCRIPT_DIR="$INSTALL_DIR"
+                print_color "$GREEN" "✓ Repository cloned successfully"
+            else
+                print_color "$RED" "✗ Git is not installed. Please install git first."
+                exit 1
+            fi
+        fi
+    fi
+    
+    # Now set the config file location
+    CONFIG_FILE="$SCRIPT_DIR/config.json"
+    
+    # Verify publish.py exists
+    if [ ! -f "$SCRIPT_DIR/publish.py" ]; then
+        print_color "$RED" "✗ Error: publish.py not found in $SCRIPT_DIR"
+        print_color "$RED" "  Please ensure you're in the raspberry_ninja directory"
+        exit 1
     fi
 }
 
@@ -379,8 +428,7 @@ detect_cameras() {
 create_config() {
     print_color "$YELLOW" "Setting up configuration..."
     
-    # Create config directory
-    mkdir -p "$(dirname "$CONFIG_FILE")"
+    # Config file is now in the script directory, no need to create a separate folder
     
     # Check for non-interactive mode
     if [ "$NON_INTERACTIVE" = true ]; then
@@ -683,6 +731,7 @@ print_summary() {
 main() {
     print_header
     detect_platform
+    setup_repository
     check_root
     
     # Confirm installation

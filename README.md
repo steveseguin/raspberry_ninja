@@ -109,21 +109,30 @@ curl -sSL https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/ins
 ```
 
 **Note:** This method runs in non-interactive mode and will:
-- Only install required dependencies
+- Clone the repository to `~/raspberry_ninja` if not found
+- Install required dependencies only
 - **NOT** create configuration files
 - **NOT** set up auto-start on boot
 - **NOT** configure stream settings
 
-#### Interactive Installation (Full Setup)
-For the complete setup experience with configuration and auto-start options, download and run the installer directly:
+After installation, you'll need to:
+```bash
+cd ~/raspberry_ninja
+python3 publish.py --help
+```
 
+#### Interactive Installation (Full Setup)
+For the complete setup experience with configuration and auto-start options:
+
+**Option 1: If you haven't cloned the repository yet:**
 ```bash
 wget https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/install.sh
 chmod +x install.sh
 ./install.sh
 ```
+The installer will clone the repository for you if needed.
 
-Or if you've already cloned the repository:
+**Option 2: If you've already cloned the repository:**
 ```bash
 cd raspberry_ninja
 ./install.sh
