@@ -142,11 +142,24 @@ setup_repository() {
             # Clone the repository
             print_color "$YELLOW" "Cloning repository to $INSTALL_DIR..."
             if command -v git &> /dev/null; then
-                git clone https://github.com/steveseguin/raspberry_ninja.git "$INSTALL_DIR"
-                SCRIPT_DIR="$INSTALL_DIR"
-                print_color "$GREEN" "✓ Repository cloned successfully"
+                if git clone https://github.com/steveseguin/raspberry_ninja.git "$INSTALL_DIR"; then
+                    SCRIPT_DIR="$INSTALL_DIR"
+                    print_color "$GREEN" "✓ Repository cloned successfully to: $SCRIPT_DIR"
+                    
+                    # Verify the clone worked
+                    if [ -f "$SCRIPT_DIR/publish.py" ]; then
+                        print_color "$GREEN" "✓ Verified: publish.py found in $SCRIPT_DIR"
+                    else
+                        print_color "$RED" "✗ Error: Repository cloned but publish.py not found"
+                        exit 1
+                    fi
+                else
+                    print_color "$RED" "✗ Failed to clone repository"
+                    print_color "$RED" "  Please check your internet connection and try again"
+                    exit 1
+                fi
             else
-                print_color "$RED" "✗ Git is not installed. Please install git first."
+                print_color "$RED" "✗ Git is not installed. This should not happen."
                 exit 1
             fi
         fi
@@ -731,7 +744,6 @@ print_summary() {
 main() {
     print_header
     detect_platform
-    setup_repository
     check_root
     
     # Confirm installation
@@ -745,6 +757,22 @@ main() {
     
     # Run installation steps
     update_system
+    
+    # Install git first if needed
+    if ! command -v git &> /dev/null; then
+        print_color "$YELLOW" "Installing git..."
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get install -y git
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y git
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y git
+        fi
+    fi
+    
+    # Now we can setup the repository
+    setup_repository
+    
     install_dependencies
     detect_cameras
     create_config
