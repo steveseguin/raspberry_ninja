@@ -22,7 +22,20 @@ IS_WSL=false
 IS_RASPBERRY_PI=false
 IS_ORANGE_PI=false
 IS_JETSON=false
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+# Determine script directory - handle both piped and direct execution
+if [ -n "${BASH_SOURCE[0]}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+else
+    # When piped, try to find the repository directory
+    if [ -f "publish.py" ]; then
+        SCRIPT_DIR="$(pwd)"
+    elif [ -f "raspberry_ninja/publish.py" ]; then
+        SCRIPT_DIR="$(pwd)/raspberry_ninja"
+    else
+        # Default to current directory
+        SCRIPT_DIR="$(pwd)"
+    fi
+fi
 CONFIG_FILE="$HOME/.raspberry_ninja/config.json"
 SERVICE_NAME="raspberry-ninja"
 SETUP_AUTOSTART=false
@@ -88,6 +101,17 @@ print_header() {
     print_color "$BLUE" "       Raspberry Ninja Installer"
     print_color "$BLUE" "=========================================="
     echo
+    
+    if [ "$NON_INTERACTIVE" = true ]; then
+        print_color "$YELLOW" "Running in NON-INTERACTIVE mode"
+        print_color "$YELLOW" "Only basic dependency installation will be performed."
+        print_color "$YELLOW" ""
+        print_color "$YELLOW" "For full setup with configuration and auto-start:"
+        print_color "$YELLOW" "  wget https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/install.sh"
+        print_color "$YELLOW" "  chmod +x install.sh"
+        print_color "$YELLOW" "  ./install.sh"
+        echo
+    fi
 }
 
 # Detect platform and system information
@@ -376,7 +400,8 @@ create_config() {
     echo "1) Basic installation (just install dependencies)"
     echo "2) Configure for manual use (install + create config file)"
     echo "3) Full setup with auto-start (install + config + boot service)"
-    read -p "Choice [1-3]: " install_type
+    safe_read "Choice [1-3]: " "" "1"
+    install_type="$REPLY"
     
     case $install_type in
         1)
@@ -407,44 +432,48 @@ create_config() {
     echo
     
     # Stream ID
-    read -p "Enter your stream ID (leave empty for random): " STREAM_ID
+    safe_read "Enter your stream ID (leave empty for random): " "" ""
+    STREAM_ID="$REPLY"
     
     # Room name
-    read -p "Enter room name (optional): " ROOM_NAME
+    safe_read "Enter room name (optional): " "" ""
+    ROOM_NAME="$REPLY"
     
     # Server
     print_color "$YELLOW" "Select handshake server:"
     echo "1) wss://wss.vdo.ninja:443 (Primary server - recommended)"
     echo "2) wss://apibackup.vdo.ninja:443 (Backup server)"
     echo "3) Custom server"
-    read -p "Choice [1-3]: " server_choice
+    safe_read "Choice [1-3]: " "" "1"
+    server_choice="$REPLY"
     
     case $server_choice in
         2) SERVER="wss://apibackup.vdo.ninja:443" ;;
         3) 
             echo "Enter custom handshake server URL"
             echo "Format: wss://your-server.com:443"
-            read -p "Server URL: " SERVER 
+            safe_read "Server URL: " "" "wss://wss.vdo.ninja:443"
+            SERVER="$REPLY" 
             ;;
         *) SERVER="wss://wss.vdo.ninja:443" ;;
     esac
     
     # Ask about advanced settings
-    read -p "Configure advanced video settings? (y/N): " -n 1 -r
+    safe_read "Configure advanced video settings? (y/N): " "-n 1 -r" "N"
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         # Video settings
-        read -p "Video bitrate in kbps [2000]: " BITRATE
-        BITRATE=${BITRATE:-2000}
+        safe_read "Video bitrate in kbps [2000]: " "" "2000"
+        BITRATE="${REPLY:-2000}"
         
-        read -p "Video width [1280]: " WIDTH
-        WIDTH=${WIDTH:-1280}
+        safe_read "Video width [1280]: " "" "1280"
+        WIDTH="${REPLY:-1280}"
         
-        read -p "Video height [720]: " HEIGHT
-        HEIGHT=${HEIGHT:-720}
+        safe_read "Video height [720]: " "" "720"
+        HEIGHT="${REPLY:-720}"
         
-        read -p "Framerate [30]: " FRAMERATE
-        FRAMERATE=${FRAMERATE:-30}
+        safe_read "Framerate [30]: " "" "30"
+        FRAMERATE="${REPLY:-30}"
     else
         # Use defaults
         BITRATE=2000
@@ -459,20 +488,22 @@ create_config() {
     echo "2) USB camera (/dev/video0)"
     echo "3) Raspberry Pi camera (libcamera)"
     echo "4) Custom pipeline"
-    read -p "Choice [1-4]: " camera_choice
+    safe_read "Choice [1-4]: " "" "1"
+    camera_choice="$REPLY"
     
     case $camera_choice in
         2) VIDEO_SOURCE="v4l2" ;;
         3) VIDEO_SOURCE="libcamera" ;;
         4) 
-            read -p "Enter custom video pipeline: " CUSTOM_VIDEO_PIPELINE
+            safe_read "Enter custom video pipeline: " "" ""
+            CUSTOM_VIDEO_PIPELINE="$REPLY"
             VIDEO_SOURCE="custom"
             ;;
         *) VIDEO_SOURCE="test" ;;
     esac
     
     # Audio settings
-    read -p "Enable audio? (Y/n): " -n 1 -r
+    safe_read "Enable audio? (Y/n): " "-n 1 -r" "Y"
     echo
     if [[ $REPLY =~ ^[Nn]$ ]]; then
         AUDIO_ENABLED="false"
@@ -512,7 +543,7 @@ setup_autostart() {
     print_color "$YELLOW" "Setting up auto-start service..."
     
     # For option 3, ask for confirmation
-    read -p "Enable auto-start on boot? (Y/n): " -n 1 -r
+    safe_read "Enable auto-start on boot? (Y/n): " "-n 1 -r" "Y"
     echo
     
     if [[ ! $REPLY =~ ^[Nn]$ ]]; then
@@ -543,7 +574,7 @@ EOF
         
         print_color "$GREEN" "✓ Auto-start service created"
         
-        read -p "Start the service now? (Y/n): " -n 1 -r
+        safe_read "Start the service now? (Y/n): " "-n 1 -r" "Y"
         echo
         if [[ ! $REPLY =~ ^[Nn]$ ]]; then
             sudo systemctl start $SERVICE_NAME.service
@@ -570,7 +601,7 @@ test_installation() {
     
     print_color "$YELLOW" "Testing installation..."
     
-    read -p "Run a test stream? (Y/n): " -n 1 -r
+    safe_read "Run a test stream? (Y/n): " "-n 1 -r" "Y"
     echo
     
     if [[ ! $REPLY =~ ^[Nn]$ ]]; then
