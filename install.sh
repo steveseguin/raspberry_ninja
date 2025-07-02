@@ -134,14 +134,40 @@ setup_repository() {
             if command -v git &> /dev/null; then
                 # Check if directory already exists
                 if [ -d "$INSTALL_DIR" ]; then
-                    # Check if it's a valid raspberry_ninja directory
-                    if [ -f "$INSTALL_DIR/publish.py" ]; then
-                        SCRIPT_DIR="$INSTALL_DIR"
-                        print_color "$GREEN" "✓ Found existing installation at: $SCRIPT_DIR"
+                    SCRIPT_DIR="$INSTALL_DIR"
+                    print_color "$YELLOW" "Directory $INSTALL_DIR already exists. Checking for updates..."
+                    
+                    # Check if it's a git repository
+                    if [ -d "$INSTALL_DIR/.git" ]; then
+                        # Pull latest changes
+                        cd "$INSTALL_DIR"
+                        if git pull origin main; then
+                            print_color "$GREEN" "✓ Updated to latest version"
+                        else
+                            print_color "$YELLOW" "⚠ Could not update (may have local changes)"
+                        fi
+                        cd - > /dev/null
                     else
-                        print_color "$RED" "✗ Directory $INSTALL_DIR already exists but doesn't contain Raspberry Ninja"
-                        print_color "$RED" "  Please remove it or choose a different location"
-                        exit 1
+                        print_color "$YELLOW" "⚠ Not a git repository, using as-is"
+                    fi
+                    
+                    # Verify it's a valid installation
+                    if [ -f "$SCRIPT_DIR/publish.py" ]; then
+                        print_color "$GREEN" "✓ Using existing installation at: $SCRIPT_DIR"
+                    else
+                        print_color "$YELLOW" "⚠ Directory exists but publish.py not found. Attempting fresh clone..."
+                        # Try to clone into a temp dir and move files
+                        TEMP_DIR="$(mktemp -d)"
+                        if git clone https://github.com/steveseguin/raspberry_ninja.git "$TEMP_DIR/raspberry_ninja"; then
+                            cp -r "$TEMP_DIR/raspberry_ninja/"* "$INSTALL_DIR/" 2>/dev/null || true
+                            cp -r "$TEMP_DIR/raspberry_ninja/".* "$INSTALL_DIR/" 2>/dev/null || true
+                            rm -rf "$TEMP_DIR"
+                            print_color "$GREEN" "✓ Repository files copied to: $SCRIPT_DIR"
+                        else
+                            rm -rf "$TEMP_DIR"
+                            print_color "$RED" "✗ Failed to get repository files"
+                            exit 1
+                        fi
                     fi
                 else
                     if git clone https://github.com/steveseguin/raspberry_ninja.git "$INSTALL_DIR"; then
@@ -189,14 +215,40 @@ setup_repository() {
                 if command -v git &> /dev/null; then
                     # Check if directory already exists
                     if [ -d "$INSTALL_DIR" ]; then
-                        # Check if it's a valid raspberry_ninja directory
-                        if [ -f "$INSTALL_DIR/publish.py" ]; then
-                            SCRIPT_DIR="$INSTALL_DIR"
-                            print_color "$GREEN" "✓ Found existing installation at: $SCRIPT_DIR"
+                        SCRIPT_DIR="$INSTALL_DIR"
+                        print_color "$YELLOW" "Directory $INSTALL_DIR already exists. Checking for updates..."
+                        
+                        # Check if it's a git repository
+                        if [ -d "$INSTALL_DIR/.git" ]; then
+                            # Pull latest changes
+                            cd "$INSTALL_DIR"
+                            if git pull origin main; then
+                                print_color "$GREEN" "✓ Updated to latest version"
+                            else
+                                print_color "$YELLOW" "⚠ Could not update (may have local changes)"
+                            fi
+                            cd - > /dev/null
                         else
-                            print_color "$RED" "✗ Directory $INSTALL_DIR already exists but doesn't contain Raspberry Ninja"
-                            print_color "$RED" "  Please remove it or choose a different location"
-                            exit 1
+                            print_color "$YELLOW" "⚠ Not a git repository, using as-is"
+                        fi
+                        
+                        # Verify it's a valid installation
+                        if [ -f "$SCRIPT_DIR/publish.py" ]; then
+                            print_color "$GREEN" "✓ Using existing installation at: $SCRIPT_DIR"
+                        else
+                            print_color "$YELLOW" "⚠ Directory exists but publish.py not found. Attempting fresh clone..."
+                            # Try to clone into a temp dir and move files
+                            TEMP_DIR="$(mktemp -d)"
+                            if git clone https://github.com/steveseguin/raspberry_ninja.git "$TEMP_DIR/raspberry_ninja"; then
+                                cp -r "$TEMP_DIR/raspberry_ninja/"* "$INSTALL_DIR/" 2>/dev/null || true
+                                cp -r "$TEMP_DIR/raspberry_ninja/".* "$INSTALL_DIR/" 2>/dev/null || true
+                                rm -rf "$TEMP_DIR"
+                                print_color "$GREEN" "✓ Repository files copied to: $SCRIPT_DIR"
+                            else
+                                rm -rf "$TEMP_DIR"
+                                print_color "$RED" "✗ Failed to get repository files"
+                                exit 1
+                            fi
                         fi
                     else
                         if git clone https://github.com/steveseguin/raspberry_ninja.git "$INSTALL_DIR"; then
