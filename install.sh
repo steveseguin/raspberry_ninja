@@ -27,12 +27,59 @@ CONFIG_FILE="$HOME/.raspberry_ninja/config.json"
 SERVICE_NAME="raspberry-ninja"
 SETUP_AUTOSTART=false
 install_type=""
+NON_INTERACTIVE=false
+
+# Check for command line arguments
+for arg in "$@"; do
+    case $arg in
+        --non-interactive|-y|--yes)
+            NON_INTERACTIVE=true
+            ;;
+        --help|-h)
+            echo "Raspberry Ninja Installer"
+            echo "Usage: $0 [options]"
+            echo ""
+            echo "Options:"
+            echo "  --non-interactive, -y  Run in non-interactive mode"
+            echo "  --help, -h            Show this help message"
+            exit 0
+            ;;
+    esac
+done
+
+# Check if we're running in non-interactive mode (piped input)
+if [ ! -t 0 ] && [ ! -e /dev/tty ]; then
+    NON_INTERACTIVE=true
+fi
 
 # Print colored output
 print_color() {
     local color=$1
     local message=$2
     echo -e "${color}${message}${NC}"
+}
+
+# Safe read function that works with piped input
+safe_read() {
+    local prompt="$1"
+    local options="$2"
+    local default_value="$3"
+    
+    if [ "$NON_INTERACTIVE" = true ]; then
+        if [ -n "$default_value" ]; then
+            REPLY="$default_value"
+            print_color "$YELLOW" "Non-interactive mode: Using default value '$default_value'"
+        else
+            print_color "$RED" "Error: Non-interactive mode requires default values"
+            exit 1
+        fi
+    else
+        if [ -n "$options" ]; then
+            read -p "$prompt" $options < /dev/tty
+        else
+            read -p "$prompt" < /dev/tty
+        fi
+    fi
 }
 
 print_header() {
@@ -96,7 +143,7 @@ check_root() {
         print_color "$YELLOW" "⚠ Running as root. Some operations may create files owned by root."
         print_color "$YELLOW" "  It's recommended to run this script as a regular user with sudo access."
         echo
-        read -p "Continue anyway? (y/N): " -n 1 -r
+        safe_read "Continue anyway? (y/N): " "-n 1 -r" "N"
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             exit 1
@@ -310,6 +357,16 @@ create_config() {
     
     # Create config directory
     mkdir -p "$(dirname "$CONFIG_FILE")"
+    
+    # Check for non-interactive mode
+    if [ "$NON_INTERACTIVE" = true ]; then
+        # In non-interactive mode, do basic installation only
+        install_type="1"
+        print_color "$YELLOW" "Non-interactive mode: Performing basic installation only"
+        print_color "$GREEN" "✓ Dependencies installed. You can now run:"
+        echo "   python3 publish.py --help"
+        return
+    fi
     
     # Ask what the user wants to do
     echo
@@ -599,7 +656,7 @@ main() {
     
     # Confirm installation
     print_color "$YELLOW" "This will install Raspberry Ninja on your $PLATFORM system."
-    read -p "Continue? (Y/n): " -n 1 -r
+    safe_read "Continue? (Y/n): " "-n 1 -r" "Y"
     echo
     if [[ $REPLY =~ ^[Nn]$ ]]; then
         print_color "$RED" "Installation cancelled."

@@ -97,25 +97,50 @@ Recent updates to Raspberry Ninja have added improved error correction and video
 
 ### Quick Install (Universal Installer)
 
-For the easiest installation experience, use our universal installer that works across all platforms:
+For the easiest installation experience, use our universal installer that works across all platforms.
+
+#### Non-Interactive Installation (Basic)
+For a quick, basic installation that only installs dependencies:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/install.sh | bash
 ```
 
-Or download and run manually:
+**Note:** This method runs in non-interactive mode and will:
+- Only install required dependencies
+- **NOT** create configuration files
+- **NOT** set up auto-start on boot
+- **NOT** configure stream settings
+
+#### Interactive Installation (Full Setup)
+For the complete setup experience with configuration and auto-start options, download and run the installer directly:
+
 ```bash
 wget https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/install.sh
 chmod +x install.sh
 ./install.sh
 ```
 
-The installer will:
+Or if you've already cloned the repository:
+```bash
+cd raspberry_ninja
+./install.sh
+```
+
+The interactive installer will:
 - Auto-detect your platform (Raspberry Pi, Orange Pi, Jetson, WSL, etc.)
 - Install all required dependencies
-- Guide you through configuration
-- Set up auto-start on boot (optional)
+- Guide you through configuration with prompts
+- Optionally set up auto-start on boot
 - Create a config file for easy re-use
+- Test your camera setup
+
+**Tip:** You can also force non-interactive mode with the downloaded script:
+```bash
+./install.sh --non-interactive
+# or
+./install.sh -y
+```
 
 See below for platform-specific install options if you prefer manual installation.
 
