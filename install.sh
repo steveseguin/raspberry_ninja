@@ -132,21 +132,34 @@ setup_repository() {
             # Clone the repository
             print_color "$YELLOW" "Cloning repository to $INSTALL_DIR..."
             if command -v git &> /dev/null; then
-                if git clone https://github.com/steveseguin/raspberry_ninja.git "$INSTALL_DIR"; then
-                    SCRIPT_DIR="$INSTALL_DIR"
-                    print_color "$GREEN" "✓ Repository cloned successfully to: $SCRIPT_DIR"
-                    
-                    # Verify the clone worked
-                    if [ -f "$SCRIPT_DIR/publish.py" ]; then
-                        print_color "$GREEN" "✓ Verified: publish.py found in $SCRIPT_DIR"
+                # Check if directory already exists
+                if [ -d "$INSTALL_DIR" ]; then
+                    # Check if it's a valid raspberry_ninja directory
+                    if [ -f "$INSTALL_DIR/publish.py" ]; then
+                        SCRIPT_DIR="$INSTALL_DIR"
+                        print_color "$GREEN" "✓ Found existing installation at: $SCRIPT_DIR"
                     else
-                        print_color "$RED" "✗ Error: Repository cloned but publish.py not found"
+                        print_color "$RED" "✗ Directory $INSTALL_DIR already exists but doesn't contain Raspberry Ninja"
+                        print_color "$RED" "  Please remove it or choose a different location"
                         exit 1
                     fi
                 else
-                    print_color "$RED" "✗ Failed to clone repository"
-                    print_color "$RED" "  Please check your internet connection and try again"
-                    exit 1
+                    if git clone https://github.com/steveseguin/raspberry_ninja.git "$INSTALL_DIR"; then
+                        SCRIPT_DIR="$INSTALL_DIR"
+                        print_color "$GREEN" "✓ Repository cloned successfully to: $SCRIPT_DIR"
+                        
+                        # Verify the clone worked
+                        if [ -f "$SCRIPT_DIR/publish.py" ]; then
+                            print_color "$GREEN" "✓ Verified: publish.py found in $SCRIPT_DIR"
+                        else
+                            print_color "$RED" "✗ Error: Repository cloned but publish.py not found"
+                            exit 1
+                        fi
+                    else
+                        print_color "$RED" "✗ Failed to clone repository"
+                        print_color "$RED" "  Please check your internet connection and try again"
+                        exit 1
+                    fi
                 fi
             else
                 print_color "$RED" "✗ Git is not installed. This should not happen."
@@ -174,13 +187,26 @@ setup_repository() {
                 # Clone the repository
                 print_color "$YELLOW" "Cloning repository to $INSTALL_DIR..."
                 if command -v git &> /dev/null; then
-                    if git clone https://github.com/steveseguin/raspberry_ninja.git "$INSTALL_DIR"; then
-                        SCRIPT_DIR="$INSTALL_DIR"
-                        print_color "$GREEN" "✓ Repository cloned successfully to: $SCRIPT_DIR"
+                    # Check if directory already exists
+                    if [ -d "$INSTALL_DIR" ]; then
+                        # Check if it's a valid raspberry_ninja directory
+                        if [ -f "$INSTALL_DIR/publish.py" ]; then
+                            SCRIPT_DIR="$INSTALL_DIR"
+                            print_color "$GREEN" "✓ Found existing installation at: $SCRIPT_DIR"
+                        else
+                            print_color "$RED" "✗ Directory $INSTALL_DIR already exists but doesn't contain Raspberry Ninja"
+                            print_color "$RED" "  Please remove it or choose a different location"
+                            exit 1
+                        fi
                     else
-                        print_color "$RED" "✗ Failed to clone repository"
-                        print_color "$RED" "  Please check your internet connection and try again"
-                        exit 1
+                        if git clone https://github.com/steveseguin/raspberry_ninja.git "$INSTALL_DIR"; then
+                            SCRIPT_DIR="$INSTALL_DIR"
+                            print_color "$GREEN" "✓ Repository cloned successfully to: $SCRIPT_DIR"
+                        else
+                            print_color "$RED" "✗ Failed to clone repository"
+                            print_color "$RED" "  Please check your internet connection and try again"
+                            exit 1
+                        fi
                     fi
                 else
                     print_color "$RED" "✗ Git is not installed. This should not happen."
