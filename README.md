@@ -14,6 +14,8 @@ It also has the ability to record remote VDO.Ninja streams to disk (no transcode
 - [Preface](#preface)
 - [Install options](#install-options)
   - [Quick Install (Universal Installer)](#quick-install-universal-installer)
+    - [Non-Interactive Installation (Basic)](#non-interactive-installation-basic)
+    - [Interactive Installation (Full Setup)](#interactive-installation-full-setup)
   - [Setup for a Raspberry Pi](#setup-for-a-raspberry-pi)
   - [Setup for an Nvidia Jetson](#setup-for-an-nvidia-jetson)
   - [Setup for Linux Desktops](#setup-for-linux-desktops)
