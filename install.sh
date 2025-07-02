@@ -163,15 +163,60 @@ setup_repository() {
                 exit 1
             fi
         fi
+    else
+        # SCRIPT_DIR was already set (running from downloaded script)
+        # Verify it's actually the raspberry_ninja directory
+        if [ ! -f "$SCRIPT_DIR/publish.py" ]; then
+            # Not in the right directory, find or clone
+            print_color "$YELLOW" "Current directory is not the Raspberry Ninja repository. Locating..."
+            
+            # Check common locations
+            if [ -f "$HOME/raspberry_ninja/publish.py" ]; then
+                SCRIPT_DIR="$HOME/raspberry_ninja"
+                print_color "$GREEN" "✓ Found existing installation at: $SCRIPT_DIR"
+            elif [ -f "$(pwd)/raspberry_ninja/publish.py" ]; then
+                SCRIPT_DIR="$(pwd)/raspberry_ninja"
+                print_color "$GREEN" "✓ Found existing installation at: $SCRIPT_DIR"
+            else
+                # Need to clone the repository
+                print_color "$YELLOW" "Raspberry Ninja repository not found. Installing..."
+                
+                # Default installation directory
+                DEFAULT_DIR="$HOME/raspberry_ninja"
+                
+                if [ "$NON_INTERACTIVE" = true ]; then
+                    INSTALL_DIR="$DEFAULT_DIR"
+                else
+                    safe_read "Installation directory [$DEFAULT_DIR]: " "" "$DEFAULT_DIR"
+                    INSTALL_DIR="${REPLY:-$DEFAULT_DIR}"
+                fi
+                
+                # Clone the repository
+                print_color "$YELLOW" "Cloning repository to $INSTALL_DIR..."
+                if command -v git &> /dev/null; then
+                    if git clone https://github.com/steveseguin/raspberry_ninja.git "$INSTALL_DIR"; then
+                        SCRIPT_DIR="$INSTALL_DIR"
+                        print_color "$GREEN" "✓ Repository cloned successfully to: $SCRIPT_DIR"
+                    else
+                        print_color "$RED" "✗ Failed to clone repository"
+                        print_color "$RED" "  Please check your internet connection and try again"
+                        exit 1
+                    fi
+                else
+                    print_color "$RED" "✗ Git is not installed. This should not happen."
+                    exit 1
+                fi
+            fi
+        fi
     fi
     
     # Now set the config file location
     CONFIG_FILE="$SCRIPT_DIR/config.json"
     
-    # Verify publish.py exists
+    # Final verification
     if [ ! -f "$SCRIPT_DIR/publish.py" ]; then
         print_color "$RED" "✗ Error: publish.py not found in $SCRIPT_DIR"
-        print_color "$RED" "  Please ensure you're in the raspberry_ninja directory"
+        print_color "$RED" "  Something went wrong during setup"
         exit 1
     fi
 }
