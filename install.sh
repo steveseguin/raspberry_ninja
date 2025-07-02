@@ -142,7 +142,6 @@ setup_repository() {
             # Clone the repository
             print_color "$YELLOW" "Cloning repository to $INSTALL_DIR..."
             if command -v git &> /dev/null; then
-<<<<<<< HEAD
                 if git clone https://github.com/steveseguin/raspberry_ninja.git "$INSTALL_DIR"; then
                     SCRIPT_DIR="$INSTALL_DIR"
                     print_color "$GREEN" "✓ Repository cloned successfully to: $SCRIPT_DIR"
@@ -161,13 +160,6 @@ setup_repository() {
                 fi
             else
                 print_color "$RED" "✗ Git is not installed. This should not happen."
-=======
-                git clone https://github.com/steveseguin/raspberry_ninja.git "$INSTALL_DIR"
-                SCRIPT_DIR="$INSTALL_DIR"
-                print_color "$GREEN" "✓ Repository cloned successfully"
-            else
-                print_color "$RED" "✗ Git is not installed. Please install git first."
->>>>>>> 1b7fca91da466d5a37122be5ee201753ee4cddb4
                 exit 1
             fi
         fi
@@ -752,7 +744,6 @@ print_summary() {
 main() {
     print_header
     detect_platform
-    setup_repository
     check_root
     
     # Confirm installation
