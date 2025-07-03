@@ -711,6 +711,13 @@ setup_autostart() {
     echo
     
     if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        # Verify config file exists
+        if [ ! -f "$CONFIG_FILE" ]; then
+            print_color "$RED" "✗ Config file not found at: $CONFIG_FILE"
+            print_color "$RED" "  Cannot create service without configuration"
+            return
+        fi
+        
         # Create systemd service
         sudo tee /etc/systemd/system/$SERVICE_NAME.service > /dev/null << EOF
 [Unit]
@@ -736,17 +743,48 @@ EOF
         sudo systemctl daemon-reload
         sudo systemctl enable $SERVICE_NAME.service
         
-        print_color "$GREEN" "✓ Auto-start service created"
+        print_color "$GREEN" "✓ Auto-start service created and enabled"
+        
+        # Print service information
+        echo
+        print_color "$BLUE" "=== Service Information ==="
+        print_color "$YELLOW" "Service name: $SERVICE_NAME"
+        print_color "$YELLOW" "Service file: /etc/systemd/system/$SERVICE_NAME.service"
+        print_color "$YELLOW" "Config file: $CONFIG_FILE"
+        print_color "$YELLOW" "Working directory: $SCRIPT_DIR"
+        echo
         
         safe_read "Start the service now? (Y/n): " "-n 1 -r" "Y"
         echo
         if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-            sudo systemctl start $SERVICE_NAME.service
-            print_color "$GREEN" "✓ Service started"
+            if sudo systemctl start $SERVICE_NAME.service; then
+                print_color "$GREEN" "✓ Service started successfully"
+                
+                # Wait a moment for service to initialize
+                sleep 2
+                
+                # Check if service is running
+                if systemctl is-active --quiet $SERVICE_NAME.service; then
+                    print_color "$GREEN" "✓ Service is running"
+                else
+                    print_color "$RED" "⚠ Service may have failed to start"
+                    print_color "$YELLOW" "Check logs with: sudo journalctl -u $SERVICE_NAME -n 50"
+                fi
+            else
+                print_color "$RED" "✗ Failed to start service"
+            fi
             echo
-            print_color "$YELLOW" "Check service status with: sudo systemctl status $SERVICE_NAME"
-            print_color "$YELLOW" "View logs with: sudo journalctl -u $SERVICE_NAME -f"
         fi
+        
+        # Print management commands
+        print_color "$BLUE" "=== Service Management Commands ==="
+        print_color "$YELLOW" "View status:    sudo systemctl status $SERVICE_NAME"
+        print_color "$YELLOW" "Stop service:   sudo systemctl stop $SERVICE_NAME"
+        print_color "$YELLOW" "Start service:  sudo systemctl start $SERVICE_NAME"
+        print_color "$YELLOW" "Restart:        sudo systemctl restart $SERVICE_NAME"
+        print_color "$YELLOW" "View logs:      sudo journalctl -u $SERVICE_NAME -f"
+        print_color "$YELLOW" "Disable boot:   sudo systemctl disable $SERVICE_NAME"
+        print_color "$YELLOW" "Enable boot:    sudo systemctl enable $SERVICE_NAME"
         
         # Update config to reflect auto-start
         if command -v jq &> /dev/null; then
@@ -819,11 +857,36 @@ print_summary() {
         
         if systemctl is-enabled $SERVICE_NAME &> /dev/null; then
             print_color "$GREEN" "✓ Auto-start: Enabled"
+            
+            # Check if service is currently running
+            if systemctl is-active --quiet $SERVICE_NAME.service; then
+                print_color "$GREEN" "✓ Service Status: Running"
+            else
+                print_color "$YELLOW" "⚠ Service Status: Not running"
+            fi
         fi
         
         echo
-        print_color "$YELLOW" "Next steps:"
-        echo "1. Test your setup:"
+        print_color "$YELLOW" "Configuration & Service Details:"
+        echo "• Config file: $CONFIG_FILE"
+        echo "• Working directory: $SCRIPT_DIR"
+        echo "• Edit config: nano $CONFIG_FILE"
+        
+        if systemctl is-enabled $SERVICE_NAME &> /dev/null; then
+            echo "• Service name: $SERVICE_NAME"
+            echo "• Service file: /etc/systemd/system/$SERVICE_NAME.service"
+            echo
+            print_color "$YELLOW" "Service Commands:"
+            echo "• Check status: sudo systemctl status $SERVICE_NAME"
+            echo "• View logs: sudo journalctl -u $SERVICE_NAME -f"
+            echo "• Restart: sudo systemctl restart $SERVICE_NAME"
+            echo "• Stop: sudo systemctl stop $SERVICE_NAME"
+        fi
+        
+        echo
+        print_color "$YELLOW" "Test your setup:"
+        echo "1. Manual test:"
+        echo "   cd $SCRIPT_DIR"
         echo "   python3 publish.py --config $CONFIG_FILE"
         echo
         echo "2. View all options:"
