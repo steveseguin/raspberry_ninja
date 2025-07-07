@@ -1,0 +1,9 @@
+{
+    "stream_id": "config_test_123",
+    "video_source": "test",
+    "audio_enabled": false,
+    "width": 640,
+    "height": 480,
+    "framerate": 15,
+    "bitrate": 500
+}
