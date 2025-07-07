@@ -1,0 +1,14 @@
+{
+    "stream_id": "test_stream_123",
+    "room": "test_room",
+    "server": "wss://wss.vdo.ninja:443",
+    "bitrate": 2000,
+    "width": 1280,
+    "height": 720,
+    "framerate": 30,
+    "video_source": "test",
+    "custom_video_pipeline": "",
+    "audio_enabled": false,
+    "platform": "WSL",
+    "auto_start": false
+}
