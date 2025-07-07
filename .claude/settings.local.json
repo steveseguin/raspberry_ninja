@@ -30,7 +30,14 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "mcp__zen__chat",
       "Bash(ffplay:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git pull:*)",
+      "Bash(git reset:*)",
+      "Bash(git stash:*)",
+      "Bash(diff:*)",
+      "Bash(git fetch:*)"
     ],
     "deny": []
   },
