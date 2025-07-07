@@ -29,7 +29,8 @@
       "Bash(rm:*)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "mcp__zen__chat",
-      "Bash(ffplay:*)"
+      "Bash(ffplay:*)",
+      "Bash(git add:*)"
     ],
     "deny": []
   },
