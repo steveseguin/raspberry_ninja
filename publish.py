@@ -3493,30 +3493,73 @@ class WebRTCClient:
             
             # Try to find video-specific stats
             video_bitrate = 0
-            video_bytes_sent = 0
-            audio_bytes_sent = 0
+            video_bytes_sent = None  # Use None to indicate parsing failure
+            audio_bytes_sent = None  # Use None to indicate parsing failure
             
-            # Look for video stream stats
-            if "kind=(string)video" in stats:
-                try:
-                    # Find the video stream section
-                    video_section = stats.split("kind=(string)video")[1].split("rtp-")[0]
-                    if "bytes-sent=(guint64)" in video_section:
-                        video_bytes_match = video_section.split("bytes-sent=(guint64)")[1]
-                        video_bytes_sent = int(video_bytes_match.split(",")[0].split(";")[0])
-                except:
-                    pass
+            # Look for video stream stats with flexible parsing
+            # Try different formats that might appear in stats
+            video_patterns = [
+                "kind=(string)video",
+                "kind = (string) video", 
+                "kind=(string) video",
+                "kind =(string)video",
+                "media-type=\"video\"",
+                "media-type='video'"
+            ]
             
-            # Look for audio stream stats
-            if "kind=(string)audio" in stats:
-                try:
-                    # Find the audio stream section
-                    audio_section = stats.split("kind=(string)audio")[1].split("rtp-")[0]
-                    if "bytes-sent=(guint64)" in audio_section:
-                        audio_bytes_match = audio_section.split("bytes-sent=(guint64)")[1]
-                        audio_bytes_sent = int(audio_bytes_match.split(",")[0].split(";")[0])
-                except:
-                    pass
+            for pattern in video_patterns:
+                if pattern in stats:
+                    try:
+                        # Find the video stream section
+                        video_section = stats.split(pattern)[1].split("rtp-")[0]
+                        # Try different bytes-sent patterns
+                        bytes_patterns = [
+                            "bytes-sent=(guint64)",
+                            "bytes-sent = (guint64)",
+                            "bytes-sent=(guint64) ",
+                            "bytes-sent =(guint64)"
+                        ]
+                        for bytes_pattern in bytes_patterns:
+                            if bytes_pattern in video_section:
+                                video_bytes_match = video_section.split(bytes_pattern)[1]
+                                video_bytes_sent = int(video_bytes_match.split(",")[0].split(";")[0].strip())
+                                break
+                        if video_bytes_sent is not None:
+                            break
+                    except:
+                        pass
+            
+            # Look for audio stream stats with flexible parsing
+            audio_patterns = [
+                "kind=(string)audio",
+                "kind = (string) audio",
+                "kind=(string) audio", 
+                "kind =(string)audio",
+                "media-type=\"audio\"",
+                "media-type='audio'"
+            ]
+            
+            for pattern in audio_patterns:
+                if pattern in stats:
+                    try:
+                        # Find the audio stream section
+                        audio_section = stats.split(pattern)[1].split("rtp-")[0]
+                        # Try different bytes-sent patterns
+                        bytes_patterns = [
+                            "bytes-sent=(guint64)",
+                            "bytes-sent = (guint64)",
+                            "bytes-sent=(guint64) ",
+                            "bytes-sent =(guint64)"
+                        ]
+                        for bytes_pattern in bytes_patterns:
+                            if bytes_pattern in audio_section:
+                                audio_bytes_match = audio_section.split(bytes_pattern)[1]
+                                audio_bytes_sent = int(audio_bytes_match.split(",")[0].split(";")[0].strip())
+                                break
+                        if audio_bytes_sent is not None:
+                            break
+                    except:
+                        pass
             
             # Extract packets sent
             packets_sent = 0
@@ -3556,9 +3599,11 @@ class WebRTCClient:
             client['_last_video_bytes'] = video_bytes_sent
             client['_last_audio_bytes'] = audio_bytes_sent
             
-            # Only show warning if video is not sending but audio is
+            # Only show warning if we successfully parsed stats and video is not sending but audio is
             if time.time() - client['_last_full_stats_log'] > 30:
-                if video_bytes_sent == 0 and audio_bytes_sent > 0 and bitrate_sent > 0:
+                # Only warn if we successfully parsed both audio and video stats
+                if (video_bytes_sent is not None and audio_bytes_sent is not None and 
+                    video_bytes_sent == 0 and audio_bytes_sent > 0 and bitrate_sent > 0):
                     printc("⚠️ WARNING: Video stream not sending data (audio-only stream detected)", "F70")
                 client['_last_full_stats_log'] = time.time()
             
