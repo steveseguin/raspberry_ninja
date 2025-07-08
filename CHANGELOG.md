@@ -1,5 +1,54 @@
 # Changelog
 
+# Release 1.1.1
+
+**Release Date:** 2025-07-08
+
+## 🐛 Patch Release
+
+This release includes bug fixes and minor improvements.
+
+### Commits
+
+- bitrate stat fix (3cb875c)
+- chore: Remove root raspberry_ninja item (c2bbcf7)
+- . (e034ff4)
+- chore: release v1.1.0 [release] (544e2e5)
+- chore: Delete QUICK_START.md (029353b)
+- chore: Update setup infrastructure and add executable (bc5a76c)
+- chore: Update configuration files and documentation (8ad67f4)
+- feat(install): Enhance systemd service setup with better user guidance (7608c09)
+- feat(install): Improve handling of existing installation directories (c677cc2)
+- feat(install): Use existing directories and pull updates instead of erroring (7f6e6bf)
+- fix(install): Handle existing directory when cloning repository (f7f701f)
+- ``` fix(install): Clone repository to current directory instead of home folder (e23b181)
+- ``` fix(install): Improve handling when script is run outside repository (5579c2f)
+- fix(install): Refine script for repository cloning and robustness (c219499)
+- apt get repo (143606a)
+- ``` feat(install): Enhance setup script for repo handling and config location (1b7fca9)
+- . (197e2dd)
+- fixes (6a576de)
+- chore(docs): update TOC (d0baeba)
+- feat(install): Add non-interactive install mode (3846b16)
+- clarified limits fo installer (fca0947)
+- chore: Rename README_OLD.md to README.md (54e7d12)
+- Delete README.md (829d4bd)
+- chore(docs): update TOC (c98f047)
+- docs(installation): Reorganize and improve setup documentation (bffe834)
+- . (f29cb98)
+- clean up (afad17d)
+
+### Installation
+
+For installation instructions, please refer to the platform-specific guides:
+- [Raspberry Pi](./raspberry_pi/README.md)
+- [NVIDIA Jetson](./nvidia_jetson/README.md)
+- [Orange Pi](./orangepi/README.md)
+- [Ubuntu](./ubuntu/README.md)
+
+
+---
+
 # Release 1.1.0
 
 **Release Date:** 2025-07-07
