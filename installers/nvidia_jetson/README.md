@@ -14,7 +14,7 @@ Takes a few hours at least to normally get everything working when building the 
 
 #### Instalilng on Jetson without original Nvidia image?
 
-If you aren't using the Nvidia Jetson image, or you've messed things up, you can download the gst-files provided by Nvidia on that image here, [libgstnvidia.zip](https://github.com/steveseguin/raspberry_ninja/blob/main/nvidia_jetson/libgstnvidia.zip?raw=true), as a zip:
+If you aren't using the Nvidia Jetson image, or you've messed things up, you can download the gst-files provided by Nvidia on that image here, [libgstnvidia.zip](https://github.com/steveseguin/raspberry_ninja/raw/refs/heads/main/installers/nvidia_jetson/libgstnvidia.zip ), as a zip:
 
 Assuming you bypass any related errors in the install script, you'll need to extract and copy those files to this folder, once the install script finishes:
 `/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0$`
