@@ -6010,7 +6010,28 @@ def on_message(bus: Gst.Bus, message: Gst.Message, loop):
 
     elif mtype == Gst.MessageType.ERROR:
         err, debug = message.parse_error()
-        print(err, debug)
+        
+        # Check for GStreamer 1.18 jitterbuffer error
+        if "on_rtpbin_new_jitterbuffer" in str(debug) and "code should not be reached" in str(err):
+            printc("\n❌ KNOWN GSTREAMER 1.18 BUG DETECTED ❌", "F00")
+            printc("━" * 60, "F00")
+            printc("This error occurs with GStreamer 1.18 when using --framebuffer mode.", "F70")
+            printc("", "")
+            printc("SOLUTION:", "0F0")
+            printc("1. Upgrade to GStreamer 1.20 or newer (recommended)", "0F0")
+            printc("   - Ubuntu 22.04+ has GStreamer 1.20+", "07F")
+            printc("   - Debian 12+ has GStreamer 1.22+", "07F")
+            printc("", "")
+            printc("2. Use Docker with Ubuntu 22.04 on Debian 11:", "0F0")
+            printc("   docker run -it ubuntu:22.04 bash", "07F")
+            printc("", "")
+            printc("3. Use a different output mode instead of --framebuffer", "0F0")
+            printc("   - Try --filesink or --fdsink", "07F")
+            printc("━" * 60, "F00")
+            printc("See: https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/-/issues/1326", "77F")
+        else:
+            print(err, debug)
+        
         loop.quit()
 
     elif mtype == Gst.MessageType.WARNING:
@@ -6635,6 +6656,29 @@ async def main():
         if not np:
             print("You must install Numpy for this to work.\npip3 install numpy")
             sys.exit()
+        
+        # Check for GStreamer 1.18 bug with framebuffer mode
+        gst_version = Gst.version()
+        if gst_version.major == 1 and gst_version.minor == 18:
+            printc("\n⚠️  WARNING: GStreamer 1.18 detected with --framebuffer mode", "F70")
+            printc("━" * 60, "F70")
+            printc("GStreamer 1.18 has a known bug that causes crashes in framebuffer mode.", "F70")
+            printc("You may encounter: 'ERROR:gstwebrtcbin.c:5657:on_rtpbin_new_jitterbuffer'", "F70")
+            printc("", "")
+            printc("RECOMMENDED SOLUTIONS:", "0F0")
+            printc("1. Upgrade to GStreamer 1.20 or newer", "0F0")
+            printc("   - Ubuntu 22.04+ has GStreamer 1.20+", "07F")
+            printc("   - Debian 12+ has GStreamer 1.22+", "07F")
+            printc("2. Use Docker: docker run -it ubuntu:22.04", "0F0")
+            printc("3. Use --filesink or --fdsink instead of --framebuffer", "0F0")
+            printc("━" * 60, "F70")
+            printc("Press Ctrl+C to exit or wait 5 seconds to continue anyway...", "F70")
+            try:
+                time.sleep(5)
+            except KeyboardInterrupt:
+                printc("\nExiting due to GStreamer 1.18 compatibility issue.", "F00")
+                sys.exit(1)
+        
         args.streamin = args.framebuffer
     elif args.record_room or args.room_ndi:
         # Room recording mode (check this first before regular record)
