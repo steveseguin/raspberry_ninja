@@ -2169,7 +2169,7 @@ class WebRTCClient:
             },
             # Secure fallback
             {
-                'url': 'turns:www.turn.obs.ninja:443',
+                'url': 'turns:turn-cae1.vdo.ninja:443',
                 'user': 'steve',
                 'pass': 'setupYourOwnPlease',
                 'region': 'global'
