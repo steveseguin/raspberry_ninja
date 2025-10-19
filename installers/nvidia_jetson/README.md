@@ -9,7 +9,7 @@ Raspberry Ninja code and dependencies. Use the new lightweight helper:
 
 ```
 cd ~/raspberry_ninja/installers/nvidia_jetson
-chmod u+x quick_update.sh   # first run only
+chmod +x quick_update.sh   # first run only
 ./quick_update.sh
 ```
 
