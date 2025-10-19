@@ -168,6 +168,18 @@ A Raspberry Pi works fairly well with a CSI-connected camera, but USB-based came
 
 Please see the `installers/nvidia_jetson` folder for details on installation. [Jump there now](installers/nvidia_jetson/README.md)
 
+If you are using one of the pre-built Jetson images, you usually only need the
+lightweight helper script:
+
+```
+cd ~/raspberry_ninja/installers/nvidia_jetson
+./quick_update.sh
+```
+
+Only use `installer.sh` when building a new image from scratch; it performs
+heavy package clean-up and distro upgrades that are unnecessary on top of the
+ready-made images.
+
 ![image](https://user-images.githubusercontent.com/2575698/127804651-fc8ce68e-3510-4cd0-9d5a-1953c6aac0d8.png) 
 
 Nvidia Jetsons work well with USB-connected cameras and have a selection of compatible CSI-cameras well. You may need to buy WiFi adapter if it is not included.
