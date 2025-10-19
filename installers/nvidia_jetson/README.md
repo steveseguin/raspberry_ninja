@@ -2,6 +2,27 @@
 
 This is very much like the RPI version, but uses the Nvidia Jetson (Nano/NX/AGX).  The Nvidia Jetson tends to have more power and likely will give better results; it is more expensive though.  1080p30 should be quite easy for an Nvidia Jetson to handle, which can't be said for a Raspberry Pi.
 
+### Choose the right script
+
+Most users who download a pre-built Jetson image only need to grab the latest
+Raspberry Ninja code and dependencies. Use the new lightweight helper:
+
+```
+cd ~/raspberry_ninja/installers/nvidia_jetson
+chmod +x quick_update.sh   # first run only
+./quick_update.sh
+```
+
+`quick_update.sh` performs a safe apt refresh, installs the small set of
+runtime packages the project currently relies on (including the new display
+tools), and leaves distro packages and JetPack components untouched.
+
+Only run `installer.sh` if you are building a brand-new image from the stock
+Nvidia JetPack release or repairing a completely broken system. It performs
+major cleanups, removes large desktop packages, and attempts a distro upgrade,
+all of which are unnecessary—and potentially disruptive—on top of the provided
+pre-built images.
+
 ### Installing from an official Nvidia Image
 
 While you can probably install Raspberry_ninja onto any Linux flavour, Nvidia's Jetpack Ubuntu version contains the drivers needed to make use of the hardware encoder. I provide some pre-built images, that are setup with all the depedencies needed to run Raspberry_Ninja, but you can use the official image and DIY also.
@@ -98,6 +119,13 @@ Once you have logged in, at the terminal you can download the repo by running:
 git clone https://github.com/steveseguin/raspberry_ninja/
 ```
 
+If you flashed one of the pre-built images and just want the latest code, run:
+
+```
+cd raspberry_ninja/installers/nvidia_jetson
+./quick_update.sh
+```
+
 #### Nvidia provided builds
 
 The official Nvidia Jetson builds are running Ubuntu 18, with Gstreamer 1.14. This version is too old to run VDO.Ninja correctly, so it's recommend that at least Gstreamer 1.16 is used. You can use the provided installer.sh script to upgrade the official Nvidia images with a newer Gstreamer version.  The installer.sh script expects a FRESH image install and it may need some dependencies tweaks over time.
@@ -169,4 +197,3 @@ The Jetson Nanos 4GB 2GB version dev kits may need their firmware updated for ne
 Updating requires a system (or VM) running Ubuntu 18, with Nvidia Jetpack 4 installed.  The process of flashing may take a couple hours, but its worth it.
 
 2GB and 4GB images seem to be mostly compatible once firmware has been updated.
-
