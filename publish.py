@@ -9,6 +9,7 @@ import argparse
 import time
 import gi
 import threading
+import shutil
 import socket
 import re
 import traceback
@@ -169,26 +170,121 @@ def printout(message):
 def printwarn(message):
     printc(message,"FF0")
 def check_drm_displays():
-    try:
-        result = subprocess.run(['drm_info'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if result.returncode == 0:
+    """Attempt to detect at least one active display using multiple backends."""
+
+    def _print_connected(prefix, connectors):
+        if not connectors:
+            return
+        print(f"{prefix}")
+        for connector in connectors:
+            print(f"  - {connector}")
+
+    def _check_drm_info():
+        if shutil.which("drm_info") is None:
+            raise FileNotFoundError
+
+        candidates = [
+            ["drm_info", "--json"],
+            ["drm_info", "-J"],
+            ["drm_info"],
+        ]
+        for cmd in candidates:
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if result.returncode != 0 or not result.stdout.strip():
+                continue
+
             output = result.stdout.strip()
-            drm_info = json.loads(output)
-            connected_displays = [connector for connector in drm_info['connectors'] if connector['status'] == 'connected']
-            if connected_displays:
-                print("Display(s) connected:")
-                for display in connected_displays:
-                    print(display)
-                return True
-            else:
-                print("No display connected.")
+            try:
+                drm_info = json.loads(output)
+                connectors = [
+                    f"{item.get('name', 'unknown')} ({item.get('connector_type', 'connector')})"
+                    for item in drm_info.get('connectors', [])
+                    if item.get('status') == 'connected'
+                ]
+                if connectors:
+                    _print_connected("Display(s) detected via drm_info:", connectors)
+                    return True
                 return False
-        else:
-            print(f"Error running drm_info: {result.stderr}")
-            return False
-    except Exception as e:
-        print(f"Exception occurred: {e}")
+            except json.JSONDecodeError:
+                # Fallback: look for textual matches
+                connectors = [
+                    line.strip()
+                    for line in output.splitlines()
+                    if "status" in line.lower() and "connected" in line.lower()
+                ]
+                if connectors:
+                    _print_connected("Display(s) detected via drm_info:", connectors)
+                    return True
+                # Output wasn't usable as JSON; try next invocation
+        return None
+
+    def _check_kmsprint():
+        if shutil.which("kmsprint") is None:
+            raise FileNotFoundError
+
+        result = subprocess.run(
+            ["kmsprint", "-m"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        if result.returncode != 0:
+            return None
+
+        connectors = [
+            line.strip()
+            for line in result.stdout.splitlines()
+            if "connected" in line.lower() and "disconnected" not in line.lower()
+        ]
+        if connectors:
+            _print_connected("Display(s) detected via kmsprint:", connectors)
+            return True
         return False
+
+    def _check_xrandr():
+        if shutil.which("xrandr") is None:
+            raise FileNotFoundError
+
+        result = subprocess.run(
+            ["xrandr", "--query"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        if result.returncode != 0:
+            return None
+
+        connectors = [
+            line.strip()
+            for line in result.stdout.splitlines()
+            if " connected" in line and "disconnected" not in line
+        ]
+        if connectors:
+            _print_connected("Display(s) detected via xrandr:", connectors)
+            return True
+        return False
+
+    checkers = [
+        ("drm_info", _check_drm_info),
+        ("kmsprint", _check_kmsprint),
+        ("xrandr", _check_xrandr),
+    ]
+
+    for label, checker in checkers:
+        try:
+            result = checker()
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            print(f"{label} display probe failed: {e}")
+            continue
+
+        if result is True:
+            return True
+        if result is False:
+            return False
+
+    # Last resort: infer from environment variables
+    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+        print("Display probe inconclusive; assuming a display is available based on environment.")
+        return True
+
+    print("Unable to detect a connected display. You may need to install drm-tools or ensure an X/Wayland session is active.")
+    return False
 
 def replace_ssrc_and_cleanup_sdp(sdp): ## fix for audio-only gstreamer -> chrome
     def generate_ssrc():
@@ -2169,7 +2265,7 @@ class WebRTCClient:
             },
             # Secure fallback
             {
-                'url': 'turns:turn-cae1.vdo.ninja:443',
+                'url': 'turns:www.turn.obs.ninja:443',
                 'user': 'steve',
                 'pass': 'setupYourOwnPlease',
                 'region': 'global'

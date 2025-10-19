@@ -37,7 +37,9 @@
       "Bash(git reset:*)",
       "Bash(git stash:*)",
       "Bash(diff:*)",
-      "Bash(git fetch:*)"
+      "Bash(git fetch:*)",
+      "Bash(docker build:*)",
+      "Bash(docker run:*)"
     ],
     "deny": []
   },

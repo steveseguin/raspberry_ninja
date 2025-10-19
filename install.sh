@@ -359,6 +359,127 @@ update_system() {
     print_color "$GREEN" "✓ System updated"
 }
 
+ensure_display_utilities() {
+    local missing_drm=true
+    local missing_kmsprint=true
+
+    if command -v drm_info &> /dev/null; then
+        missing_drm=false
+    fi
+    if command -v kmsprint &> /dev/null; then
+        missing_kmsprint=false
+    fi
+
+    if command -v apt-get &> /dev/null; then
+        if [ "$missing_drm" = true ]; then
+            local drm_candidates=("drm-tools" "libdrm-tests" "drm-info")
+            for pkg in "${drm_candidates[@]}"; do
+                if dpkg -s "$pkg" &> /dev/null; then
+                    missing_drm=false
+                    break
+                fi
+                print_color "$YELLOW" "Attempting to install $pkg for drm_info support..."
+                if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg"; then
+                    if command -v drm_info &> /dev/null; then
+                        missing_drm=false
+                        break
+                    fi
+                else
+                    print_color "$YELLOW" "Package $pkg unavailable; trying next option..."
+                fi
+            done
+        fi
+
+        if [ "$missing_kmsprint" = true ]; then
+            local kms_candidates=("kms++-utils" "kms-tools")
+            for pkg in "${kms_candidates[@]}"; do
+                if dpkg -s "$pkg" &> /dev/null; then
+                    missing_kmsprint=false
+                    break
+                fi
+                print_color "$YELLOW" "Attempting to install $pkg for kmsprint support..."
+                if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg"; then
+                    if command -v kmsprint &> /dev/null; then
+                        missing_kmsprint=false
+                        break
+                    fi
+                else
+                    print_color "$YELLOW" "Package $pkg unavailable; trying next option..."
+                fi
+            done
+        fi
+
+    elif command -v dnf &> /dev/null; then
+        if [ "$missing_drm" = true ]; then
+            local drm_candidates_dnf=("drm-info" "libdrm-tests")
+            for pkg in "${drm_candidates_dnf[@]}"; do
+                print_color "$YELLOW" "Attempting to install $pkg for drm_info support..."
+                if sudo dnf install -y "$pkg"; then
+                    if command -v drm_info &> /dev/null; then
+                        missing_drm=false
+                        break
+                    fi
+                else
+                    print_color "$YELLOW" "Package $pkg unavailable; trying next option..."
+                fi
+            done
+        fi
+
+        if [ "$missing_kmsprint" = true ]; then
+            local kms_candidates_dnf=("kms++-utils" "kms-tools")
+            for pkg in "${kms_candidates_dnf[@]}"; do
+                print_color "$YELLOW" "Attempting to install $pkg for kmsprint support..."
+                if sudo dnf install -y "$pkg"; then
+                    if command -v kmsprint &> /dev/null; then
+                        missing_kmsprint=false
+                        break
+                    fi
+                else
+                    print_color "$YELLOW" "Package $pkg unavailable; trying next option..."
+                fi
+            done
+        fi
+
+    elif command -v yum &> /dev/null; then
+        if [ "$missing_drm" = true ]; then
+            local drm_candidates_yum=("drm-info" "libdrm-tests")
+            for pkg in "${drm_candidates_yum[@]}"; do
+                print_color "$YELLOW" "Attempting to install $pkg for drm_info support..."
+                if sudo yum install -y "$pkg"; then
+                    if command -v drm_info &> /dev/null; then
+                        missing_drm=false
+                        break
+                    fi
+                else
+                    print_color "$YELLOW" "Package $pkg unavailable; trying next option..."
+                fi
+            done
+        fi
+
+        if [ "$missing_kmsprint" = true ]; then
+            local kms_candidates_yum=("kms++-utils" "kms-tools")
+            for pkg in "${kms_candidates_yum[@]}"; do
+                print_color "$YELLOW" "Attempting to install $pkg for kmsprint support..."
+                if sudo yum install -y "$pkg"; then
+                    if command -v kmsprint &> /dev/null; then
+                        missing_kmsprint=false
+                        break
+                    fi
+                else
+                    print_color "$YELLOW" "Package $pkg unavailable; trying next option..."
+                fi
+            done
+        fi
+    fi
+
+    if [ "$missing_drm" = true ]; then
+        print_color "$YELLOW" "⚠ Could not install drm_info automatically. Display detection will fall back to other probes."
+    fi
+    if [ "$missing_kmsprint" = true ]; then
+        print_color "$YELLOW" "⚠ kmsprint not available. Display detection will rely on alternative tools."
+    fi
+}
+
 # Install platform-specific dependencies
 install_dependencies() {
     print_color "$YELLOW" "Installing dependencies for $PLATFORM..."
@@ -400,6 +521,8 @@ install_dependencies() {
             python3-gi-cairo \
             gir1.2-gstreamer-1.0 \
             gir1.2-gst-plugins-base-1.0
+
+        ensure_display_utilities
         
         # Platform-specific packages
         if [ "$IS_RASPBERRY_PI" = true ]; then
