@@ -122,6 +122,8 @@ git clone https://github.com/steveseguin/raspberry_ninja/
 If you flashed one of the pre-built images and just want the latest code, run:
 
 ```
+sudo rm -r raspberry_ninja
+git clone https://github.com/steveseguin/raspberry_ninja
 cd raspberry_ninja/installers/nvidia_jetson
 ./quick_update.sh
 ```
