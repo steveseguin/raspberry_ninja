@@ -1,5 +1,46 @@
 # Changelog
 
+# Release 3.0.0
+
+**Release Date:** 2025-10-20
+
+## 🚀 Major Release
+
+This release includes breaking changes or significant new features.
+
+### Core Changes (publish.py)
+
+The main streaming script has been updated. This includes significant changes that may affect compatibility.
+
+### Commits
+
+- fixes for view (da22423)
+- chore(ci): Update Gemini API model version (7ff829a)
+- tests (082b25b)
+- chore: release v2.0.0 [release] (d263ef2)
+- nv updates (1f567fc)
+- Update README.md (9bdcdec)
+- Update README.md (f6f08c6)
+- Update README.md (452f0a5)
+- mini update (f7d2220)
+- drm (787bb77)
+
+### Installation
+
+For installation instructions, please refer to the platform-specific guides:
+- [Raspberry Pi](./raspberry_pi/README.md)
+- [NVIDIA Jetson](./nvidia_jetson/README.md)
+- [Orange Pi](./orangepi/README.md)
+- [Ubuntu](./ubuntu/README.md)
+
+### ⚠️ Upgrade Notes
+
+This is a major version upgrade. Please review the changes carefully before updating.
+It's recommended to backup your configuration before upgrading.
+
+
+---
+
 # Release 2.0.0
 
 **Release Date:** 2025-10-20
