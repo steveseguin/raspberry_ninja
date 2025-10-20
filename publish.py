@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import random
 import ssl
 import websockets
@@ -466,6 +467,19 @@ def select_display_sink(default_sink: str = "autovideosink") -> str:
     display_detected = check_drm_displays()
     if display_detected:
         printc('\nThere is at least one connected display.', "00F")
+        if is_jetson_device():
+            using_wayland = bool(os.environ.get("WAYLAND_DISPLAY"))
+            using_x11 = bool(os.environ.get("DISPLAY")) and not using_wayland
+            if using_x11:
+                if gst_element_available("xvimagesink"):
+                    printc(" ! Jetson desktop (X11) detected. Using xvimagesink to avoid EGL issues.", "0AF")
+                    return "xvimagesink sync=false"
+                if gst_element_available("ximagesink"):
+                    printc(" ! Jetson desktop (X11) detected. Using ximagesink to avoid EGL issues.", "0AF")
+                    return "ximagesink sync=false"
+                if gst_element_available("glimagesink"):
+                    printc(" ! Jetson desktop (X11) detected. Using glimagesink to avoid EGL issues.", "0AF")
+                    return "glimagesink sync=true"
         return default_sink
 
     if is_jetson_device():
