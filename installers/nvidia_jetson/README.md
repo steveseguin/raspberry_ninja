@@ -9,7 +9,7 @@ Raspberry Ninja code and dependencies. Use the new lightweight helper:
 
 ```
 cd ~/raspberry_ninja/installers/nvidia_jetson
-chmod +x quick_update.sh   # first run only
+chmod +x quick_update.sh setup_autostart.sh   # first run only
 ./quick_update.sh
 ```
 
@@ -22,6 +22,18 @@ Nvidia JetPack release or repairing a completely broken system. It performs
 major cleanups, removes large desktop packages, and attempts a distro upgrade,
 all of which are unnecessary—and potentially disruptive—on top of the provided
 pre-built images.
+
+### Disable screen blanking
+
+When you run `sudo ./setup_autostart.sh` it now asks whether to disable the Jetson
+screen blanking and DPMS timeouts (the default answer is **yes**). Accepting the
+prompt installs an X11 config that disables DPMS, enables a small systemd unit to
+keep the virtual consoles awake, and restarts the active display manager so the
+change takes effect immediately.
+
+If you previously skipped the prompt, simply rerun `setup_autostart.sh` and choose
+the same answers for your service — only the blanking step needs sudo so the rest
+of the configuration can stay unchanged.
 
 ### Installing from an official Nvidia Image
 
@@ -122,6 +134,8 @@ git clone https://github.com/steveseguin/raspberry_ninja/
 If you flashed one of the pre-built images and just want the latest code, run:
 
 ```
+sudo rm -r raspberry_ninja
+git clone https://github.com/steveseguin/raspberry_ninja
 cd raspberry_ninja/installers/nvidia_jetson
 ./quick_update.sh
 ```
@@ -159,6 +173,22 @@ Group=vdo
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 ExecStartPre=vcgencmd get_camera
 ```
+
+### Autostart helper script
+
+For the pre-built Jetson image you can configure Raspberry Ninja to launch automatically at boot with an interactive helper:
+```
+cd ~/raspberry_ninja/installers/nvidia_jetson
+sudo ./setup_autostart.sh
+```
+
+It will:
+- Prompt for the system user and the exact `publish.py` command line to run on startup.
+- Optionally export `DISPLAY`/`XAUTHORITY` for desktop sessions.
+- Let you disable the GNOME desktop so the HDMI port is free for kiosk output.
+- Create and enable a systemd service (`/etc/systemd/system/raspberry-ninja.service`).
+
+At the end it prints reminders on how to reboot, start/stop the service manually, or re-enable the GUI later (`sudo systemctl set-default graphical.target`, `sudo systemctl start gdm`, etc.).
 
 #### Details on Nvidia's Gstreamer implementation
 

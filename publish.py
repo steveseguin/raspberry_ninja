@@ -7,6 +7,7 @@ import sys
 import json
 import argparse
 import time
+import platform
 import gi
 import threading
 import shutil
@@ -17,8 +18,10 @@ import subprocess
 import struct
 import glob
 import signal
+import mmap
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
+from functools import lru_cache
 try:
     import hashlib
     from urllib.parse import urlparse
@@ -169,6 +172,71 @@ def printout(message):
     printc("=> "+message,"6F6")
 def printwarn(message):
     printc(message,"FF0")
+
+
+def clear_display_surfaces() -> bool:
+    """Attempt to clear visible console/framebuffer surfaces before rendering video."""
+    ansi_clear = "\033[2J\033[H"
+    cleared = False
+
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if hasattr(stream, "isatty") and stream.isatty():
+                stream.write(ansi_clear)
+                stream.flush()
+                cleared = True
+        except Exception:
+            pass
+
+    tty_candidates = [
+        os.environ.get("TTY"),
+        "/dev/tty",
+        "/dev/tty0",
+        "/dev/console",
+    ]
+    for device in [d for d in tty_candidates if d]:
+        try:
+            with open(device, "w", buffering=1) as tty:
+                tty.write(ansi_clear)
+                tty.flush()
+                cleared = True
+                break
+        except Exception:
+            continue
+
+    framebuffer_candidates = [
+        os.environ.get("FRAMEBUFFER"),
+        "/dev/fb0",
+        "/dev/fb1",
+    ]
+
+    def _clear_fb(path: str) -> bool:
+        try:
+            with open(path, "r+b", buffering=0) as fb:
+                size = os.fstat(fb.fileno()).st_size
+                if size <= 0:
+                    return False
+                with mmap.mmap(fb.fileno(), size, access=mmap.ACCESS_WRITE) as mm:
+                    mm.seek(0)
+                    chunk = b"\x00" * min(1 << 20, size)
+                    remaining = size
+                    while remaining > 0:
+                        write_len = min(len(chunk), remaining)
+                        mm.write(chunk[:write_len])
+                        remaining -= write_len
+                    mm.flush()
+                return True
+        except Exception:
+            return False
+
+    for fb_path in [p for p in framebuffer_candidates if p]:
+        if _clear_fb(fb_path):
+            cleared = True
+            break
+
+    return cleared
+
+@lru_cache(maxsize=1)
 def check_drm_displays():
     """Attempt to detect at least one active display using multiple backends."""
 
@@ -285,6 +353,127 @@ def check_drm_displays():
 
     print("Unable to detect a connected display. You may need to install drm-tools or ensure an X/Wayland session is active.")
     return False
+
+
+@lru_cache(maxsize=1)
+def is_jetson_device() -> bool:
+    """Best-effort detection of NVIDIA Jetson platforms."""
+    try:
+        model_path = Path("/sys/firmware/devicetree/base/model")
+        if model_path.exists():
+            model = model_path.read_text(errors="ignore")
+            if "NVIDIA Jetson" in model:
+                return True
+    except Exception:
+        pass
+
+    if Path("/etc/nv_tegra_release").exists():
+        return True
+
+    try:
+        uname = platform.uname()
+        if "tegra" in uname.machine.lower() or "tegra" in uname.release.lower():
+            return True
+        if "jetson" in uname.machine.lower():
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+@lru_cache(maxsize=None)
+def gst_element_available(name: str) -> bool:
+    """Check if a given GStreamer element factory exists."""
+    try:
+        return Gst.ElementFactory.find(name) is not None
+    except Exception:
+        return False
+
+
+@lru_cache(maxsize=1)
+def get_framebuffer_resolution() -> Optional[Tuple[int, int]]:
+    """Best effort detection of framebuffer resolution for direct-display sinks."""
+    potential_files = [
+        Path("/sys/class/graphics/fb0/virtual_size"),
+        Path("/sys/class/graphics/fb0/modes"),
+    ]
+
+    for file_path in potential_files:
+        if not file_path.exists():
+            continue
+        try:
+            content = file_path.read_text().strip()
+        except Exception:
+            continue
+
+        if "," in content:
+            parts = content.split(",")
+            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                return int(parts[0]), int(parts[1])
+        if "x" in content:
+            # Try to match strings like "1920x1080-60"
+            resolution = content.split()[0]  # Take the first token
+            dims = resolution.split("x")
+            if len(dims) >= 2 and dims[0].isdigit():
+                height_part = dims[1].split("-")[0]
+                if height_part.isdigit():
+                    return int(dims[0]), int(height_part)
+
+    return None
+
+
+def select_preferred_decoder(codec: str, fallback: str) -> Tuple[str, Dict[str, Any], bool]:
+    """
+    Determine the most appropriate decoder element for the given codec.
+
+    Returns a tuple of (factory_name, properties, using_hardware).
+    """
+    codec_key = codec.upper()
+
+    if is_jetson_device() and gst_element_available("nvv4l2decoder"):
+        if codec_key in {"VP8", "H264"}:
+            # enable-max-performance prefers direct NVDEC usage on Jetson
+            return "nvv4l2decoder", {"enable-max-performance": True}, True
+
+    return fallback, {}, False
+
+
+def select_display_sink(default_sink: str = "autovideosink") -> str:
+    """Choose the most appropriate local display sink."""
+    forced_sink = os.environ.get("RN_FORCE_SINK")
+    if forced_sink:
+        printc(f"\n ! Forcing display sink via RN_FORCE_SINK={forced_sink}", "0AF")
+        return forced_sink
+
+    display_detected = check_drm_displays()
+    if display_detected:
+        printc('\nThere is at least one connected display.', "00F")
+        return default_sink
+
+    if is_jetson_device():
+        preferred_order = []
+        fb_resolution = get_framebuffer_resolution()
+        overlay_properties = ""
+        if fb_resolution:
+            overlay_properties = (
+                f" overlay=1 overlay-x=0 overlay-y=0 overlay-w={fb_resolution[0]} overlay-h={fb_resolution[1]}"
+            )
+        if gst_element_available("nvoverlaysink"):
+            preferred_order.append(f"nvoverlaysink sync=false{overlay_properties}")
+        if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")) and gst_element_available("nvdrmvideosink"):
+            preferred_order.append("nvdrmvideosink sync=false")
+        if gst_element_available("nv3dsink"):
+            preferred_order.append("nv3dsink sync=false")
+
+        if preferred_order:
+            jetson_sink = preferred_order[0]
+            sink_name = jetson_sink.split()[0]
+            printc(f"\n ! No desktop compositor detected. Using Jetson-specific sink `{sink_name}` for direct HDMI output.", "0AF")
+            return jetson_sink
+
+    printc('\n ! No connected displays found. Will try to use glimagesink instead of autovideosink', "F60")
+    return "glimagesink sync=true"
 
 def replace_ssrc_and_cleanup_sdp(sdp): ## fix for audio-only gstreamer -> chrome
     def generate_ssrc():
@@ -1751,6 +1940,7 @@ class WebServer:
             most_recent_segment_time = 0
             if segments:
                 for segment in segments:
+                    sink = None
                     try:
                         seg_mtime = os.stat(segment).st_mtime
                         if seg_mtime > most_recent_segment_time:
@@ -2058,6 +2248,7 @@ class WebRTCClient:
         self.room_name = params.room
         self.room_hashcode = None
         self.multiviewer = params.multiviewer
+        self.stretch_display = getattr(params, 'stretch_display', False)
         self.cleanup_lock = asyncio.Lock()  # Prevent concurrent cleanup
         self.pipeline_lock = threading.Lock()  # Thread-safe pipeline operations
         self._shutdown_requested = False  # Initialize shutdown flag
@@ -2169,6 +2360,54 @@ class WebRTCClient:
             self.setup_ice_servers(self.pipe.get_by_name('sendrecv'))
             self.pipe.set_state(Gst.State.PLAYING)
             print("RECORDING TO DISK STARTED")
+
+    def _create_decoder_element(self, codec: str, fallback: str, name: str) -> Tuple[Optional[Gst.Element], bool]:
+        """Create a decoder element preferring Jetson hardware when available."""
+        factory_name, properties, using_hw = select_preferred_decoder(codec, fallback)
+        element_name = name
+        if using_hw and factory_name != fallback:
+            element_name = f"{name}_hw"
+
+        decoder = Gst.ElementFactory.make(factory_name, element_name)
+
+        if not decoder:
+            if using_hw and factory_name != fallback:
+                printwarn(
+                    f"Failed to create hardware decoder `{factory_name}` for {codec}; "
+                    f"falling back to `{fallback}`."
+                )
+                decoder = Gst.ElementFactory.make(fallback, name)
+                properties = {}
+                using_hw = False
+            else:
+                printwarn(f"Failed to create decoder element `{factory_name}` for {codec}")
+                return None, False
+
+        for prop, value in properties.items():
+            try:
+                decoder.set_property(prop, value)
+            except Exception as exc:
+                printwarn(f"Failed to set property {prop} on {factory_name}: {exc}")
+
+        if using_hw:
+            printc(f"Using Jetson hardware decoder `{factory_name}` for {codec}", "0AF")
+
+        return decoder, using_hw
+
+    def _get_decoder_description(self, codec: str, fallback: str) -> Tuple[str, bool]:
+        """Return pipeline description fragment for the preferred decoder."""
+        factory_name, properties, using_hw = select_preferred_decoder(codec, fallback)
+        parts = [factory_name]
+
+        for key, value in properties.items():
+            if isinstance(value, bool):
+                value = "true" if value else "false"
+            parts.append(f"{key}={value}")
+
+        if using_hw:
+            printc(f"Using Jetson hardware decoder `{factory_name}` for {codec}", "0AF")
+
+        return " ".join(parts), using_hw
             
     def setup_ice_servers(self, webrtc):
         """Configure ICE servers including default VDO.Ninja TURN servers"""
@@ -2700,15 +2939,15 @@ class WebRTCClient:
                     # Create codec-specific elements
                     if video_codec == "VP8":
                         depay = Gst.ElementFactory.make("rtpvp8depay", "vp8_depay")
-                        decoder = Gst.ElementFactory.make("vp8dec", "vp8_decode")
+                        decoder, _ = self._create_decoder_element("VP8", "vp8dec", "vp8_decode")
                         parser = None
                     elif video_codec == "H264":
                         depay = Gst.ElementFactory.make("rtph264depay", "h264_depay")
                         parser = Gst.ElementFactory.make("h264parse", "h264_parse")
-                        decoder = Gst.ElementFactory.make("avdec_h264", "h264_decode")
+                        decoder, _ = self._create_decoder_element("H264", "avdec_h264", "h264_decode")
                     elif video_codec == "VP9":
                         depay = Gst.ElementFactory.make("rtpvp9depay", "vp9_depay")
-                        decoder = Gst.ElementFactory.make("vp9dec", "vp9_decode")
+                        decoder, _ = self._create_decoder_element("VP9", "vp9dec", "vp9_decode")
                         parser = None
                     else:
                         print(f"Unsupported video codec: {video_codec}")
@@ -2843,7 +3082,30 @@ class WebRTCClient:
                     self.pipe.add(out)
                     out.sync_state_with_parent()
                     sink = out.get_static_pad('sink')
-                    pad.link(sink)
+                    if not sink:
+                        print("Display bin has no sink pad; cannot link incoming video pad (novideo path)")
+                        return
+                    try:
+                        sink_parent = sink.get_parent()
+                        parent_name = sink_parent.get_name() if sink_parent else 'None'
+                    except Exception as exc:
+                        parent_name = f"error: {exc}"
+                    print(f"Display bin sink pad parent (view path): {parent_name}", flush=True)
+                    try:
+                        sink_parent = sink.get_parent()
+                        parent_name = sink_parent.get_name() if sink_parent else 'None'
+                    except Exception as exc:
+                        parent_name = f"error: {exc}"
+                    print(f"Display bin sink pad parent (view path): {parent_name}")
+
+                    sink_caps = sink.query_caps(None)
+                    print(f"Display bin sink caps (novideo path): {sink_caps.to_string() if sink_caps else 'unknown'}")
+                    link_result = pad.link(sink)
+                    if link_result != Gst.PadLinkReturn.OK:
+                        reason = link_result.value_nick if hasattr(link_result, "value_nick") else link_result
+                        print(f"Failed to link incoming video pad to display bin (novideo path): {reason}")
+                    else:
+                        print("Linked incoming video pad to display bin successfully (novideo path)")
                     return
 
                 if self.ndiout:
@@ -2856,7 +3118,12 @@ class WebRTCClient:
                     self.pipe.add(out)
                     out.sync_state_with_parent()
                     sink = out.get_static_pad('sink')
-                    pad.link(sink)
+                    link_result = pad.link(sink)
+                    if link_result != Gst.PadLinkReturn.OK:
+                        reason = link_result.value_nick if hasattr(link_result, "value_nick") else link_result
+                        print(f"Failed to link incoming video pad to display bin (socketout path): {reason}")
+                    else:
+                        print("Linked incoming video pad to display bin successfully (socketout path)")
                     
                     appsink = self.pipe.get_by_name('appsink')
                     appsink.connect("new-sample", self.on_new_socket_sample)
@@ -2868,26 +3135,190 @@ class WebRTCClient:
                     
                     # Normal display mode
                     print("DISPLAY OUTPUT MODE BEING SETUP")
+
+                    if not getattr(self, "_display_surface_cleared", False):
+                        if clear_display_surfaces():
+                            printc("🧹 Cleared display surface before viewer output", "66F")
+                        self._display_surface_cleared = True
                     
-                    outsink = "autovideosink"
-                    if check_drm_displays():
-                        printc('\nThere is at least one connected display.',"00F")
-                    else:
-                        printc('\n ! No connected displays found. Will try to use glimagesink instead of autovideosink',"F60")
-                        outsink = "glimagesink sync=true"
+                    outsink = select_display_sink("autovideosink")
+                    print(f"Selected display sink pipeline: {outsink}")
+                    sink_base = outsink.split()[0]
+                    jetson_caps = {
+                        "nvdrmvideosink": "video/x-raw(memory:NVMM),format=NV12,pixel-aspect-ratio=1/1",
+                        "nv3dsink": "video/x-raw(memory:NVMM),format=NV12,pixel-aspect-ratio=1/1",
+                        "nvoverlaysink": "video/x-raw(memory:NVMM),format=NV12,pixel-aspect-ratio=1/1",
+                    }
+                    fb_size = get_framebuffer_resolution()
+
+                    if sink_base in {"nvoverlaysink", "nvdrmvideosink", "nv3dsink"}:
+                        named_sink = f"{sink_base} name=jetson_display_sink"
+                        outsink = outsink.replace(sink_base, named_sink, 1)
+
+                    def build_conversion_chain(using_hw_decoder: bool) -> str:
+                        if sink_base in jetson_caps and gst_element_available("nvvidconv"):
+                            target_caps = jetson_caps[sink_base]
+                            if fb_size and getattr(self, "stretch_display", False):
+                                target_caps += f",width=(int){fb_size[0]},height=(int){fb_size[1]}"
+                            return "nvvidconv ! " + target_caps
+                        if using_hw_decoder and gst_element_available("nvvidconv"):
+                            return (
+                                "nvvidconv nvbuf-memory-type=0 ! "
+                                "video/x-raw,format=NV12 ! "
+                                "videoconvert ! video/x-raw,format=RGB"
+                            )
+                        return "videoconvert ! video/x-raw,format=RGB"
                     
                     if "VP8" in name:
-                        out = Gst.parse_bin_from_description(
-                            "queue ! rtpvp8depay ! decodebin ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! video/x-raw,format=RGB ! queue max-size-buffers=0 max-size-time=0 ! "+outsink, True)
+                        decoder_desc, using_hw_decoder = self._get_decoder_description("VP8", "vp8dec")
+                        conversion_chain = build_conversion_chain(using_hw_decoder)
+                        pipeline_desc = (
+                            "queue ! rtpvp8depay ! "
+                            f"{decoder_desc} ! "
+                            "queue max-size-buffers=0 max-size-time=0 ! "
+                            f"{conversion_chain} ! "
+                            "queue max-size-buffers=0 max-size-time=0 ! "
+                            f"{outsink}"
+                        )
+                        out = Gst.parse_bin_from_description(pipeline_desc, True)
                     elif "H264" in name:
-                        out = Gst.parse_bin_from_description(
-                            "queue ! rtph264depay ! h264parse ! openh264dec ! queue max-size-buffers=0 max-size-time=0 ! videoconvert ! video/x-raw,format=RGB ! queue max-size-buffers=0 max-size-time=0 ! "+outsink, True)
-                        
-                    self.pipe.add(out)
-                    out.sync_state_with_parent()
-                    sink = out.get_static_pad('sink')
-                    pad.link(sink)      
+                        decoder_desc, using_hw_decoder = self._get_decoder_description("H264", "openh264dec")
+                        conversion_chain = build_conversion_chain(using_hw_decoder)
+                        pipeline_desc = (
+                            "queue ! rtph264depay ! h264parse ! "
+                            f"{decoder_desc} ! "
+                            "queue max-size-buffers=0 max-size-time=0 ! "
+                            f"{conversion_chain} ! "
+                            "queue max-size-buffers=0 max-size-time=0 ! "
+                            f"{outsink}"
+                        )
+                        out = Gst.parse_bin_from_description(pipeline_desc, True)
                     
+                    self.pipe.add(out)
+
+                    debug_display = bool(os.environ.get("RN_DEBUG_DISPLAY"))
+                    sink = None
+                    try:
+                        iterator = out.iterate_elements()
+                        elements = []
+                        while True:
+                            res, elem = iterator.next()
+                            if res == Gst.IteratorResult.OK:
+                                elements.append(elem)
+                            elif res == Gst.IteratorResult.DONE:
+                                break
+                            else:
+                                break
+                        if debug_display:
+                            print("Display bin elements (view path):")
+                            for elem in elements:
+                                factory = elem.get_factory()
+                                factory_name = factory.get_name() if factory else "unknown"
+                                print(f"  - {elem.get_name()} ({factory_name})")
+                        first_input_elem = out.get_by_name("queue1")
+                        if not first_input_elem and elements:
+                            first_input_elem = elements[-1]
+                        first_sink_pad = first_input_elem.get_static_pad("sink") if first_input_elem else None
+                        existing_sink_pad = out.get_static_pad("sink")
+                        if existing_sink_pad:
+                            out.remove_pad(existing_sink_pad)
+                        if first_sink_pad:
+                            ghost_sink_pad = Gst.GhostPad.new("sink", first_sink_pad)
+                            ghost_sink_pad.set_active(True)
+                            out.add_pad(ghost_sink_pad)
+                            sink = ghost_sink_pad
+                            if debug_display:
+                                print(f"Using ghost pad from element: {first_input_elem.get_name() if first_input_elem else 'unknown'}")
+                        else:
+                            if debug_display:
+                                print("Failed to identify input element for ghost pad; using existing sink pad")
+                    except Exception as exc:
+                        if debug_display:
+                            print(f"Failed to enumerate display bin elements: {exc}")
+
+                    if sink is None:
+                        sink = out.get_static_pad('sink')
+                    if sink is None:
+                        print("Display bin has no sink pad; cannot link incoming video pad (view path)")
+                        return
+                    out.sync_state_with_parent()
+                    incoming_caps = pad.get_current_caps()
+                    if not incoming_caps:
+                        try:
+                            incoming_caps = pad.query_caps(None)
+                        except Exception:
+                            incoming_caps = None
+                    if debug_display:
+                        if incoming_caps:
+                            print(f"Incoming video pad caps: {incoming_caps.to_string()}")
+                        else:
+                            print("Incoming video pad caps: unknown")
+                        sink_caps = sink.query_caps(None)
+                        print(f"Display bin sink caps (view path): {sink_caps.to_string() if sink_caps else 'unknown'}")
+                    else:
+                        sink_caps = None
+
+                    link_result = pad.link(sink)
+                    if link_result != Gst.PadLinkReturn.OK:
+                        reason = link_result.value_nick if hasattr(link_result, "value_nick") else link_result
+                        print(f"Failed to link incoming video pad to display bin (view path): {reason}")
+                        if not debug_display:
+                            try:
+                                sink_caps = sink.query_caps(None)
+                                if sink_caps:
+                                    print(f"Display bin sink caps (view path): {sink_caps.to_string()}")
+                            except Exception:
+                                pass
+                    else:
+                        if debug_display:
+                            print("Linked incoming video pad to display bin successfully (view path)")
+                    
+                    if sink_base in {"nvoverlaysink", "nvdrmvideosink", "nv3dsink"}:
+                        jetson_sink_element = self.pipe.get_by_name("jetson_display_sink")
+                        if jetson_sink_element:
+                            sink_pad = jetson_sink_element.get_static_pad("sink")
+                            if sink_pad:
+                                if sink_base == "nvoverlaysink" and fb_size:
+                                    try:
+                                        jetson_sink_element.set_property("overlay", 1)
+                                        jetson_sink_element.set_property("overlay-x", 0)
+                                        jetson_sink_element.set_property("overlay-y", 0)
+                                        jetson_sink_element.set_property("overlay-w", fb_size[0])
+                                        jetson_sink_element.set_property("overlay-h", fb_size[1])
+                                        if hasattr(jetson_sink_element.props, "window_width"):
+                                            jetson_sink_element.set_property("window-width", fb_size[0])
+                                        if hasattr(jetson_sink_element.props, "window_height"):
+                                            jetson_sink_element.set_property("window-height", fb_size[1])
+                                    except Exception as exc:
+                                        if debug_display:
+                                            print(f"Failed to configure overlay geometry: {exc}")
+                                def _jetson_caps_probe(pad, info, _):
+                                    event = info.get_event() if info else None
+                                    if event and event.type == Gst.EventType.CAPS:
+                                        caps = event.parse_caps()
+                                        if caps:
+                                            print(f"Jetson display sink negotiated caps: {caps.to_string()}")
+                                    return Gst.PadProbeReturn.OK
+                                sink_pad.add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, _jetson_caps_probe, None)
+                                caps = sink_pad.get_current_caps()
+                                caps_str = caps.to_string() if caps else "unknown"
+                                print(f"Jetson display sink caps: {caps_str}")
+                            if 'GLib' in globals():
+                                _stats_counter = {"count": 0}
+                                def _log_sink_stats():
+                                    try:
+                                        stats = jetson_sink_element.get_property("stats")
+                                        if stats:
+                                            print(f"Jetson display sink stats: {stats.to_string()}")
+                                        else:
+                                            print("Jetson display sink stats: unavailable")
+                                    except Exception as exc:
+                                        print(f"Failed to query jetson display sink stats: {exc}")
+                                        return False
+                                    _stats_counter["count"] += 1
+                                    return _stats_counter["count"] < 12
+                                GLib.timeout_add_seconds(5, _log_sink_stats)
+
                 elif self.fdsink:
                     print("FD SINK OUT")
                     queue = Gst.ElementFactory.make("queue", "fd_queue")
@@ -3388,7 +3819,13 @@ class WebRTCClient:
 
             else:
                 printc("NO HEARTBEAT", "F44")
-                self.stop_pipeline(client['UUID'])
+                if self.view:
+                    print("Viewer mode heartbeat timeout; keeping pipeline running")
+                    client['ping'] = 0
+                    client['timer'] = threading.Timer(3, pingTimer)
+                    client['timer'].start()
+                else:
+                    self.stop_pipeline(client['UUID'])
 
         def on_data_channel(webrtc, channel):
             printc("   📡 Data channel event", "FFF")
@@ -6600,6 +7037,7 @@ async def main():
     parser.add_argument('--pipeline', type=str, help='A full custom pipeline')
     parser.add_argument('--record',  type=str, help='Specify a stream ID to record to disk. System will not publish a stream when enabled.')
     parser.add_argument('--view',  type=str, help='Specify a stream ID to play out to the local display/audio.')
+    parser.add_argument('--stretch-display', action='store_true', help='Scale viewer output to fill the detected framebuffer/display when possible.')
     parser.add_argument('--save', action='store_true', help='Save a copy of the outbound stream to disk. Publish Live + Store the video.')
     parser.add_argument('--record-room', action='store_true', help='Record all streams in a room to separate files. Requires --room parameter.')
     parser.add_argument('--record-streams', type=str, help='Comma-separated list of stream IDs to record from a room. Optional filter for --record-room.')
