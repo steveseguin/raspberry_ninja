@@ -391,6 +391,23 @@ def gst_element_available(name: str) -> bool:
         return False
 
 
+@lru_cache(maxsize=None)
+def gst_element_supports_property(element_name: str, property_name: str) -> bool:
+    """Check whether a GStreamer element exposes a specific property."""
+    try:
+        element = Gst.ElementFactory.make(element_name)
+        if not element:
+            return False
+        try:
+            return element.find_property(property_name) is not None
+        finally:
+            # Ensure the temporary element is torn down promptly
+            element.set_state(Gst.State.NULL)
+            del element
+    except Exception:
+        return False
+
+
 @lru_cache(maxsize=1)
 def get_framebuffer_resolution() -> Optional[Tuple[int, int]]:
     """Best effort detection of framebuffer resolution for direct-display sinks."""
@@ -2404,9 +2421,6 @@ class WebRTCClient:
                 value = "true" if value else "false"
             parts.append(f"{key}={value}")
 
-        if using_hw:
-            printc(f"Using Jetson hardware decoder `{factory_name}` for {codec}", "0AF")
-
         return " ".join(parts), using_hw
             
     def setup_ice_servers(self, webrtc):
@@ -3155,22 +3169,42 @@ class WebRTCClient:
                         named_sink = f"{sink_base} name=jetson_display_sink"
                         outsink = outsink.replace(sink_base, named_sink, 1)
 
+                    nvvidconv_has_nvbuf = gst_element_supports_property("nvvidconv", "nvbuf-memory-type")
+                    needs_system_memory = sink_base not in jetson_caps
+
                     def build_conversion_chain(using_hw_decoder: bool) -> str:
                         if sink_base in jetson_caps and gst_element_available("nvvidconv"):
                             target_caps = jetson_caps[sink_base]
                             if fb_size and getattr(self, "stretch_display", False):
                                 target_caps += f",width=(int){fb_size[0]},height=(int){fb_size[1]}"
-                            return "nvvidconv ! " + target_caps
+                            nvvidconv_desc = "nvvidconv"
+                            if nvvidconv_has_nvbuf:
+                                nvvidconv_desc += " nvbuf-memory-type=0"
+                            return f"{nvvidconv_desc} ! " + target_caps
                         if using_hw_decoder and gst_element_available("nvvidconv"):
+                            nvvidconv_desc = "nvvidconv"
+                            if nvvidconv_has_nvbuf:
+                                nvvidconv_desc += " nvbuf-memory-type=0"
                             return (
-                                "nvvidconv nvbuf-memory-type=0 ! "
+                                f"{nvvidconv_desc} ! "
                                 "video/x-raw,format=NV12 ! "
                                 "videoconvert ! video/x-raw,format=RGB"
                             )
                         return "videoconvert ! video/x-raw,format=RGB"
                     
                     if "VP8" in name:
-                        decoder_desc, using_hw_decoder = self._get_decoder_description("VP8", "vp8dec")
+                        fallback_decoder = "vp8dec"
+                        decoder_desc, using_hw_decoder = self._get_decoder_description("VP8", fallback_decoder)
+                        if using_hw_decoder and needs_system_memory and not nvvidconv_has_nvbuf:
+                            printwarn(
+                                "Jetson hardware VP8 decoder requires nvvidconv nvbuf-memory-type support "
+                                "for desktop display sinks; falling back to software decoding."
+                            )
+                            decoder_desc = fallback_decoder
+                            using_hw_decoder = False
+                        if using_hw_decoder:
+                            decoder_name = decoder_desc.split()[0]
+                            printc(f"Using Jetson hardware decoder `{decoder_name}` for VP8", "0AF")
                         conversion_chain = build_conversion_chain(using_hw_decoder)
                         pipeline_desc = (
                             "queue ! rtpvp8depay ! "
@@ -3182,7 +3216,18 @@ class WebRTCClient:
                         )
                         out = Gst.parse_bin_from_description(pipeline_desc, True)
                     elif "H264" in name:
-                        decoder_desc, using_hw_decoder = self._get_decoder_description("H264", "openh264dec")
+                        fallback_decoder = "openh264dec"
+                        decoder_desc, using_hw_decoder = self._get_decoder_description("H264", fallback_decoder)
+                        if using_hw_decoder and needs_system_memory and not nvvidconv_has_nvbuf:
+                            printwarn(
+                                "Jetson hardware H264 decoder requires nvvidconv nvbuf-memory-type support "
+                                "for desktop display sinks; falling back to software decoding."
+                            )
+                            decoder_desc = fallback_decoder
+                            using_hw_decoder = False
+                        if using_hw_decoder:
+                            decoder_name = decoder_desc.split()[0]
+                            printc(f"Using Jetson hardware decoder `{decoder_name}` for H264", "0AF")
                         conversion_chain = build_conversion_chain(using_hw_decoder)
                         pipeline_desc = (
                             "queue ! rtph264depay ! h264parse ! "
