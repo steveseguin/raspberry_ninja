@@ -471,15 +471,18 @@ def select_display_sink(default_sink: str = "autovideosink") -> str:
             using_wayland = bool(os.environ.get("WAYLAND_DISPLAY"))
             using_x11 = bool(os.environ.get("DISPLAY")) and not using_wayland
             if using_x11:
-                if gst_element_available("xvimagesink"):
-                    printc(" ! Jetson desktop (X11) detected. Using xvimagesink to avoid EGL issues.", "0AF")
-                    return "xvimagesink sync=false"
                 if gst_element_available("ximagesink"):
-                    printc(" ! Jetson desktop (X11) detected. Using ximagesink to avoid EGL issues.", "0AF")
-                    return "ximagesink sync=false"
+                    printc(" ! Jetson desktop (X11) detected. Using ximagesink with XInput disabled.", "0AF")
+                    return "ximagesink handle-events=false sync=false"
+                if gst_element_available("gtksink"):
+                    printc(" ! Jetson desktop (X11) detected. Using gtksink to embed in a GTK window.", "0AF")
+                    return "gtksink sync=false"
                 if gst_element_available("glimagesink"):
-                    printc(" ! Jetson desktop (X11) detected. Using glimagesink to avoid EGL issues.", "0AF")
-                    return "glimagesink sync=true"
+                    printc(" ! Jetson desktop (X11) detected. Using glimagesink for compositor compatibility.", "0AF")
+                    return "glimagesink sync=false"
+                if gst_element_available("xvimagesink"):
+                    printc(" ! Jetson desktop (X11) detected. Using xvimagesink as fallback.", "0AF")
+                    return "xvimagesink sync=false"
         return default_sink
 
     if is_jetson_device():
@@ -3168,7 +3171,7 @@ class WebRTCClient:
                         if clear_display_surfaces():
                             printc("🧹 Cleared display surface before viewer output", "66F")
                         self._display_surface_cleared = True
-                    
+
                     outsink = select_display_sink("autovideosink")
                     print(f"Selected display sink pipeline: {outsink}")
                     sink_base = outsink.split()[0]
@@ -3204,7 +3207,16 @@ class WebRTCClient:
                                 "video/x-raw,format=NV12 ! "
                                 "videoconvert ! video/x-raw,format=RGB"
                             )
-                        return "videoconvert ! video/x-raw,format=RGB"
+                        if sink_base == "xvimagesink":
+                            # xvimagesink relies on the XVideo extension which expects YUV surfaces.
+                            # Forcing RGB caps causes negotiation to fail under GNOME/X11.
+                            return "videoconvert ! video/x-raw,format=I420"
+                        if sink_base in {"gtksink", "ximagesink"}:
+                            return "videoconvert ! video/x-raw,format=BGRx"
+                        if sink_base == "glimagesink":
+                            # glimagesink prefers RGBA in system memory before uploading to GL.
+                            return "videoconvert ! video/x-raw,format=RGBA"
+                        return "videoconvert ! video/x-raw,format=BGRx"
                     
                     if "VP8" in name:
                         fallback_decoder = "vp8dec"
