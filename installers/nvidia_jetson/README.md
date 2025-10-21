@@ -23,6 +23,22 @@ major cleanups, removes large desktop packages, and attempts a distro upgrade,
 all of which are unnecessary—and potentially disruptive—on top of the provided
 pre-built images.
 
+### Restore Gtk previews on GNOME
+
+If you upgraded an older image with `installer.sh` and desktop previews fail to
+open under GNOME, run the Gtk/GStreamer patch helper to rebuild the Gtk-enabled
+pipeline and resync the typelib files:
+
+```
+cd ~/raspberry_ninja/installers/nvidia_jetson
+chmod +x gtk_gtksink_patch_installer.sh   # first run only
+./gtk_gtksink_patch_installer.sh
+```
+
+It rebuilds the Gtk introspection stack, refreshes the custom GStreamer tree,
+and exposes the resulting typelibs to `/usr/local` so the `gtksink` preview
+window works correctly from a Jetson desktop session.
+
 ### Disable screen blanking
 
 When you run `sudo ./setup_autostart.sh` it now asks whether to disable the Jetson
