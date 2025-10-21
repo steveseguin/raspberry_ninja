@@ -176,7 +176,7 @@ cd ~/raspberry_ninja/installers/nvidia_jetson
 ./quick_update.sh
 ```
 
-If you plan to launch the desktop preview from GNOME (for example when running `publish.py` from a terminal window in the GUI) on the Jetson Nano 16GB image, run the Gtk/GStreamer patch helper once to restore the `gtksink` preview support:
+If you plan to launch the desktop preview from GNOME (for example when running `publish.py` from a terminal window in the GUI) on the prebuilt Jetson Nano 16GB image, run the Gtk/GStreamer patch helper once to restore the `gtksink` preview support:
 
 ```
 cd ~/raspberry_ninja/installers/nvidia_jetson
