@@ -19,6 +19,25 @@ if [[ ! -f "${REPO_ROOT}/publish.py" ]]; then
     exit 1
 fi
 
+chvt_path="$(command -v chvt || true)"
+setterm_path="$(command -v setterm || true)"
+
+if [[ -z "${chvt_path}" ]]; then
+    echo "Could not locate 'chvt'. Aborting."
+    exit 1
+fi
+
+if [[ -z "${setterm_path}" ]]; then
+    echo "Could not locate 'setterm'. Aborting."
+    exit 1
+fi
+
+playback_tty="/dev/tty4"
+playback_tty_name="${playback_tty#/dev/}"
+playback_vt_number="${playback_tty_name#tty}"
+playback_getty_unit="getty@${playback_tty_name}.service"
+playback_console_status="pending"
+
 blanking_status="Not configured"
 
 default_user="${SUDO_USER:-}"
@@ -215,6 +234,15 @@ escaped_cmd=$(printf "%s" "${start_command}" | sed "s/'/'\"'\"'/g")
     if [[ -n "${env_lines}" ]]; then
         printf "%s" "${env_lines}"
     fi
+    echo "PermissionsStartOnly=yes"
+    echo "TTYPath=${playback_tty}"
+    echo "TTYReset=yes"
+    echo "TTYVTDisallocate=yes"
+    echo "StandardInput=tty"
+    echo "StandardOutput=journal"
+    echo "StandardError=journal"
+    echo "ExecStartPre=${chvt_path} ${playback_vt_number}"
+    echo "ExecStartPre=/bin/sh -c 'TERM=linux ${setterm_path} --term linux --clear all --foreground black --background black --cursor off >${playback_tty}'"
     echo "ExecStart=/bin/bash -lc '${escaped_cmd}'"
     echo
     echo "[Install]"
@@ -224,6 +252,14 @@ escaped_cmd=$(printf "%s" "${start_command}" | sed "s/'/'\"'\"'/g")
 chmod 644 "${service_path}"
 systemctl daemon-reload
 systemctl enable "${service_name}.service"
+
+if systemctl list-unit-files --type=service --no-legend | awk '{print $1}' | grep -qx "${playback_getty_unit}"; then
+    systemctl stop "${playback_getty_unit}" >/dev/null 2>&1 || true
+    systemctl mask "${playback_getty_unit}" >/dev/null 2>&1 || true
+    playback_console_status="getty masked"
+else
+    playback_console_status="no getty service"
+fi
 
 dm_service="$(detect_dm)"
 gui_status="kept"
@@ -241,7 +277,7 @@ if [[ "${keep_gui}" != "y" ]]; then
 else
     systemctl set-default graphical.target
     if [[ -n "${dm_service}" ]]; then
-       systemctl enable "${dm_service}.service" >/dev/null 2>&1 || true
+        systemctl enable "${dm_service}.service" >/dev/null 2>&1 || true
     fi
 fi
 
@@ -258,6 +294,7 @@ Configuration complete!
 - Systemd service : ${service_path}
 - Runs as user    : ${service_user}
 - Launch command  : ${start_command}
+- Playback console: ${playback_tty} (${playback_console_status})
 - Desktop status  : ${gui_status}
 - Screen blanking : ${blanking_status}
 
