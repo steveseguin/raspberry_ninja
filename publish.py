@@ -2332,6 +2332,10 @@ class WebRTCClient:
         self._display_chain_unavailable = False
         self._display_chain_unavailable_reason = None
         self._display_direct_mode = False
+        self.viewer_active_remote_label = None  # Track active remote pad for viewer display
+        self.viewer_video_muted = False  # Track viewer mute state signaled over data channel
+        self.viewer_last_remote_size = None  # Remember last remote video dimensions for splash sizing
+        self.viewer_blank_dimensions = None  # Actual dimensions used for the blank splash source
         
         # ICE/TURN configuration
         self.stun_server = getattr(params, 'stun_server', None)
@@ -2843,6 +2847,9 @@ class WebRTCClient:
         self._display_direct_mode = False
         self._display_chain_unavailable = False
         self._display_chain_unavailable_reason = None
+        self.viewer_active_remote_label = None
+        self.viewer_video_muted = False
+        self.viewer_blank_dimensions = None
 
     def _ensure_display_chain(self):
         """Ensure viewer display selector and sink are ready."""
@@ -2881,17 +2888,32 @@ class WebRTCClient:
                 printc("🧹 Cleared display surface before viewer output", "66F")
             self._display_surface_cleared = True
 
-        self.display_selector = Gst.ElementFactory.make("inputselector", selector_name)
+        self.display_selector = Gst.ElementFactory.make("input-selector", selector_name)
         if not self.display_selector:
             self._display_direct_mode = True
             printwarn(
-                "Viewer display fallback active: GStreamer `inputselector` element is unavailable. "
+                "Viewer display fallback active: GStreamer `input-selector` element is unavailable. "
                 "Local preview limited to a single stream without splash screens."
             )
         else:
             self.pipe.add(self.display_selector)
 
-        sink_desc = "queue max-size-buffers=2 leaky=downstream ! " + outsink
+        sink_desc = "queue max-size-buffers=2 leaky=downstream ! "
+        if sink_base in jetson_caps and gst_element_available("nvvidconv"):
+            target_caps = jetson_caps[sink_base]
+            if fb_size and getattr(self, "stretch_display", False):
+                target_caps += f",width=(int){fb_size[0]},height=(int){fb_size[1]}"
+            nvvidconv_desc = "nvvidconv"
+            if nvvidconv_has_nvbuf:
+                nvvidconv_desc += " nvbuf-memory-type=0"
+            sink_desc += (
+                "videoconvert ! videoscale ! "
+                f"{nvvidconv_desc} ! "
+                f"{target_caps} ! "
+                f"{outsink}"
+            )
+        else:
+            sink_desc += outsink
         self.display_sink_bin = Gst.parse_bin_from_description(sink_desc, True)
         self.display_sink_bin.set_name("viewer_display_sink_bin")
         self.pipe.add(self.display_sink_bin)
@@ -2947,13 +2969,18 @@ class WebRTCClient:
 
         def build_conversion_chain(using_hw_decoder: bool) -> str:
             if sink_base in jetson_caps and gst_element_available("nvvidconv"):
-                target_caps = jetson_caps[sink_base]
-                if fb_size and getattr(self, "stretch_display", False):
-                    target_caps += f",width=(int){fb_size[0]},height=(int){fb_size[1]}"
-                nvvidconv_desc = "nvvidconv"
-                if nvvidconv_has_nvbuf:
-                    nvvidconv_desc += " nvbuf-memory-type=0"
-                return f"{nvvidconv_desc} ! {target_caps}"
+                segments = []
+                if using_hw_decoder:
+                    nvvidconv_desc = "nvvidconv"
+                    if nvvidconv_has_nvbuf:
+                        nvvidconv_desc += " nvbuf-memory-type=0"
+                    segments.append(nvvidconv_desc)
+                    segments.append("video/x-raw,format=NV12")
+                    segments.append("videoconvert")
+                else:
+                    segments.append("videoconvert")
+                segments.append("video/x-raw,format=BGRx")
+                return " ! ".join(segments)
             if using_hw_decoder and gst_element_available("nvvidconv"):
                 nvvidconv_desc = "nvvidconv"
                 if nvvidconv_has_nvbuf:
@@ -3091,26 +3118,137 @@ class WebRTCClient:
         bin_obj.sync_state_with_parent()
         return selector_pad
 
+    def _compute_blank_dimensions(self) -> Tuple[int, int]:
+        """Determine the ideal dimensions for the blank/idle splash sources."""
+        width: Optional[int] = None
+        height: Optional[int] = None
+
+        if self.viewer_last_remote_size:
+            width, height = self.viewer_last_remote_size
+
+        if not width or not height:
+            display_config = getattr(self, "_display_chain_config", None)
+            fb_size = None
+            if display_config:
+                fb_size = display_config.get("fb_size")
+
+            if fb_size:
+                fb_width, fb_height = fb_size
+                if fb_width and fb_height:
+                    # Fit a 16:9 frame within the detected framebuffer
+                    target_width = fb_width
+                    target_height = int(round(target_width * 9 / 16))
+                    if target_height > fb_height:
+                        target_height = fb_height
+                        target_width = int(round(target_height * 16 / 9))
+                    width, height = target_width, target_height
+
+        if not width or not height or width <= 0 or height <= 0:
+            width, height = 1280, 720
+
+        return width, height
+
+    def _build_blank_splash_bin(self, conversion_chain: str, target_dims: Tuple[int, int]) -> Optional[Gst.Bin]:
+        """Create the reusable blank splash bin with the target dimensions."""
+        width, height = target_dims
+        caps_parts = ["video/x-raw", "pixel-aspect-ratio=1/1"]
+        if width:
+            caps_parts.append(f"width=(int){int(width)}")
+        if height:
+            caps_parts.append(f"height=(int){int(height)}")
+        caps_str = ",".join(caps_parts)
+
+        blank_desc = (
+            "videotestsrc pattern=black is-live=true ! "
+            "video/x-raw,framerate=30/1 ! "
+            "videoscale ! "
+            f"{caps_str} ! "
+            f"{conversion_chain} ! "
+            "queue max-size-buffers=2 leaky=downstream ! "
+            "identity name=viewer_blank_identity"
+        )
+
+        try:
+            bin_obj = Gst.parse_bin_from_description(blank_desc, True)
+            bin_obj.set_name("viewer_blank_source")
+            return bin_obj
+        except Exception as exc:
+            printwarn(f"Failed to initialize blank splash source: {exc}")
+            return None
+
+    def _rebuild_blank_source(self):
+        """Recreate the blank splash source if dimensions changed."""
+        if (
+            not self.pipe
+            or not self.display_selector
+            or self._display_direct_mode
+        ):
+            return
+
+        target_dims = self._compute_blank_dimensions()
+        if self.viewer_blank_dimensions == target_dims:
+            return
+
+        if "blank" in self.display_sources:
+            self._release_display_source("blank")
+
+        display_config = getattr(self, "_display_chain_config", None)
+        conversion_chain = None
+        if display_config:
+            try:
+                conversion_chain = display_config["build_conversion_chain"](False)
+            except Exception:
+                conversion_chain = None
+        if not conversion_chain:
+            conversion_chain = "videoconvert ! video/x-raw,format=BGRx"
+
+        blank_bin = self._build_blank_splash_bin(conversion_chain, target_dims)
+        if not blank_bin:
+            return
+
+        self.pipe.add(blank_bin)
+        try:
+            self._link_bin_to_display(blank_bin, "blank")
+            self.viewer_blank_dimensions = target_dims
+            if self.display_state == "idle":
+                self._set_display_mode("idle")
+        except Exception as exc:
+            printwarn(f"Failed to relink blank splash: {exc}")
+            try:
+                self.pipe.remove(blank_bin)
+            except Exception:
+                pass
+
     def _ensure_splash_sources(self):
         """Create idle/connecting/blank splashes when needed."""
         if not self.pipe or (not self.display_selector) or self._display_direct_mode:
             return
 
-        if "blank" not in self.display_sources:
+        conversion_chain = None
+        display_config = getattr(self, "_display_chain_config", None)
+        if display_config:
             try:
-                blank_bin = Gst.parse_bin_from_description(
-                    "videotestsrc pattern=black is-live=true ! "
-                    "video/x-raw,framerate=30/1 ! "
-                    "videoconvert ! videoscale ! "
-                    "queue max-size-buffers=2 leaky=downstream ! "
-                    "identity name=viewer_blank_identity",
-                    True,
-                )
-                blank_bin.set_name("viewer_blank_source")
+                conversion_chain = display_config["build_conversion_chain"](False)
+            except Exception:
+                conversion_chain = None
+        if not conversion_chain:
+            conversion_chain = "videoconvert ! video/x-raw,format=BGRx"
+
+        target_dims = self._compute_blank_dimensions()
+
+        if "blank" not in self.display_sources:
+            blank_bin = self._build_blank_splash_bin(conversion_chain, target_dims)
+            if blank_bin:
                 self.pipe.add(blank_bin)
-                self._link_bin_to_display(blank_bin, "blank")
-            except Exception as exc:
-                printwarn(f"Failed to initialize blank splash source: {exc}")
+                try:
+                    self._link_bin_to_display(blank_bin, "blank")
+                    self.viewer_blank_dimensions = target_dims
+                except Exception as exc:
+                    printwarn(f"Failed to link blank splash: {exc}")
+                    try:
+                        self.pipe.remove(blank_bin)
+                    except Exception:
+                        pass
 
         if self.splashscreen_idle and "idle" not in self.display_sources:
             idle_bin = self._create_splash_bin(self.splashscreen_idle, "idle")
@@ -3145,12 +3283,33 @@ class WebRTCClient:
             return None
 
         escaped = path.replace("\\", "\\\\").replace('"', '\\"')
+        conversion_chain = None
+        display_config = getattr(self, "_display_chain_config", None)
+        if display_config:
+            try:
+                conversion_chain = display_config["build_conversion_chain"](False)
+            except Exception:
+                conversion_chain = None
+        if not conversion_chain:
+            conversion_chain = "videoconvert ! video/x-raw,format=BGRx"
+
+        width, height = self._compute_blank_dimensions()
+        dims_caps_parts = ["video/x-raw", "pixel-aspect-ratio=1/1"]
+        if width:
+            dims_caps_parts.append(f"width=(int){int(width)}")
+        if height:
+            dims_caps_parts.append(f"height=(int){int(height)}")
+        dims_caps = ",".join(dims_caps_parts)
+
         desc = (
             f'filesrc location="{escaped}" ! '
             "decodebin ! "
-            "videoconvert ! videoscale ! "
+            "videoconvert ! "
             "imagefreeze ! "
-            "video/x-raw,format=BGRx,framerate=30/1 ! "
+            "video/x-raw,framerate=30/1 ! "
+            "videoscale ! "
+            f"{dims_caps} ! "
+            f"{conversion_chain} ! "
             "queue max-size-buffers=2 leaky=downstream ! "
             f"identity name=viewer_{label}_identity"
         )
@@ -3189,6 +3348,11 @@ class WebRTCClient:
 
     def _set_display_mode(self, mode: str, remote_label: Optional[str] = None):
         """Switch to the appropriate splash/remote source."""
+        if mode == "remote" and remote_label:
+            # Remember which remote pad is active so we can restore it after blanking
+            self.viewer_active_remote_label = remote_label
+            self.viewer_video_muted = False
+
         if self._display_direct_mode:
             if mode == "remote" and remote_label:
                 if self._activate_display_source(remote_label):
@@ -3228,6 +3392,8 @@ class WebRTCClient:
         source = self.display_sources.pop(label, None)
         if not source:
             return
+        if label == "blank":
+            self.viewer_blank_dimensions = None
 
         selector_pad = source.get("selector_pad")
         if selector_pad:
@@ -3351,6 +3517,20 @@ class WebRTCClient:
         try:
             self._link_bin_to_display(out, remote_label)
             self.display_remote_map[pad.get_name()] = remote_label
+            try:
+                structure = caps.get_structure(0)
+                width = structure.get_value("width")
+                height = structure.get_value("height")
+                if (
+                    isinstance(width, int)
+                    and isinstance(height, int)
+                    and width > 0
+                    and height > 0
+                ):
+                    self.viewer_last_remote_size = (width, height)
+                    self._rebuild_blank_source()
+            except Exception:
+                pass
         except Exception as exc:
             printwarn(f"Failed to attach viewer video bin to display: {exc}")
             try:
@@ -3367,9 +3547,17 @@ class WebRTCClient:
     def on_remote_pad_removed(self, webrtc, pad: Gst.Pad):
         """Handle removal of remote pads for viewer mode."""
         pad_name = pad.get_name()
-        label = self.display_remote_map.pop(pad_name, None)
+        remote_map = getattr(self, "display_remote_map", None)
+        if remote_map is None:
+            return
+
+        label = remote_map.pop(pad_name, None)
         if not label:
             return
+
+        if label == self.viewer_active_remote_label:
+            self.viewer_active_remote_label = None
+            self.viewer_video_muted = False
 
         self._release_display_source(label)
         if self._display_direct_mode:
@@ -3377,8 +3565,8 @@ class WebRTCClient:
             return
         if not self.display_selector:
             return
-        if self.display_remote_map:
-            next_label = next(iter(self.display_remote_map.values()))
+        if remote_map:
+            next_label = next(iter(remote_map.values()))
             self._set_display_mode("remote", remote_label=next_label)
         else:
             self._set_display_mode("idle")
@@ -3758,7 +3946,12 @@ class WebRTCClient:
 
                     remote_label = self._attach_viewer_video_stream(pad, name)
                     if remote_label:
-                        self._set_display_mode("remote", remote_label=remote_label)
+                        self.viewer_active_remote_label = remote_label
+                        if self.viewer_video_muted:
+                            # Keep splash active until remote unmutes
+                            self._set_display_mode("idle")
+                        else:
+                            self._set_display_mode("remote", remote_label=remote_label)
                     else:
                         self._set_display_mode("connecting")
                     return
@@ -4361,6 +4554,43 @@ class WebRTCClient:
                 self.clients[client["UUID"]] = client
             elif 'bye' in msg: ## v19 of VDO.Ninja
                 printc("👋 Peer disconnected gracefully", "77F")
+                if self.view:
+                    try:
+                        self._set_display_mode("idle")
+                    except Exception as exc:
+                        printwarn(f"Failed to update display on bye: {exc}")
+                self.viewer_active_remote_label = None
+                self.viewer_video_muted = False
+                self.stop_pipeline(client['UUID'])
+                return
+            elif 'videoMuted' in msg:
+                if not self.view:
+                    return
+                muted_value = msg.get('videoMuted')
+                if isinstance(muted_value, str):
+                    muted = muted_value.strip().lower() == "true"
+                else:
+                    muted = bool(muted_value)
+
+                if muted:
+                    if not self.viewer_video_muted:
+                        printc("🔇 Remote video muted; showing splash", "77F")
+                    self.viewer_video_muted = True
+                    try:
+                        self._set_display_mode("idle")
+                    except Exception as exc:
+                        printwarn(f"Failed to blank display on video mute: {exc}")
+                else:
+                    if self.viewer_video_muted:
+                        printc("🎬 Remote video resumed", "0F0")
+                    self.viewer_video_muted = False
+                    remote_label = self.viewer_active_remote_label
+                    if remote_label:
+                        try:
+                            self._set_display_mode("remote", remote_label=remote_label)
+                        except Exception as exc:
+                            printwarn(f"Failed to restore display on video unmute: {exc}")
+                return
             elif 'description' in msg:
                 printc("📥 Receiving connection details...", "77F")
                 
@@ -5114,65 +5344,70 @@ class WebRTCClient:
     def stop_pipeline(self, UUID):
         printc("🛑 Stopping pipeline for viewer", "F77")
         with self.pipeline_lock:
-            if UUID not in self.clients:
+            client_entry = self.clients.get(UUID)
+            if not client_entry:
                 print(f"Client {UUID} not found in clients list")
                 return
             
             # Cancel the ping timer if it exists
-            if 'timer' in self.clients[UUID] and self.clients[UUID]['timer'] is not None:
+            timer = client_entry.get('timer')
+            if timer is not None:
                 try:
-                    self.clients[UUID]['timer'].cancel()
-                    self.clients[UUID]['timer'] = None
+                    timer.cancel()
+                    client_entry['timer'] = None
                 except Exception as e:
                     printwarn(f"Failed to cancel timer: {e}")
                 
             if not self.multiviewer:
-                if UUID in self.clients:
-                    del self.clients[UUID]
-            elif UUID in self.clients:
+                self.clients.pop(UUID, None)
+            else:
                 # In multiviewer mode, unlink from tees
                 atee = self.pipe.get_by_name('audiotee')
                 vtee = self.pipe.get_by_name('videotee')
 
                 # Unlink elements before cleanup to prevent dangling references
                 try:
-                    if atee is not None and self.clients[UUID]['qa'] is not None:
-                        atee.unlink(self.clients[UUID]['qa'])
+                    qa = client_entry.get('qa')
+                    if atee is not None and qa is not None:
+                        atee.unlink(qa)
                 except Exception as e:
                     printwarn(f"Failed to unlink audio queue: {e}")
                     
                 try:
-                    if vtee is not None and self.clients[UUID]['qv'] is not None:
-                        vtee.unlink(self.clients[UUID]['qv'])
+                    qv = client_entry.get('qv')
+                    if vtee is not None and qv is not None:
+                        vtee.unlink(qv)
                 except Exception as e:
                     printwarn(f"Failed to unlink video queue: {e}")
 
             # CRITICAL: Set elements to NULL state BEFORE removing from pipeline
             # This prevents segfaults during cleanup
             try:
-                if self.clients[UUID]['webrtc'] is not None:
-                    self.clients[UUID]['webrtc'].set_state(Gst.State.NULL)
-                    self.pipe.remove(self.clients[UUID]['webrtc'])
+                webrtc = client_entry.get('webrtc')
+                if webrtc is not None:
+                    webrtc.set_state(Gst.State.NULL)
+                    self.pipe.remove(webrtc)
             except Exception as e:
                 printwarn(f"Failed to cleanup webrtc element: {e}")
                 
             try:
-                if self.clients[UUID]['qa'] is not None:
-                    self.clients[UUID]['qa'].set_state(Gst.State.NULL)
-                    self.pipe.remove(self.clients[UUID]['qa'])
+                qa = client_entry.get('qa')
+                if qa is not None:
+                    qa.set_state(Gst.State.NULL)
+                    self.pipe.remove(qa)
             except Exception as e:
                 printwarn(f"Failed to cleanup audio queue: {e}")
                 
             try:
-                if self.clients[UUID]['qv'] is not None:
-                    self.clients[UUID]['qv'].set_state(Gst.State.NULL)
-                    self.pipe.remove(self.clients[UUID]['qv'])
+                qv = client_entry.get('qv')
+                if qv is not None:
+                    qv.set_state(Gst.State.NULL)
+                    self.pipe.remove(qv)
             except Exception as e:
                 printwarn(f"Failed to cleanup video queue: {e}")
                 
             # Always remove from clients dict, even if cleanup failed
-            if UUID in self.clients:
-                del self.clients[UUID]
+            self.clients.pop(UUID, None)
 
         if len(self.clients)==0:
             enableLEDs(0.1)
@@ -8619,9 +8854,6 @@ async def main():
     
     c = WebRTCClient(args)
     
-    # Set the event loop reference for thread-safe operations
-    c.event_loop = asyncio.get_running_loop()
-    
     if args.socketout:
         c.setup_socket()
     
@@ -8641,6 +8873,7 @@ async def main():
     
     # Setup signal handlers for graceful shutdown
     shutdown_event = asyncio.Event()
+    event_loop = asyncio.get_running_loop()
     
     # Track if we're already shutting down
     shutdown_count = [0]
@@ -8652,7 +8885,7 @@ async def main():
             c._shutdown_requested = True
             # Force close the websocket to break out of recv()
             if c.conn:
-                asyncio.create_task(c.conn.close())
+                event_loop.call_soon_threadsafe(event_loop.create_task, c.conn.close())
         elif shutdown_count[0] == 2:
             printc("\n⚠️  Second interrupt, forcing shutdown...", "F00")
             os._exit(1)
