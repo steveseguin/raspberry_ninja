@@ -2319,6 +2319,19 @@ class WebRTCClient:
         self.socketout = params.socketout
         self.socketport = params.socketport
         self.socket = None
+        self.splashscreen_idle = getattr(params, 'splashscreen_idle', None)
+        self.splashscreen_connecting = getattr(params, 'splashscreen_connecting', None)
+        self.display_selector = None
+        self.display_sink_bin = None
+        self.display_sources = {}
+        self.display_remote_map = {}
+        self.current_display_pad = None
+        self._display_chain_config = None
+        self._display_surface_cleared = False
+        self.display_state = None
+        self._display_chain_unavailable = False
+        self._display_chain_unavailable_reason = None
+        self._display_direct_mode = False
         
         # ICE/TURN configuration
         self.stun_server = getattr(params, 'stun_server', None)
@@ -2790,7 +2803,586 @@ class WebRTCClient:
             self.hls_base_filename = base_filename
         else:
             printc("❌ Failed to create HLS sink", "F00")
-    
+
+    def _reset_display_chain_state(self):
+        """Reset cached viewer display elements."""
+        if getattr(self, "display_sources", None):
+            for label in list(self.display_sources.keys()):
+                try:
+                    self._release_display_source(label)
+                except Exception:
+                    pass
+
+        if getattr(self, "display_selector", None) and self.pipe:
+            try:
+                self.display_selector.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+            try:
+                self.pipe.remove(self.display_selector)
+            except Exception:
+                pass
+
+        if getattr(self, "display_sink_bin", None) and self.pipe:
+            try:
+                self.display_sink_bin.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+            try:
+                self.pipe.remove(self.display_sink_bin)
+            except Exception:
+                pass
+
+        self.display_selector = None
+        self.display_sink_bin = None
+        self.display_sources = {}
+        self.display_remote_map = {}
+        self.current_display_pad = None
+        self._display_chain_config = None
+        self.display_state = None
+        self._display_direct_mode = False
+        self._display_chain_unavailable = False
+        self._display_chain_unavailable_reason = None
+
+    def _ensure_display_chain(self):
+        """Ensure viewer display selector and sink are ready."""
+        if not self.pipe:
+            return None
+
+        if getattr(self, "_display_chain_unavailable", False):
+            return None
+
+        selector_name = "viewer_display_selector"
+        if self.display_selector and self.pipe.get_by_name(selector_name):
+            return self._display_chain_config
+
+        # Clean up any cached state if we lost the pipeline
+        self._reset_display_chain_state()
+
+        outsink = select_display_sink("autovideosink")
+        print(f"Selected display sink pipeline: {outsink}")
+
+        sink_base = outsink.split()[0]
+        jetson_caps = {
+            "nvdrmvideosink": "video/x-raw(memory:NVMM),format=NV12,pixel-aspect-ratio=1/1",
+            "nv3dsink": "video/x-raw(memory:NVMM),format=NV12,pixel-aspect-ratio=1/1",
+            "nvoverlaysink": "video/x-raw(memory:NVMM),format=NV12,pixel-aspect-ratio=1/1",
+        }
+        fb_size = get_framebuffer_resolution()
+        nvvidconv_has_nvbuf = gst_element_supports_property("nvvidconv", "nvbuf-memory-type")
+        needs_system_memory = sink_base not in jetson_caps
+        debug_display = bool(os.environ.get("RN_DEBUG_DISPLAY"))
+
+        if sink_base in jetson_caps:
+            outsink = outsink.replace(sink_base, f"{sink_base} name=jetson_display_sink", 1)
+
+        if not getattr(self, "_display_surface_cleared", False):
+            if clear_display_surfaces():
+                printc("🧹 Cleared display surface before viewer output", "66F")
+            self._display_surface_cleared = True
+
+        self.display_selector = Gst.ElementFactory.make("inputselector", selector_name)
+        if not self.display_selector:
+            self._display_direct_mode = True
+            printwarn(
+                "Viewer display fallback active: GStreamer `inputselector` element is unavailable. "
+                "Local preview limited to a single stream without splash screens."
+            )
+        else:
+            self.pipe.add(self.display_selector)
+
+        sink_desc = "queue max-size-buffers=2 leaky=downstream ! " + outsink
+        self.display_sink_bin = Gst.parse_bin_from_description(sink_desc, True)
+        self.display_sink_bin.set_name("viewer_display_sink_bin")
+        self.pipe.add(self.display_sink_bin)
+
+        if self.display_selector:
+            if not Gst.Element.link(self.display_selector, self.display_sink_bin):
+                raise RuntimeError("Failed to link display selector to sink pipeline")
+            self.display_selector.sync_state_with_parent()
+        else:
+            sink_pad = self.display_sink_bin.get_static_pad("sink")
+            if sink_pad and sink_pad.is_linked():
+                peer = sink_pad.get_peer()
+                if peer:
+                    sink_pad.unlink(peer)
+            self.current_display_pad = sink_pad
+
+        self.display_sink_bin.sync_state_with_parent()
+
+        if sink_base in jetson_caps:
+            jetson_sink_element = self.pipe.get_by_name("jetson_display_sink")
+            if jetson_sink_element and fb_size:
+                try:
+                    jetson_sink_element.set_property("overlay", 1)
+                    jetson_sink_element.set_property("overlay-x", 0)
+                    jetson_sink_element.set_property("overlay-y", 0)
+                    jetson_sink_element.set_property("overlay-w", fb_size[0])
+                    jetson_sink_element.set_property("overlay-h", fb_size[1])
+                    if hasattr(jetson_sink_element.props, "window_width"):
+                        jetson_sink_element.set_property("window-width", fb_size[0])
+                    if hasattr(jetson_sink_element.props, "window_height"):
+                        jetson_sink_element.set_property("window-height", fb_size[1])
+                except Exception as exc:
+                    if debug_display:
+                        print(f"Failed to configure overlay geometry: {exc}")
+
+                if jetson_sink_element and 'GLib' in globals():
+                    _stats_counter = {"count": 0}
+
+                    def _log_sink_stats():
+                        try:
+                            stats = jetson_sink_element.get_property("stats")
+                            if stats:
+                                print(f"Jetson display sink stats: {stats.to_string()}")
+                            else:
+                                print("Jetson display sink stats: unavailable")
+                        except Exception as exc:
+                            print(f"Failed to query jetson display sink stats: {exc}")
+                            return False
+                        _stats_counter["count"] += 1
+                        return _stats_counter["count"] < 12
+
+                    GLib.timeout_add_seconds(5, _log_sink_stats)
+
+        def build_conversion_chain(using_hw_decoder: bool) -> str:
+            if sink_base in jetson_caps and gst_element_available("nvvidconv"):
+                target_caps = jetson_caps[sink_base]
+                if fb_size and getattr(self, "stretch_display", False):
+                    target_caps += f",width=(int){fb_size[0]},height=(int){fb_size[1]}"
+                nvvidconv_desc = "nvvidconv"
+                if nvvidconv_has_nvbuf:
+                    nvvidconv_desc += " nvbuf-memory-type=0"
+                return f"{nvvidconv_desc} ! {target_caps}"
+            if using_hw_decoder and gst_element_available("nvvidconv"):
+                nvvidconv_desc = "nvvidconv"
+                if nvvidconv_has_nvbuf:
+                    nvvidconv_desc += " nvbuf-memory-type=0"
+                return (
+                    f"{nvvidconv_desc} ! "
+                    "video/x-raw,format=NV12 ! "
+                    "videoconvert ! video/x-raw,format=RGB"
+                )
+            if sink_base == "xvimagesink":
+                return "videoconvert ! video/x-raw,format=I420"
+            if sink_base in {"gtksink", "ximagesink"}:
+                return "videoconvert ! video/x-raw,format=BGRx"
+            if sink_base == "glimagesink":
+                return "videoconvert ! video/x-raw,format=RGBA"
+            return "videoconvert ! video/x-raw,format=BGRx"
+
+        self._display_chain_config = {
+            "sink_base": sink_base,
+            "fb_size": fb_size,
+            "jetson_caps": jetson_caps,
+            "nvvidconv_has_nvbuf": nvvidconv_has_nvbuf,
+            "needs_system_memory": needs_system_memory,
+            "debug_display": debug_display,
+            "build_conversion_chain": build_conversion_chain,
+            "direct_mode": self._display_direct_mode,
+        }
+        self._display_chain_unavailable = False
+        self._display_chain_unavailable_reason = None
+
+        if not self._display_direct_mode:
+            self._ensure_splash_sources()
+        return self._display_chain_config
+
+    def _link_bin_to_display(self, bin_obj: Gst.Bin, label: str):
+        """Connect a bin's output to the display selector."""
+        if self._display_direct_mode:
+            if not self.display_sink_bin:
+                raise RuntimeError("Display sink bin is unavailable in direct mode")
+
+            src_pad = bin_obj.get_static_pad("src")
+            if not src_pad:
+                last_element = None
+                try:
+                    iterator = bin_obj.iterate_sorted()
+                    while True:
+                        res, elem = iterator.next()
+                        if res == Gst.IteratorResult.OK:
+                            last_element = elem
+                        else:
+                            break
+                except Exception:
+                    last_element = None
+
+                if last_element:
+                    pad = last_element.get_static_pad("src")
+                    if pad:
+                        ghost = Gst.GhostPad.new("src", pad)
+                        bin_obj.add_pad(ghost)
+                        src_pad = ghost
+
+            if not src_pad:
+                raise RuntimeError(f"Failed to obtain src pad for display source '{label}'")
+
+            sink_pad = self.display_sink_bin.get_static_pad("sink")
+            if not sink_pad:
+                raise RuntimeError("Display sink bin does not expose a sink pad")
+
+            # Ensure only one source is linked in direct mode
+            for existing_label in list(self.display_sources.keys()):
+                self._release_display_source(existing_label)
+
+            if sink_pad.is_linked():
+                peer = sink_pad.get_peer()
+                if peer:
+                    sink_pad.unlink(peer)
+
+            link_result = src_pad.link(sink_pad)
+            if link_result != Gst.PadLinkReturn.OK:
+                raise RuntimeError(f"Failed to link display source '{label}' directly: {link_result}")
+
+            self.display_sources[label] = {
+                "bin": bin_obj,
+                "selector_pad": None,
+                "src_pad": src_pad,
+                "sink_pad": sink_pad,
+            }
+            bin_obj.sync_state_with_parent()
+            self.current_display_pad = sink_pad
+            return sink_pad
+
+        if not self.display_selector:
+            raise RuntimeError("Display selector is not initialized")
+
+        src_pad = bin_obj.get_static_pad("src")
+        if not src_pad:
+            # Attempt to create a ghost pad from the last element
+            last_element = None
+            try:
+                iterator = bin_obj.iterate_sorted()
+                while True:
+                    res, elem = iterator.next()
+                    if res == Gst.IteratorResult.OK:
+                        last_element = elem
+                    else:
+                        break
+            except Exception:
+                last_element = None
+
+            if last_element:
+                pad = last_element.get_static_pad("src")
+                if pad:
+                    ghost = Gst.GhostPad.new("src", pad)
+                    bin_obj.add_pad(ghost)
+                    src_pad = ghost
+
+        if not src_pad:
+            raise RuntimeError(f"Failed to obtain src pad for display source '{label}'")
+
+        pad_template = self.display_selector.get_pad_template("sink_%u")
+        selector_pad = self.display_selector.request_pad(pad_template, None, None)
+        if not selector_pad:
+            raise RuntimeError("Failed to request pad from display selector")
+
+        link_result = src_pad.link(selector_pad)
+        if link_result != Gst.PadLinkReturn.OK:
+            self.display_selector.release_request_pad(selector_pad)
+            raise RuntimeError(f"Failed to link display source '{label}': {link_result}")
+
+        self.display_sources[label] = {
+            "bin": bin_obj,
+            "selector_pad": selector_pad,
+            "src_pad": src_pad,
+        }
+        bin_obj.sync_state_with_parent()
+        return selector_pad
+
+    def _ensure_splash_sources(self):
+        """Create idle/connecting/blank splashes when needed."""
+        if not self.pipe or (not self.display_selector) or self._display_direct_mode:
+            return
+
+        if "blank" not in self.display_sources:
+            try:
+                blank_bin = Gst.parse_bin_from_description(
+                    "videotestsrc pattern=black is-live=true ! "
+                    "video/x-raw,framerate=30/1 ! "
+                    "videoconvert ! videoscale ! "
+                    "queue max-size-buffers=2 leaky=downstream ! "
+                    "identity name=viewer_blank_identity",
+                    True,
+                )
+                blank_bin.set_name("viewer_blank_source")
+                self.pipe.add(blank_bin)
+                self._link_bin_to_display(blank_bin, "blank")
+            except Exception as exc:
+                printwarn(f"Failed to initialize blank splash source: {exc}")
+
+        if self.splashscreen_idle and "idle" not in self.display_sources:
+            idle_bin = self._create_splash_bin(self.splashscreen_idle, "idle")
+            if idle_bin:
+                self.pipe.add(idle_bin)
+                try:
+                    self._link_bin_to_display(idle_bin, "idle")
+                except Exception as exc:
+                    printwarn(f"Failed to link idle splash: {exc}")
+                    try:
+                        self.pipe.remove(idle_bin)
+                    except Exception:
+                        pass
+
+        if self.splashscreen_connecting and "connecting" not in self.display_sources:
+            connecting_bin = self._create_splash_bin(self.splashscreen_connecting, "connecting")
+            if connecting_bin:
+                self.pipe.add(connecting_bin)
+                try:
+                    self._link_bin_to_display(connecting_bin, "connecting")
+                except Exception as exc:
+                    printwarn(f"Failed to link connecting splash: {exc}")
+                    try:
+                        self.pipe.remove(connecting_bin)
+                    except Exception:
+                        pass
+
+    def _create_splash_bin(self, path: str, label: str) -> Optional[Gst.Bin]:
+        """Create a reusable bin that displays a still image."""
+        if not os.path.isfile(path):
+            printwarn(f"Splash image not found for {label}: {path}")
+            return None
+
+        escaped = path.replace("\\", "\\\\").replace('"', '\\"')
+        desc = (
+            f'filesrc location="{escaped}" ! '
+            "decodebin ! "
+            "videoconvert ! videoscale ! "
+            "imagefreeze ! "
+            "video/x-raw,format=BGRx,framerate=30/1 ! "
+            "queue max-size-buffers=2 leaky=downstream ! "
+            f"identity name=viewer_{label}_identity"
+        )
+        try:
+            bin_obj = Gst.parse_bin_from_description(desc, True)
+            bin_obj.set_name(f"viewer_{label}_splash")
+            return bin_obj
+        except Exception as exc:
+            printwarn(f"Failed to build splash pipeline for {label}: {exc}")
+            return None
+
+    def _activate_display_source(self, label: str) -> bool:
+        """Activate a registered source on the selector."""
+        source = self.display_sources.get(label)
+        if not source:
+            return False
+
+        if self._display_direct_mode:
+            sink_pad = source.get("sink_pad")
+            if sink_pad:
+                self.current_display_pad = sink_pad
+                return True
+            return False
+
+        pad = source["selector_pad"]
+        if pad == self.current_display_pad:
+            return True
+
+        try:
+            self.display_selector.set_property("active-pad", pad)
+            self.current_display_pad = pad
+            return True
+        except Exception as exc:
+            printwarn(f"Failed to activate display source '{label}': {exc}")
+            return False
+
+    def _set_display_mode(self, mode: str, remote_label: Optional[str] = None):
+        """Switch to the appropriate splash/remote source."""
+        if self._display_direct_mode:
+            if mode == "remote" and remote_label:
+                if self._activate_display_source(remote_label):
+                    self.display_state = mode
+            return
+
+        if not self.display_selector:
+            try:
+                self._ensure_display_chain()
+            except Exception as exc:
+                printwarn(f"Failed to initialize display chain for mode '{mode}': {exc}")
+                return
+            if not self.display_selector:
+                return
+
+        preferred_labels = []
+        if mode == "remote" and remote_label:
+            preferred_labels = [remote_label]
+        elif mode == "connecting":
+            preferred_labels = ["connecting", "idle", "blank"]
+        elif mode == "idle":
+            preferred_labels = ["idle", "blank"]
+        else:
+            preferred_labels = [mode, "blank"]
+
+        for label in preferred_labels:
+            if self._activate_display_source(label):
+                self.display_state = mode
+                return
+
+        # Fallback if nothing was activated
+        if self._activate_display_source("blank"):
+            self.display_state = mode
+
+    def _release_display_source(self, label: str):
+        """Detach and remove a registered display source."""
+        source = self.display_sources.pop(label, None)
+        if not source:
+            return
+
+        selector_pad = source.get("selector_pad")
+        if selector_pad:
+            try:
+                self.display_selector.release_request_pad(selector_pad)
+            except Exception:
+                pass
+            if selector_pad == self.current_display_pad:
+                self.current_display_pad = None
+        elif self._display_direct_mode:
+            sink_pad = source.get("sink_pad")
+            src_pad = source.get("src_pad")
+            if sink_pad and src_pad:
+                try:
+                    if sink_pad.is_linked() and src_pad.is_linked():
+                        src_pad.unlink(sink_pad)
+                except Exception:
+                    pass
+            if sink_pad == self.current_display_pad:
+                self.current_display_pad = None
+
+        bin_obj = source.get("bin")
+        if bin_obj:
+            try:
+                bin_obj.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+            try:
+                self.pipe.remove(bin_obj)
+            except Exception:
+                pass
+
+    def _attach_viewer_video_stream(self, pad: Gst.Pad, caps_name: str) -> Optional[str]:
+        """Attach incoming video pad to the display selector."""
+        display_config = self._ensure_display_chain()
+        if not display_config:
+            message = (
+                getattr(self, "_display_chain_unavailable_reason", None)
+                or "Display pipeline not ready; cannot attach viewer stream"
+            )
+            printwarn(message)
+            return None
+
+        self._ensure_splash_sources()
+        build_conversion_chain = display_config["build_conversion_chain"]
+        needs_system_memory = display_config["needs_system_memory"]
+        nvvidconv_has_nvbuf = display_config["nvvidconv_has_nvbuf"]
+        debug_display = display_config["debug_display"]
+
+        if "VP8" in caps_name:
+            fallback_decoder = "vp8dec"
+            decoder_desc, using_hw_decoder = self._get_decoder_description("VP8", fallback_decoder)
+            if using_hw_decoder and needs_system_memory and not nvvidconv_has_nvbuf:
+                printwarn(
+                    "Jetson hardware VP8 decoder requires nvvidconv nvbuf-memory-type support "
+                    "for desktop display sinks; falling back to software decoding."
+                )
+                decoder_desc = fallback_decoder
+                using_hw_decoder = False
+            if using_hw_decoder:
+                decoder_name = decoder_desc.split()[0]
+                printc(f"Using Jetson hardware decoder `{decoder_name}` for VP8", "0AF")
+            conversion_chain = build_conversion_chain(using_hw_decoder)
+            pipeline_desc = (
+                "queue ! rtpvp8depay ! "
+                f"{decoder_desc} ! "
+                "queue max-size-buffers=0 max-size-time=0 ! "
+                f"{conversion_chain} ! "
+                "queue max-size-buffers=0 max-size-time=0 ! "
+                f"identity name=view_identity_{pad.get_name()}"
+            )
+        elif "H264" in caps_name:
+            fallback_decoder = "openh264dec"
+            decoder_desc, using_hw_decoder = self._get_decoder_description("H264", fallback_decoder)
+            if using_hw_decoder and needs_system_memory and not nvvidconv_has_nvbuf:
+                printwarn(
+                    "Jetson hardware H264 decoder requires nvvidconv nvbuf-memory-type support "
+                    "for desktop display sinks; falling back to software decoding."
+                )
+                decoder_desc = fallback_decoder
+                using_hw_decoder = False
+            if using_hw_decoder:
+                decoder_name = decoder_desc.split()[0]
+                printc(f"Using Jetson hardware decoder `{decoder_name}` for H264", "0AF")
+            conversion_chain = build_conversion_chain(using_hw_decoder)
+            pipeline_desc = (
+                "queue ! rtph264depay ! h264parse ! "
+                f"{decoder_desc} ! "
+                "queue max-size-buffers=0 max-size-time=0 ! "
+                f"{conversion_chain} ! "
+                "queue max-size-buffers=0 max-size-time=0 ! "
+                f"identity name=view_identity_{pad.get_name()}"
+            )
+        else:
+            printc(f"Unsupported video codec for viewer: {caps_name}", "F70")
+            return None
+
+        try:
+            out = Gst.parse_bin_from_description(pipeline_desc, True)
+        except Exception as exc:
+            printwarn(f"Failed to build viewer video pipeline: {exc}")
+            return None
+
+        out.set_name(f"viewer_video_bin_{pad.get_name()}")
+        self.pipe.add(out)
+
+        sink_pad = out.get_static_pad("sink")
+        if not sink_pad:
+            printwarn("Viewer video bin does not expose a sink pad")
+            self.pipe.remove(out)
+            return None
+
+        link_result = pad.link(sink_pad)
+        if link_result != Gst.PadLinkReturn.OK:
+            reason = link_result.value_nick if hasattr(link_result, "value_nick") else link_result
+            printwarn(f"Failed to link incoming video pad to viewer pipeline: {reason}")
+            self.pipe.remove(out)
+            return None
+
+        remote_label = f"remote_{pad.get_name()}"
+        try:
+            self._link_bin_to_display(out, remote_label)
+            self.display_remote_map[pad.get_name()] = remote_label
+        except Exception as exc:
+            printwarn(f"Failed to attach viewer video bin to display: {exc}")
+            try:
+                self.pipe.remove(out)
+            except Exception:
+                pass
+            return None
+
+        if debug_display:
+            print("Linked incoming video pad to display selector (viewer path)")
+
+        return remote_label
+
+    def on_remote_pad_removed(self, webrtc, pad: Gst.Pad):
+        """Handle removal of remote pads for viewer mode."""
+        pad_name = pad.get_name()
+        label = self.display_remote_map.pop(pad_name, None)
+        if not label:
+            return
+
+        self._release_display_source(label)
+        if self._display_direct_mode:
+            self.display_state = "idle"
+            return
+        if not self.display_selector:
+            return
+        if self.display_remote_map:
+            next_label = next(iter(self.display_remote_map.values()))
+            self._set_display_mode("remote", remote_label=next_label)
+        else:
+            self._set_display_mode("idle")
+
     def on_incoming_stream(self, webrtc, pad):
         global time  # Ensure time refers to the global module
         try:
@@ -3158,237 +3750,18 @@ class WebRTCClient:
                     
                     appsink = self.pipe.get_by_name('appsink')
                     appsink.connect("new-sample", self.on_new_socket_sample)
-                elif self.view:
-                    # Check if we're in recording mode
+                elif self.view and "video" in name.lower():
+                    print("DISPLAY OUTPUT MODE BEING SETUP")
                     if self.recording_enabled and "video" in name:
                         if self.setup_recording_pipeline(pad, name):
                             return  # Recording set up successfully
-                    
-                    # Normal display mode
-                    print("DISPLAY OUTPUT MODE BEING SETUP")
 
-                    if not getattr(self, "_display_surface_cleared", False):
-                        if clear_display_surfaces():
-                            printc("🧹 Cleared display surface before viewer output", "66F")
-                        self._display_surface_cleared = True
-
-                    outsink = select_display_sink("autovideosink")
-                    print(f"Selected display sink pipeline: {outsink}")
-                    sink_base = outsink.split()[0]
-                    jetson_caps = {
-                        "nvdrmvideosink": "video/x-raw(memory:NVMM),format=NV12,pixel-aspect-ratio=1/1",
-                        "nv3dsink": "video/x-raw(memory:NVMM),format=NV12,pixel-aspect-ratio=1/1",
-                        "nvoverlaysink": "video/x-raw(memory:NVMM),format=NV12,pixel-aspect-ratio=1/1",
-                    }
-                    fb_size = get_framebuffer_resolution()
-
-                    if sink_base in {"nvoverlaysink", "nvdrmvideosink", "nv3dsink"}:
-                        named_sink = f"{sink_base} name=jetson_display_sink"
-                        outsink = outsink.replace(sink_base, named_sink, 1)
-
-                    nvvidconv_has_nvbuf = gst_element_supports_property("nvvidconv", "nvbuf-memory-type")
-                    needs_system_memory = sink_base not in jetson_caps
-
-                    def build_conversion_chain(using_hw_decoder: bool) -> str:
-                        if sink_base in jetson_caps and gst_element_available("nvvidconv"):
-                            target_caps = jetson_caps[sink_base]
-                            if fb_size and getattr(self, "stretch_display", False):
-                                target_caps += f",width=(int){fb_size[0]},height=(int){fb_size[1]}"
-                            nvvidconv_desc = "nvvidconv"
-                            if nvvidconv_has_nvbuf:
-                                nvvidconv_desc += " nvbuf-memory-type=0"
-                            return f"{nvvidconv_desc} ! " + target_caps
-                        if using_hw_decoder and gst_element_available("nvvidconv"):
-                            nvvidconv_desc = "nvvidconv"
-                            if nvvidconv_has_nvbuf:
-                                nvvidconv_desc += " nvbuf-memory-type=0"
-                            return (
-                                f"{nvvidconv_desc} ! "
-                                "video/x-raw,format=NV12 ! "
-                                "videoconvert ! video/x-raw,format=RGB"
-                            )
-                        if sink_base == "xvimagesink":
-                            # xvimagesink relies on the XVideo extension which expects YUV surfaces.
-                            # Forcing RGB caps causes negotiation to fail under GNOME/X11.
-                            return "videoconvert ! video/x-raw,format=I420"
-                        if sink_base in {"gtksink", "ximagesink"}:
-                            return "videoconvert ! video/x-raw,format=BGRx"
-                        if sink_base == "glimagesink":
-                            # glimagesink prefers RGBA in system memory before uploading to GL.
-                            return "videoconvert ! video/x-raw,format=RGBA"
-                        return "videoconvert ! video/x-raw,format=BGRx"
-                    
-                    if "VP8" in name:
-                        fallback_decoder = "vp8dec"
-                        decoder_desc, using_hw_decoder = self._get_decoder_description("VP8", fallback_decoder)
-                        if using_hw_decoder and needs_system_memory and not nvvidconv_has_nvbuf:
-                            printwarn(
-                                "Jetson hardware VP8 decoder requires nvvidconv nvbuf-memory-type support "
-                                "for desktop display sinks; falling back to software decoding."
-                            )
-                            decoder_desc = fallback_decoder
-                            using_hw_decoder = False
-                        if using_hw_decoder:
-                            decoder_name = decoder_desc.split()[0]
-                            printc(f"Using Jetson hardware decoder `{decoder_name}` for VP8", "0AF")
-                        conversion_chain = build_conversion_chain(using_hw_decoder)
-                        pipeline_desc = (
-                            "queue ! rtpvp8depay ! "
-                            f"{decoder_desc} ! "
-                            "queue max-size-buffers=0 max-size-time=0 ! "
-                            f"{conversion_chain} ! "
-                            "queue max-size-buffers=0 max-size-time=0 ! "
-                            f"{outsink}"
-                        )
-                        out = Gst.parse_bin_from_description(pipeline_desc, True)
-                    elif "H264" in name:
-                        fallback_decoder = "openh264dec"
-                        decoder_desc, using_hw_decoder = self._get_decoder_description("H264", fallback_decoder)
-                        if using_hw_decoder and needs_system_memory and not nvvidconv_has_nvbuf:
-                            printwarn(
-                                "Jetson hardware H264 decoder requires nvvidconv nvbuf-memory-type support "
-                                "for desktop display sinks; falling back to software decoding."
-                            )
-                            decoder_desc = fallback_decoder
-                            using_hw_decoder = False
-                        if using_hw_decoder:
-                            decoder_name = decoder_desc.split()[0]
-                            printc(f"Using Jetson hardware decoder `{decoder_name}` for H264", "0AF")
-                        conversion_chain = build_conversion_chain(using_hw_decoder)
-                        pipeline_desc = (
-                            "queue ! rtph264depay ! h264parse ! "
-                            f"{decoder_desc} ! "
-                            "queue max-size-buffers=0 max-size-time=0 ! "
-                            f"{conversion_chain} ! "
-                            "queue max-size-buffers=0 max-size-time=0 ! "
-                            f"{outsink}"
-                        )
-                        out = Gst.parse_bin_from_description(pipeline_desc, True)
-                    
-                    self.pipe.add(out)
-
-                    debug_display = bool(os.environ.get("RN_DEBUG_DISPLAY"))
-                    sink = None
-                    try:
-                        iterator = out.iterate_elements()
-                        elements = []
-                        while True:
-                            res, elem = iterator.next()
-                            if res == Gst.IteratorResult.OK:
-                                elements.append(elem)
-                            elif res == Gst.IteratorResult.DONE:
-                                break
-                            else:
-                                break
-                        if debug_display:
-                            print("Display bin elements (view path):")
-                            for elem in elements:
-                                factory = elem.get_factory()
-                                factory_name = factory.get_name() if factory else "unknown"
-                                print(f"  - {elem.get_name()} ({factory_name})")
-                        first_input_elem = out.get_by_name("queue1")
-                        if not first_input_elem and elements:
-                            first_input_elem = elements[-1]
-                        first_sink_pad = first_input_elem.get_static_pad("sink") if first_input_elem else None
-                        existing_sink_pad = out.get_static_pad("sink")
-                        if existing_sink_pad:
-                            out.remove_pad(existing_sink_pad)
-                        if first_sink_pad:
-                            ghost_sink_pad = Gst.GhostPad.new("sink", first_sink_pad)
-                            ghost_sink_pad.set_active(True)
-                            out.add_pad(ghost_sink_pad)
-                            sink = ghost_sink_pad
-                            if debug_display:
-                                print(f"Using ghost pad from element: {first_input_elem.get_name() if first_input_elem else 'unknown'}")
-                        else:
-                            if debug_display:
-                                print("Failed to identify input element for ghost pad; using existing sink pad")
-                    except Exception as exc:
-                        if debug_display:
-                            print(f"Failed to enumerate display bin elements: {exc}")
-
-                    if sink is None:
-                        sink = out.get_static_pad('sink')
-                    if sink is None:
-                        print("Display bin has no sink pad; cannot link incoming video pad (view path)")
-                        return
-                    out.sync_state_with_parent()
-                    incoming_caps = pad.get_current_caps()
-                    if not incoming_caps:
-                        try:
-                            incoming_caps = pad.query_caps(None)
-                        except Exception:
-                            incoming_caps = None
-                    if debug_display:
-                        if incoming_caps:
-                            print(f"Incoming video pad caps: {incoming_caps.to_string()}")
-                        else:
-                            print("Incoming video pad caps: unknown")
-                        sink_caps = sink.query_caps(None)
-                        print(f"Display bin sink caps (view path): {sink_caps.to_string() if sink_caps else 'unknown'}")
+                    remote_label = self._attach_viewer_video_stream(pad, name)
+                    if remote_label:
+                        self._set_display_mode("remote", remote_label=remote_label)
                     else:
-                        sink_caps = None
-
-                    link_result = pad.link(sink)
-                    if link_result != Gst.PadLinkReturn.OK:
-                        reason = link_result.value_nick if hasattr(link_result, "value_nick") else link_result
-                        print(f"Failed to link incoming video pad to display bin (view path): {reason}")
-                        if not debug_display:
-                            try:
-                                sink_caps = sink.query_caps(None)
-                                if sink_caps:
-                                    print(f"Display bin sink caps (view path): {sink_caps.to_string()}")
-                            except Exception:
-                                pass
-                    else:
-                        if debug_display:
-                            print("Linked incoming video pad to display bin successfully (view path)")
-                    
-                    if sink_base in {"nvoverlaysink", "nvdrmvideosink", "nv3dsink"}:
-                        jetson_sink_element = self.pipe.get_by_name("jetson_display_sink")
-                        if jetson_sink_element:
-                            sink_pad = jetson_sink_element.get_static_pad("sink")
-                            if sink_pad:
-                                if sink_base == "nvoverlaysink" and fb_size:
-                                    try:
-                                        jetson_sink_element.set_property("overlay", 1)
-                                        jetson_sink_element.set_property("overlay-x", 0)
-                                        jetson_sink_element.set_property("overlay-y", 0)
-                                        jetson_sink_element.set_property("overlay-w", fb_size[0])
-                                        jetson_sink_element.set_property("overlay-h", fb_size[1])
-                                        if hasattr(jetson_sink_element.props, "window_width"):
-                                            jetson_sink_element.set_property("window-width", fb_size[0])
-                                        if hasattr(jetson_sink_element.props, "window_height"):
-                                            jetson_sink_element.set_property("window-height", fb_size[1])
-                                    except Exception as exc:
-                                        if debug_display:
-                                            print(f"Failed to configure overlay geometry: {exc}")
-                                def _jetson_caps_probe(pad, info, _):
-                                    event = info.get_event() if info else None
-                                    if event and event.type == Gst.EventType.CAPS:
-                                        caps = event.parse_caps()
-                                        if caps:
-                                            print(f"Jetson display sink negotiated caps: {caps.to_string()}")
-                                    return Gst.PadProbeReturn.OK
-                                sink_pad.add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, _jetson_caps_probe, None)
-                                caps = sink_pad.get_current_caps()
-                                caps_str = caps.to_string() if caps else "unknown"
-                                print(f"Jetson display sink caps: {caps_str}")
-                            if 'GLib' in globals():
-                                _stats_counter = {"count": 0}
-                                def _log_sink_stats():
-                                    try:
-                                        stats = jetson_sink_element.get_property("stats")
-                                        if stats:
-                                            print(f"Jetson display sink stats: {stats.to_string()}")
-                                        else:
-                                            print("Jetson display sink stats: unavailable")
-                                    except Exception as exc:
-                                        print(f"Failed to query jetson display sink stats: {exc}")
-                                        return False
-                                    _stats_counter["count"] += 1
-                                    return _stats_counter["count"] < 12
-                                GLib.timeout_add_seconds(5, _log_sink_stats)
+                        self._set_display_mode("connecting")
+                    return
 
                 elif self.fdsink:
                     print("FD SINK OUT")
@@ -3832,6 +4205,11 @@ class WebRTCClient:
             if state == 2: # connected
                 printc("\n🎬 Peer connection established!", "0F0")
                 printc("   └─ Viewer connected successfully\n", "0F0")
+                if self.view:
+                    try:
+                        self._set_display_mode("connecting")
+                    except Exception as exc:
+                        printwarn(f"Failed to update display state: {exc}")
                 promise = Gst.Promise.new_with_change_func(on_stats, client['webrtc'], None) # check stats
                 client['webrtc'].emit('get-stats', None, promise)
 
@@ -3847,9 +4225,19 @@ class WebRTCClient:
 
             elif state >= 4: # closed/failed
                 printc("\n🚫 Peer disconnected", "F77")
+                if self.view:
+                    try:
+                        self._set_display_mode("idle")
+                    except Exception as exc:
+                        printwarn(f"Failed to update display state: {exc}")
                 self.stop_pipeline(client['UUID'])
             elif state == 1:
                 printc("🔄 Connecting to peer...", "77F")
+                if self.view:
+                    try:
+                        self._set_display_mode("connecting")
+                    except Exception as exc:
+                        printwarn(f"Failed to update display state: {exc}")
         def print_trans(p1,p2):
             print("trans:  {}".format(client['webrtc'].get_property(p2.name)))
 
@@ -4343,6 +4731,12 @@ class WebRTCClient:
             except Exception as E:
                 pass
             self.pipe.add(client['webrtc'])
+            if self.view:
+                try:
+                    self._ensure_display_chain()
+                    self._set_display_mode("idle")
+                except Exception as exc:
+                    printwarn(f"Display initialization failed: {exc}")
            
             if self.vp8:     
                 pass
@@ -4414,6 +4808,7 @@ class WebRTCClient:
             # For room recording, we need to be able to map webrtc back to client
             # Use a lambda to pass the client UUID
             client['webrtc'].connect('pad-added', lambda webrtc, pad: self.on_incoming_stream(webrtc, pad))
+            client['webrtc'].connect('pad-removed', self.on_remote_pad_removed)
             client['webrtc'].connect('on-ice-candidate', send_ice_remote_candidate_message)
             client['webrtc'].connect('on-data-channel', on_data_channel)
         else:
@@ -4788,6 +5183,8 @@ class WebRTCClient:
             elif len(self.clients)==0:
                 # Ensure pipeline is properly cleaned up when no clients remain
                 try:
+                    self._reset_display_chain_state()
+                    self._display_surface_cleared = False
                     self.pipe.set_state(Gst.State.PAUSED)
                     self.pipe.get_state(Gst.SECOND)  # 1 second timeout
                     self.pipe.set_state(Gst.State.NULL)
@@ -7109,6 +7506,8 @@ async def main():
     parser.add_argument('--record',  type=str, help='Specify a stream ID to record to disk. System will not publish a stream when enabled.')
     parser.add_argument('--view',  type=str, help='Specify a stream ID to play out to the local display/audio.')
     parser.add_argument('--stretch-display', action='store_true', help='Scale viewer output to fill the detected framebuffer/display when possible.')
+    parser.add_argument('--splashscreen-idle', type=str, default=None, help='Path to an image displayed when the viewer is idle or no stream is active.')
+    parser.add_argument('--splashscreen-connecting', type=str, default=None, help='Path to an image displayed while the viewer is connecting to a stream.')
     parser.add_argument('--save', action='store_true', help='Save a copy of the outbound stream to disk. Publish Live + Store the video.')
     parser.add_argument('--record-room', action='store_true', help='Record all streams in a room to separate files. Requires --room parameter.')
     parser.add_argument('--record-streams', type=str, help='Comma-separated list of stream IDs to record from a room. Optional filter for --record-room.')
@@ -7177,6 +7576,17 @@ async def main():
                 print(f"Error loading config file: {e}")
         else:
             print(f"Config file not found: {config_path}")
+    
+    # Normalize splash screen paths if provided
+    for attr in ('splashscreen_idle', 'splashscreen_connecting'):
+        path = getattr(args, attr, None)
+        if path:
+            expanded = os.path.abspath(os.path.expanduser(path))
+            if not os.path.isfile(expanded):
+                printc(f"Warning: Splash screen image not found: {expanded}", "FF0")
+                setattr(args, attr, None)
+            else:
+                setattr(args, attr, expanded)
     
     # Display header
     printc("\n╔═══════════════════════════════════════════════╗", "0FF")

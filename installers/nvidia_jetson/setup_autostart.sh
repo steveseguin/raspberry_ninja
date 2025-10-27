@@ -21,6 +21,7 @@ fi
 
 chvt_path="$(command -v chvt || true)"
 setterm_path="$(command -v setterm || true)"
+stty_path="$(command -v stty || true)"
 
 if [[ -z "${chvt_path}" ]]; then
     echo "Could not locate 'chvt'. Aborting."
@@ -31,6 +32,15 @@ if [[ -z "${setterm_path}" ]]; then
     echo "Could not locate 'setterm'. Aborting."
     exit 1
 fi
+
+if [[ -z "${stty_path}" ]]; then
+    echo "Could not locate 'stty'. Aborting."
+    exit 1
+fi
+
+escape_for_single_quotes() {
+    printf "%s" "$1" | sed "s/'/'\"'\"'/g"
+}
 
 playback_tty="/dev/tty4"
 playback_tty_name="${playback_tty#/dev/}"
@@ -62,6 +72,32 @@ start_command="${start_command:-$default_cmd}"
 if [[ -z "${start_command}" ]]; then
     echo "A command is required. Aborting."
     exit 1
+fi
+
+default_splash_color="black"
+read -rp "Splash background color (named or #RRGGBB) [${default_splash_color}]: " splash_color_input
+splash_color_input="${splash_color_input:-$default_splash_color}"
+splash_color_lower="$(echo "${splash_color_input}" | tr '[:upper:]' '[:lower:]')"
+
+palette_hex=""
+splash_color_summary="${splash_color_input}"
+
+if [[ "${splash_color_lower}" =~ ^#?[0-9a-f]{6}$ ]]; then
+    splash_hex="${splash_color_lower#\#}"
+    splash_hex="$(echo "${splash_hex}" | tr '[:lower:]' '[:upper:]')"
+    palette_hex="${splash_hex}"
+    setterm_background="black"
+    splash_color_summary="#${splash_hex}"
+else
+    case "${splash_color_lower}" in
+        black|blue|cyan|green|magenta|red|white|yellow)
+            setterm_background="${splash_color_lower}"
+            ;;
+        *)
+            echo "Unsupported splash color '${splash_color_input}'. Use one of: black, blue, cyan, green, magenta, red, white, yellow, or #RRGGBB." >&2
+            exit 1
+            ;;
+    esac
 fi
 
 read -rp "Keep the desktop GUI running? [y/N]: " keep_gui
@@ -206,6 +242,20 @@ else
     blanking_status="Pending"
 fi
 
+read -rp "Hide cursor and lock keyboard input on ${playback_tty}? This makes the local console unresponsive until the service stops. [y/N]: " disable_local_input
+disable_local_input="$(echo "${disable_local_input:-N}" | tr '[:upper:]' '[:lower:]')"
+
+setterm_cursor_flag=""
+input_lock_summary="disabled (local keyboard active)"
+restore_shell_commands=()
+
+if [[ "${disable_local_input}" == "y" ]]; then
+    setterm_cursor_flag="--cursor off"
+    input_lock_summary="enabled (requires remote access)"
+    restore_shell_commands+=("${stty_path} -F ${playback_tty} sane")
+    restore_shell_commands+=("TERM=linux ${setterm_path} --term linux --cursor on >${playback_tty}")
+fi
+
 service_name="raspberry-ninja"
 service_path="/etc/systemd/system/${service_name}.service"
 
@@ -218,8 +268,23 @@ if [[ -f "${service_path}" ]]; then
     fi
 fi
 
-escaped_cmd=$(printf "%s" "${start_command}" | sed "s/'/'\"'\"'/g")
+pre_shell_commands=()
+if [[ "${disable_local_input}" == "y" ]]; then
+    pre_shell_commands+=("${stty_path} -F ${playback_tty} -echo -icanon")
+fi
 
+setterm_args="--term linux --clear all --foreground ${setterm_background} --background ${setterm_background}"
+if [[ -n "${setterm_cursor_flag}" ]]; then
+    setterm_args+=" ${setterm_cursor_flag}"
+fi
+
+if [[ -n "${palette_hex}" ]]; then
+    pre_shell_commands+=("printf '\\033]P0${palette_hex}\\033\\\\' >${playback_tty}")
+fi
+
+pre_shell_commands+=("TERM=linux ${setterm_path} ${setterm_args} >${playback_tty}")
+
+escaped_start_cmd="$(escape_for_single_quotes "${start_command}")"
 {
     echo "[Unit]"
     echo "Description=Raspberry Ninja Autostart (Jetson)"
@@ -242,8 +307,19 @@ escaped_cmd=$(printf "%s" "${start_command}" | sed "s/'/'\"'\"'/g")
     echo "StandardOutput=journal"
     echo "StandardError=journal"
     echo "ExecStartPre=${chvt_path} ${playback_vt_number}"
-    echo "ExecStartPre=/bin/sh -c 'TERM=linux ${setterm_path} --term linux --clear all --foreground black --background black --cursor off >${playback_tty}'"
-    echo "ExecStart=/bin/bash -lc '${escaped_cmd}'"
+    if [[ "${#pre_shell_commands[@]}" -gt 0 ]]; then
+        for cmd in "${pre_shell_commands[@]}"; do
+            escaped_pre="$(escape_for_single_quotes "${cmd}")"
+            echo "ExecStartPre=/bin/sh -c '${escaped_pre}'"
+        done
+    fi
+    if [[ "${#restore_shell_commands[@]}" -gt 0 ]]; then
+        for cmd in "${restore_shell_commands[@]}"; do
+            escaped_restore="$(escape_for_single_quotes "${cmd}")"
+            echo "ExecStopPost=/bin/sh -c '${escaped_restore}'"
+        done
+    fi
+    echo "ExecStart=/bin/bash -lc '${escaped_start_cmd}'"
     echo
     echo "[Install]"
     echo "WantedBy=multi-user.target"
@@ -294,6 +370,8 @@ Configuration complete!
 - Systemd service : ${service_path}
 - Runs as user    : ${service_user}
 - Launch command  : ${start_command}
+- Splash color    : ${splash_color_summary}
+- Input lock      : ${input_lock_summary}
 - Playback console: ${playback_tty} (${playback_console_status})
 - Desktop status  : ${gui_status}
 - Screen blanking : ${blanking_status}
