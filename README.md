@@ -356,6 +356,10 @@ options:
   --pipeline PIPELINE   A full custom pipeline
   --record RECORD       Specify a stream ID to record to disk. System will not publish a stream when enabled.
   --view VIEW           Specify a stream ID to play out to the local display/audio.
+  --splashscreen-idle PATH
+                        Provide a still image that is shown whenever the remote video is muted or disconnected (viewer mode).
+  --splashscreen-connecting PATH
+                        Optional splash image displayed while the viewer is waiting for the remote stream to start.
   --save                Save a copy of the outbound stream to disk. Publish Live + Store the video.
   --record-room         Record all streams in a room to separate files. Requires --room parameter. 
                         Audio recording is enabled by default; use --noaudio to disable.
@@ -388,6 +392,13 @@ options:
   --timestamp           Add a timestamp to the video output, if possible
   --clockstamp          Add a clock overlay to the video output, if possible
 ```
+
+##### Viewer splash screens & auto-restart
+
+- Running `python3 publish.py --view <stream-id>` now keeps the HDMI output alive while waiting for the publisher to reconnect. The idle splash stays visible instead of dropping to black.
+- Use `--splashscreen-idle /path/to/image.jpg` to provide a 16:9 still that is shown whenever the remote video is muted or hangs up. If not supplied the viewer falls back to a built-in blank frame.
+- Optionally supply `--splashscreen-connecting /path/to/image.jpg` for a different image while the WebRTC session negotiates.
+- The viewer automatically re-requests the stream after a disconnect. You can set `RN_DEBUG_DISPLAY=1` while testing to see the splash state transitions and retry logs.
 
 ##### Changing video input sources
 
@@ -1012,6 +1023,7 @@ curl -X POST -F "record=meeting_2024_01_22" -F "process_pid=12345" -F "language=
 ## Recent Changes
 
 ### January 2025
+- **Viewer splash pipeline & auto-reconnect**: Viewer mode now keeps the HDMI sink alive when a publisher disconnects, continuing to show the idle splash instead of a black frame. Customize the visuals with the new `--splashscreen-idle` and `--splashscreen-connecting` options; the viewer automatically re-requests the stream after graceful disconnects.
 - **NDI Direct Mode Now Default**: Changed `--room-ndi` to use direct mode by default, creating separate audio/video NDI streams to avoid combiner freezing issues. Added `--ndi-combine` flag for users who need the problematic combiner mode.
 - **Fixed NDI Freezing Issue**: Implemented workaround for ndisinkcombiner freezing after ~1500 buffers by defaulting to direct NDI mode with separate streams.
 - **HLS Recording Support**: Added HLS (HTTP Live Streaming) recording with automatic VP8 to H.264 transcoding. Creates segmented TS files and M3U8 playlists for easy HTTP streaming.
