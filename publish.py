@@ -5320,6 +5320,7 @@ class WebRTCClient:
             self._viewer_restart_enabled = False
             self._viewer_restart_pending = False
             self._cancel_viewer_restart_timer()
+        restart_display = False
         with self.pipeline_lock:
             client = self.clients.get(UUID)
             if not client:
@@ -5392,6 +5393,16 @@ class WebRTCClient:
             # Always remove from clients dict, even if cleanup failed
             self.clients.pop(UUID, None)
 
+            if should_restart and len(self.clients) == 0:
+                restart_display = True
+                if self.display_remote_map:
+                    for label in list(self.display_remote_map.values()):
+                        try:
+                            self._release_display_source(label)
+                        except Exception:
+                            pass
+                    self.display_remote_map.clear()
+
         if len(self.clients)==0:
             enableLEDs(0.1)
             if should_restart and not self._viewer_restart_pending:
@@ -5403,24 +5414,31 @@ class WebRTCClient:
             if self.save_file:
                 pass
             elif len(self.clients)==0:
-                # Ensure pipeline is properly cleaned up when no clients remain
-                try:
-                    self._reset_display_chain_state()
-                    self._display_surface_cleared = False
-                    self.pipe.set_state(Gst.State.PAUSED)
-                    self.pipe.get_state(Gst.SECOND)  # 1 second timeout
-                    self.pipe.set_state(Gst.State.NULL)
-                    self.pipe.get_state(Gst.SECOND)  # 1 second timeout
-                except Exception as e:
-                    printwarn(f"Error setting pipeline to NULL: {e}")
-                    # Force cleanup even if state change failed
+                if restart_display:
                     try:
+                        self._set_display_mode("idle")
+                        self.pipe.set_state(Gst.State.PLAYING)
+                    except Exception as e:
+                        printwarn(f"Failed to keep display idle after disconnect: {e}")
+                else:
+                    # Ensure pipeline is properly cleaned up when no clients remain
+                    try:
+                        self._reset_display_chain_state()
+                        self._display_surface_cleared = False
+                        self.pipe.set_state(Gst.State.PAUSED)
+                        self.pipe.get_state(Gst.SECOND)  # 1 second timeout
                         self.pipe.set_state(Gst.State.NULL)
-                    except:
-                        pass
-                finally:
-                    # Always clear the pipeline reference to prevent reuse
-                    self.pipe = None
+                        self.pipe.get_state(Gst.SECOND)  # 1 second timeout
+                    except Exception as e:
+                        printwarn(f"Error setting pipeline to NULL: {e}")
+                        # Force cleanup even if state change failed
+                        try:
+                            self.pipe.set_state(Gst.State.NULL)
+                        except:
+                            pass
+                    finally:
+                        # Always clear the pipeline reference to prevent reuse
+                        self.pipe = None
 
     async def _add_room_stream(self, stream_id):
         """Add a stream for room recording"""
