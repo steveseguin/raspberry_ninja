@@ -66,6 +66,14 @@ except ImportError:
     
 #os.environ['GST_DEBUG'] = '3,ndisink:7,videorate:5,videoscale:5,videoconvert:5'
 
+def env_flag(name: str) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return False
+    return value.strip().lower() not in ("0", "false", "no", "off", "")
+
+RN_DISABLE_HW_DECODER = env_flag("RN_DISABLE_HW_DECODER")
+
 def generate_unique_ndi_name(base_name):
     return f"{base_name}_{int(time.time())}"
     
@@ -441,12 +449,15 @@ def get_framebuffer_resolution() -> Optional[Tuple[int, int]]:
     return None
 
 
-def select_preferred_decoder(codec: str, fallback: str) -> Tuple[str, Dict[str, Any], bool]:
+def select_preferred_decoder(codec: str, fallback: str, disable_hw: bool = False) -> Tuple[str, Dict[str, Any], bool]:
     """
     Determine the most appropriate decoder element for the given codec.
 
     Returns a tuple of (factory_name, properties, using_hardware).
     """
+    if disable_hw or RN_DISABLE_HW_DECODER:
+        return fallback, {}, False
+
     codec_key = codec.upper()
 
     if is_jetson_device() and gst_element_available("nvv4l2decoder"):
@@ -2336,8 +2347,19 @@ class WebRTCClient:
         self._viewer_restart_enabled = True
         self._viewer_restart_pending = False
         self._viewer_restart_timer = None
-        self._viewer_restart_interval = 5.0
+        self._viewer_restart_attempts = 0
+        self._viewer_last_play_request = 0.0
+        self._viewer_last_disconnect = 0.0
+        self._viewer_restart_short_delay = 30.0
+        self._viewer_restart_long_delay = 180.0
         self._viewer_pending_idle = False
+        flag_disable_hw = getattr(params, 'disable_hw_decoder', False)
+        self.disable_hw_decoder = bool(flag_disable_hw or RN_DISABLE_HW_DECODER)
+        if self.disable_hw_decoder:
+            if flag_disable_hw:
+                printc("Hardware decoder disabled by --disable-hw-decoder", "FF0")
+            elif RN_DISABLE_HW_DECODER:
+                printc("Hardware decoder disabled via RN_DISABLE_HW_DECODER", "FF0")
         
         # ICE/TURN configuration
         self.stun_server = getattr(params, 'stun_server', None)
@@ -2416,7 +2438,8 @@ class WebRTCClient:
 
     def _create_decoder_element(self, codec: str, fallback: str, name: str) -> Tuple[Optional[Gst.Element], bool]:
         """Create a decoder element preferring Jetson hardware when available."""
-        factory_name, properties, using_hw = select_preferred_decoder(codec, fallback)
+        disable_hw = getattr(self, "disable_hw_decoder", False)
+        factory_name, properties, using_hw = select_preferred_decoder(codec, fallback, disable_hw=disable_hw)
         element_name = name
         if using_hw and factory_name != fallback:
             element_name = f"{name}_hw"
@@ -2444,12 +2467,15 @@ class WebRTCClient:
 
         if using_hw:
             printc(f"Using Jetson hardware decoder `{factory_name}` for {codec}", "0AF")
+        elif disable_hw and factory_name == fallback:
+            printc(f"Hardware decoder disabled; using `{fallback}` for {codec}", "FF0")
 
         return decoder, using_hw
 
     def _get_decoder_description(self, codec: str, fallback: str) -> Tuple[str, bool]:
         """Return pipeline description fragment for the preferred decoder."""
-        factory_name, properties, using_hw = select_preferred_decoder(codec, fallback)
+        disable_hw = getattr(self, "disable_hw_decoder", False)
+        factory_name, properties, using_hw = select_preferred_decoder(codec, fallback, disable_hw=disable_hw)
         parts = [factory_name]
 
         for key, value in properties.items():
@@ -3400,7 +3426,7 @@ class WebRTCClient:
             self._set_display_mode("remote", remote_label=remote_label)
 
     def _request_view_stream_restart(self):
-        """Reissue a play request for the active viewer stream."""
+        """Reissue a play request for the active viewer stream with controlled backoff."""
         if not self.view:
             return
         base_stream = getattr(self, "streamin", None)
@@ -3410,20 +3436,50 @@ class WebRTCClient:
             return
         if not getattr(self, "_viewer_restart_enabled", True):
             return
-        if getattr(self, "_viewer_restart_pending", False):
-            if bool(os.environ.get("RN_DEBUG_DISPLAY")):
-                print("[display] Viewer restart already pending; skipping duplicate request")
+
+        last_disconnect = getattr(self, "_viewer_last_disconnect", 0.0)
+        if not last_disconnect:
+            # Only send play requests if we've observed a disconnect event
             return
+
+        now = time.monotonic()
+        short_delay = float(getattr(self, "_viewer_restart_short_delay", 30.0))
+        long_delay = float(getattr(self, "_viewer_restart_long_delay", 180.0))
+        attempts = int(getattr(self, "_viewer_restart_attempts", 0))
+        last_request = float(getattr(self, "_viewer_last_play_request", 0.0))
+
+        if attempts == 0:
+            min_gap = 0.0
+        elif attempts == 1:
+            min_gap = short_delay
+        else:
+            min_gap = long_delay
+
+        elapsed = (now - last_request) if last_request else float("inf")
+        if elapsed < min_gap:
+            remaining = max(1.0, min_gap - elapsed)
+            if bool(os.environ.get("RN_DEBUG_DISPLAY")):
+                print(f"[display] Viewer restart throttled; retrying play in {remaining:.1f}s")
+            self._schedule_viewer_restart_retry(remaining)
+            return
+
         stream_id = f"{base_stream}{self.hashcode or ''}"
-        self._viewer_restart_pending = True
         try:
             self.sendMessage({"request": "play", "streamID": stream_id})
             if bool(os.environ.get("RN_DEBUG_DISPLAY")):
-                print(f"[display] Re-requested stream playback for '{stream_id}'")
-            self._schedule_viewer_restart_retry()
+                print(f"[display] Re-requested stream playback for '{stream_id}' (attempt {attempts + 1})")
         except Exception as exc:
             printwarn(f"Failed to re-request viewer stream '{stream_id}': {exc}")
-            self._viewer_restart_pending = False
+            # If we fail to issue the request, retry later using the long delay backoff.
+            self._schedule_viewer_restart_retry(long_delay)
+            return
+
+        self._viewer_last_play_request = now
+        self._viewer_restart_attempts = attempts + 1
+
+        # Schedule the next retry. After the first retry we fall back to a long-period cadence.
+        next_delay = short_delay if self._viewer_restart_attempts == 1 else long_delay
+        self._schedule_viewer_restart_retry(next_delay)
 
     def _cancel_viewer_restart_timer(self):
         timer = getattr(self, "_viewer_restart_timer", None)
@@ -3433,35 +3489,40 @@ class WebRTCClient:
             except Exception:
                 pass
         self._viewer_restart_timer = None
+        self._viewer_restart_pending = False
 
     def _schedule_viewer_restart_retry(self, delay: Optional[float] = None):
-        if delay is None:
-            delay = max(1.0, float(getattr(self, "_viewer_restart_interval", 5.0)))
         if getattr(self, "_shutdown_requested", False):
             return
         if not getattr(self, "_viewer_restart_enabled", True):
             return
-        if not getattr(self, "_viewer_restart_pending", False):
+        if not self.view:
             return
+        if delay is None:
+            delay = float(getattr(self, "_viewer_restart_long_delay", 180.0))
+        try:
+            delay = float(delay)
+        except (TypeError, ValueError):
+            delay = float(getattr(self, "_viewer_restart_long_delay", 180.0))
+        delay = max(1.0, delay)
+
         self._cancel_viewer_restart_timer()
 
-        def _retry():
+        def _retry(scheduled_delay=delay):
             self._viewer_restart_timer = None
             if getattr(self, "_shutdown_requested", False):
                 return
             if not getattr(self, "_viewer_restart_enabled", True):
                 return
-            if not getattr(self, "_viewer_restart_pending", False):
-                return
-            if bool(os.environ.get("RN_DEBUG_DISPLAY")):
-                print("[display] Viewer restart still pending; retrying play request")
-            # Allow the retry to proceed by clearing the flag temporarily
             self._viewer_restart_pending = False
+            if bool(os.environ.get("RN_DEBUG_DISPLAY")):
+                print(f"[display] Viewer restart timer fired after {scheduled_delay:.1f}s; retrying play request")
             self._request_view_stream_restart()
 
         timer = threading.Timer(delay, _retry)
         timer.daemon = True
         self._viewer_restart_timer = timer
+        self._viewer_restart_pending = True
         timer.start()
 
     def _release_display_source(self, label: str):
@@ -3615,7 +3676,12 @@ class WebRTCClient:
     def on_remote_pad_removed(self, webrtc, pad: Gst.Pad):
         """Handle removal of remote pads for viewer mode."""
         pad_name = pad.get_name()
-        label = self.display_remote_map.pop(pad_name, None)
+        remote_map = getattr(self, "display_remote_map", None)
+        if remote_map is None:
+            print(f"[display] Remote pad removed but display map missing: {pad_name}")
+            return
+
+        label = remote_map.pop(pad_name, None)
         print(f"[display] Remote pad removed: {pad_name} -> {label}")
         self._viewer_pending_idle = False
         if not label:
@@ -3627,8 +3693,8 @@ class WebRTCClient:
             return
         if not self.display_selector:
             return
-        if self.display_remote_map:
-            next_label = next(iter(self.display_remote_map.values()))
+        if remote_map:
+            next_label = next(iter(remote_map.values()))
             self._set_display_mode("remote", remote_label=next_label)
         else:
             self._set_display_mode("idle")
@@ -4386,8 +4452,11 @@ class WebRTCClient:
             print("peer not yet created; error")
             return
         if self.view:
-            self._viewer_restart_pending = False
             self._cancel_viewer_restart_timer()
+            self._viewer_restart_pending = False
+            self._viewer_restart_attempts = 0
+            self._viewer_last_play_request = 0.0
+            self._viewer_last_disconnect = 0.0
 
         def on_offer_created(promise, _, __):
             # Offer created, sending to peer
@@ -5327,9 +5396,19 @@ class WebRTCClient:
             assert(msg['type'] == 'offer')
             sdp = msg['sdp']
             
-            # If HLS mode, prefer H264 codec in SDP
-            if self.use_hls:
-                sdp = self.prefer_codec(sdp, 'h264')
+            # Reorder codecs in the remote offer to match local preferences
+            preferred_codec = None
+            if self.vp8:
+                preferred_codec = 'vp8'
+            elif self.av1:
+                preferred_codec = 'av1'
+            elif self.h264:
+                preferred_codec = 'h264'
+            elif self.use_hls:
+                preferred_codec = 'h264'
+
+            if preferred_codec:
+                sdp = self.prefer_codec(sdp, preferred_codec)
             
             res, sdpmsg = GstSdp.SDPMessage.new()
             GstSdp.sdp_message_parse_buffer(bytes(sdp.encode()), sdpmsg)
@@ -5408,6 +5487,9 @@ class WebRTCClient:
             self._viewer_restart_enabled = False
             self._viewer_restart_pending = False
             self._cancel_viewer_restart_timer()
+            self._viewer_restart_attempts = 0
+            self._viewer_last_play_request = 0.0
+            self._viewer_last_disconnect = 0.0
         restart_display = False
         with self.pipeline_lock:
             client = self.clients.get(UUID)
@@ -5493,10 +5575,13 @@ class WebRTCClient:
 
         if len(self.clients)==0:
             enableLEDs(0.1)
-            if should_restart and not self._viewer_restart_pending:
+            if should_restart:
+                self._viewer_last_disconnect = time.monotonic()
+                self._viewer_restart_attempts = 0
+                self._viewer_last_play_request = 0.0
+                self._cancel_viewer_restart_timer()
+                self._viewer_restart_pending = False
                 self._request_view_stream_restart()
-            elif should_restart:
-                self._schedule_viewer_restart_retry()
 
         if self.pipe:
             if self.save_file:
@@ -7839,6 +7924,7 @@ async def main():
     parser.add_argument('--stretch-display', action='store_true', help='Scale viewer output to fill the detected framebuffer/display when possible.')
     parser.add_argument('--splashscreen-idle', type=str, default=None, help='Path to an image displayed when the viewer is idle or no stream is active.')
     parser.add_argument('--splashscreen-connecting', type=str, default=None, help='Path to an image displayed while the viewer is connecting to a stream.')
+    parser.add_argument('--disable-hw-decoder', action='store_true', help='Force software decoding for incoming streams even if hardware decoders are available.')
     parser.add_argument('--save', action='store_true', help='Save a copy of the outbound stream to disk. Publish Live + Store the video.')
     parser.add_argument('--record-room', action='store_true', help='Record all streams in a room to separate files. Requires --room parameter.')
     parser.add_argument('--record-streams', type=str, help='Comma-separated list of stream IDs to record from a room. Optional filter for --record-room.')
@@ -8972,7 +9058,35 @@ async def main():
     
     # Setup signal handlers for graceful shutdown
     shutdown_event = asyncio.Event()
-    
+    loop = c.event_loop
+
+    async def _close_connection():
+        conn = c.conn
+        if not conn:
+            return
+        try:
+            await conn.close()
+        except Exception as exc:
+            printwarn(f"Error closing websocket: {exc}")
+        finally:
+            if c.conn is conn:
+                c.conn = None
+
+    def _schedule_shutdown():
+        if not c._shutdown_requested:
+            c._shutdown_requested = True
+
+        if loop and loop.is_running():
+            loop.call_soon_threadsafe(shutdown_event.set)
+
+            if c.conn:
+                def _async_close():
+                    if c.conn:
+                        asyncio.create_task(_close_connection())
+                loop.call_soon_threadsafe(_async_close)
+        else:
+            shutdown_event.set()
+
     # Track if we're already shutting down
     shutdown_count = [0]
     
@@ -8980,10 +9094,7 @@ async def main():
         shutdown_count[0] += 1
         if shutdown_count[0] == 1:
             printc("\n🛑 Received interrupt signal, shutting down gracefully...", "F70")
-            c._shutdown_requested = True
-            # Force close the websocket to break out of recv()
-            if c.conn:
-                asyncio.create_task(c.conn.close())
+            _schedule_shutdown()
         elif shutdown_count[0] == 2:
             printc("\n⚠️  Second interrupt, forcing shutdown...", "F00")
             os._exit(1)
