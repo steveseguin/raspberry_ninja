@@ -2337,6 +2337,7 @@ class WebRTCClient:
         self._viewer_restart_pending = False
         self._viewer_restart_timer = None
         self._viewer_restart_interval = 5.0
+        self._viewer_pending_idle = False
         
         # ICE/TURN configuration
         self.stun_server = getattr(params, 'stun_server', None)
@@ -2580,6 +2581,9 @@ class WebRTCClient:
 
     async def connect(self):
         printc("🔌 Connecting to handshake server...", "0FF")
+
+        if self.view:
+            self._prime_viewer_display()
         
         # Use hostname if server is not specified
         server_url = self.server if self.server else self.hostname
@@ -2863,6 +2867,58 @@ class WebRTCClient:
         self._display_direct_mode = False
         self._display_chain_unavailable = False
         self._display_chain_unavailable_reason = None
+        self._viewer_pending_idle = False
+
+    def _ensure_main_pipeline(self, log: bool = True) -> bool:
+        """Ensure the primary Gst.Pipeline exists. Returns True if a new pipeline was created."""
+        if self.pipe:
+            return False
+
+        pipeline_desc = getattr(self, "pipeline", "")
+        try:
+            if self.streamin:
+                self.pipe = Gst.Pipeline.new("decode-pipeline")
+            elif isinstance(pipeline_desc, str) and len(pipeline_desc) > 1:
+                if log:
+                    print(pipeline_desc)
+                self.pipe = Gst.parse_launch(pipeline_desc)
+            else:
+                self.pipe = Gst.Pipeline.new("data-only-pipeline")
+        except Exception as exc:
+            printwarn(f"Failed to initialize base pipeline: {exc}")
+            self.pipe = None
+            return False
+
+        if self.pipe and log:
+            print(self.pipe)
+        return bool(self.pipe)
+
+    def _prime_viewer_display(self):
+        """Bring up the idle splash as soon as the viewer starts."""
+        if not self.view:
+            return
+
+        newly_created = self._ensure_main_pipeline(log=False)
+        if not self.pipe:
+            return
+
+        try:
+            self._ensure_display_chain()
+            if not self.display_remote_map and self.display_state != "idle":
+                self._set_display_mode("idle")
+        except Exception as exc:
+            printwarn(f"Failed to prepare viewer display: {exc}")
+
+        try:
+            state = self.pipe.get_state(0)[1]
+        except Exception:
+            state = None
+
+        if state not in (Gst.State.PLAYING, Gst.State.PAUSED):
+            try:
+                self.pipe.set_state(Gst.State.PLAYING)
+            except Exception as exc:
+                printwarn(f"Failed to start viewer pipeline for splash: {exc}")
 
     def _ensure_display_chain(self):
         """Ensure viewer display selector and sink are ready."""
@@ -3204,10 +3260,13 @@ class WebRTCClient:
         self, path: str, label: str, conversion_chain: Optional[str] = None
     ) -> Optional[Gst.Bin]:
         """Create a reusable bin that displays a still image."""
-        if not os.path.isfile(path):
-            printwarn(f"Splash image not found for {label}: {path}")
+        original_path = path
+        resolved_path = os.path.abspath(os.path.expanduser(path))
+        if not os.path.isfile(resolved_path):
+            printwarn(f"Splash image not found for {label}: {original_path} (resolved: {resolved_path})")
             return None
 
+        path = resolved_path
         escaped = path.replace("\\", "\\\\").replace('"', '\\"')
         cpu_caps = "video/x-raw,format=BGRx,framerate=30/1"
         display_config = getattr(self, "_display_chain_config", None)
@@ -3222,8 +3281,25 @@ class WebRTCClient:
 
         decoder_chain = "decodebin"
         lowered = path.lower()
-        if lowered.endswith((".jpg", ".jpeg", ".jpe")):
-            decoder_chain = "jpegdec"
+        decoder_candidates = [
+            ((".jpg", ".jpeg", ".jpe"), "jpegdec"),
+            ((".png",), "pngdec"),
+            ((".bmp", ".dib"), "bmpdec"),
+            ((".gif",), "gifdec"),
+            ((".tif", ".tiff"), "tiffdec"),
+            ((".webp",), "webpdec"),
+        ]
+        for suffixes, decoder_name in decoder_candidates:
+            if lowered.endswith(suffixes):
+                if gst_element_available(decoder_name):
+                    decoder_chain = decoder_name
+                else:
+                    if bool(os.environ.get("RN_DEBUG_DISPLAY")):
+                        printwarn(
+                            f"[display] Splash decoder `{decoder_name}` unavailable for {label}; "
+                            "falling back to decodebin"
+                        )
+                break
 
         parts = [
             f'filesrc location="{escaped}"',
@@ -3247,7 +3323,7 @@ class WebRTCClient:
             bin_obj.set_name(f"viewer_{label}_splash")
             return bin_obj
         except Exception as exc:
-            printwarn(f"Failed to build splash pipeline for {label}: {exc}")
+            printwarn(f"Failed to build splash pipeline for {label} ({path}): {exc}")
             return None
 
     def _activate_display_source(self, label: str) -> bool:
@@ -3525,6 +3601,12 @@ class WebRTCClient:
                 pass
             return None
 
+        if getattr(self, "_viewer_pending_idle", False):
+            if debug_display:
+                print("[display] Applying deferred idle splash after remote attachment")
+            self._set_display_mode("idle")
+            self._viewer_pending_idle = False
+
         if debug_display:
             print("Linked incoming video pad to display selector (viewer path)")
 
@@ -3535,6 +3617,7 @@ class WebRTCClient:
         pad_name = pad.get_name()
         label = self.display_remote_map.pop(pad_name, None)
         print(f"[display] Remote pad removed: {pad_name} -> {label}")
+        self._viewer_pending_idle = False
         if not label:
             return
 
@@ -4545,8 +4628,15 @@ class WebRTCClient:
                             f"[display] Data channel `video` flag: raw={msg['video']!r} -> enabled={video_enabled}"
                         )
                     if video_enabled is False:
-                        self._set_display_mode("idle")
-                    else:
+                        if self.display_remote_map:
+                            self._viewer_pending_idle = False
+                            self._set_display_mode("idle")
+                        else:
+                            self._viewer_pending_idle = True
+                            if debug_display:
+                                print("[display] Idle requested before remote video attached; deferring")
+                    elif video_enabled is True:
+                        self._viewer_pending_idle = False
                         self._resume_remote_display()
                 else:
                     video_muted = self._coerce_message_flag(msg['videoMuted'])
@@ -4555,8 +4645,15 @@ class WebRTCClient:
                             f"[display] Data channel `videoMuted` flag: raw={msg['videoMuted']!r} -> muted={video_muted}"
                         )
                     if video_muted:
-                        self._set_display_mode("idle")
-                    else:
+                        if self.display_remote_map:
+                            self._viewer_pending_idle = False
+                            self._set_display_mode("idle")
+                        else:
+                            self._viewer_pending_idle = True
+                            if debug_display:
+                                print("[display] Video muted before remote video attached; deferring")
+                    elif video_muted is False:
+                        self._viewer_pending_idle = False
                         self._resume_remote_display()
             elif 'description' in msg:
                 printc("📥 Receiving connection details...", "77F")
@@ -4874,20 +4971,11 @@ class WebRTCClient:
         started = True
         if not self.pipe:
             printc("   └─ Loading pipeline configuration...", "FFF")
-
-            if self.streamin:
-                self.pipe = Gst.Pipeline.new('decode-pipeline') ## decode or capture
-            elif len(self.pipeline)<=1:
-                self.pipe = Gst.Pipeline.new('data-only-pipeline')
-            else:
-                print(self.pipeline)
-                try:
-                    self.pipe = Gst.parse_launch(self.pipeline)
-                except Exception as e:
-                    printc(f"Failed to create pipeline: {e}", "F00")
-                    return
-                
-            print(self.pipe)
+        pipeline_created = self._ensure_main_pipeline(log=True)
+        if not self.pipe:
+            printwarn("Viewer pipeline is unavailable; aborting peer setup")
+            return
+        if pipeline_created:
             started = False
             
         client['qv'] = None
