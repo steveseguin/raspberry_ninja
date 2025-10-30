@@ -21,7 +21,7 @@ import glob
 import signal
 import mmap
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, Set, List
 from functools import lru_cache
 try:
     import hashlib
@@ -73,6 +73,7 @@ def env_flag(name: str) -> bool:
     return value.strip().lower() not in ("0", "false", "no", "off", "")
 
 RN_DISABLE_HW_DECODER = env_flag("RN_DISABLE_HW_DECODER")
+RN_FORCE_HW_DECODER = env_flag("RN_FORCE_HW_DECODER")
 
 def generate_unique_ndi_name(base_name):
     return f"{base_name}_{int(time.time())}"
@@ -449,13 +450,21 @@ def get_framebuffer_resolution() -> Optional[Tuple[int, int]]:
     return None
 
 
-def select_preferred_decoder(codec: str, fallback: str, disable_hw: bool = False) -> Tuple[str, Dict[str, Any], bool]:
+def select_preferred_decoder(
+    codec: str,
+    fallback: str,
+    disable_hw: bool = False,
+    force_hw: bool = False,
+) -> Tuple[str, Dict[str, Any], bool]:
     """
     Determine the most appropriate decoder element for the given codec.
 
     Returns a tuple of (factory_name, properties, using_hardware).
     """
-    if disable_hw or RN_DISABLE_HW_DECODER:
+    if disable_hw and not force_hw:
+        return fallback, {}, False
+
+    if RN_DISABLE_HW_DECODER and not force_hw:
         return fallback, {}, False
 
     codec_key = codec.upper()
@@ -2354,12 +2363,22 @@ class WebRTCClient:
         self._viewer_restart_long_delay = 180.0
         self._viewer_pending_idle = False
         flag_disable_hw = getattr(params, 'disable_hw_decoder', False)
-        self.disable_hw_decoder = bool(flag_disable_hw or RN_DISABLE_HW_DECODER)
-        if self.disable_hw_decoder:
-            if flag_disable_hw:
-                printc("Hardware decoder disabled by --disable-hw-decoder", "FF0")
-            elif RN_DISABLE_HW_DECODER:
-                printc("Hardware decoder disabled via RN_DISABLE_HW_DECODER", "FF0")
+        self._user_disable_hw_decoder = bool(flag_disable_hw)
+        self._force_hw_decoder = bool(RN_FORCE_HW_DECODER) and not self._user_disable_hw_decoder
+        env_disable = bool(RN_DISABLE_HW_DECODER and not self._force_hw_decoder)
+        self._auto_disable_hw_decoder = False
+        self.disable_hw_decoder = bool(self._user_disable_hw_decoder or env_disable)
+        if self._user_disable_hw_decoder:
+            printc("Hardware decoder disabled by --disable-hw-decoder", "FF0")
+        elif env_disable:
+            printc("Hardware decoder disabled via RN_DISABLE_HW_DECODER", "FF0")
+        elif self._force_hw_decoder:
+            printc("Hardware decoder forced via RN_FORCE_HW_DECODER", "0AF")
+        self._active_hw_decoder_streams: Set[str] = set()
+        self._hw_decoder_warning_count = 0
+        self._hw_decoder_warning_window = 0.0
+        self._pipeline_bus_watch_installed = False
+        self._last_viewer_codec = None
         
         # ICE/TURN configuration
         self.stun_server = getattr(params, 'stun_server', None)
@@ -2439,7 +2458,13 @@ class WebRTCClient:
     def _create_decoder_element(self, codec: str, fallback: str, name: str) -> Tuple[Optional[Gst.Element], bool]:
         """Create a decoder element preferring Jetson hardware when available."""
         disable_hw = getattr(self, "disable_hw_decoder", False)
-        factory_name, properties, using_hw = select_preferred_decoder(codec, fallback, disable_hw=disable_hw)
+        force_hw = getattr(self, "_force_hw_decoder", False)
+        factory_name, properties, using_hw = select_preferred_decoder(
+            codec,
+            fallback,
+            disable_hw=disable_hw,
+            force_hw=force_hw,
+        )
         element_name = name
         if using_hw and factory_name != fallback:
             element_name = f"{name}_hw"
@@ -2475,7 +2500,13 @@ class WebRTCClient:
     def _get_decoder_description(self, codec: str, fallback: str) -> Tuple[str, bool]:
         """Return pipeline description fragment for the preferred decoder."""
         disable_hw = getattr(self, "disable_hw_decoder", False)
-        factory_name, properties, using_hw = select_preferred_decoder(codec, fallback, disable_hw=disable_hw)
+        force_hw = getattr(self, "_force_hw_decoder", False)
+        factory_name, properties, using_hw = select_preferred_decoder(
+            codec,
+            fallback,
+            disable_hw=disable_hw,
+            force_hw=force_hw,
+        )
         parts = [factory_name]
 
         for key, value in properties.items():
@@ -2671,7 +2702,153 @@ class WebRTCClient:
             await self.sendMessageAsync({"request":"seed","streamID":self.stream_id+self.hashcode})
             printwout("seed start")
 
+    def _inject_viewer_bitrate_hint(self, msg: Dict[str, Any]) -> Dict[str, Any]:
+        """Attach viewer-requested bitrate to signaling messages when applicable."""
+        if not self.view:
+            return msg
+        if not isinstance(msg, dict):
+            return msg
+        try:
+            bitrate_hint = int(self.max_bitrate)
+        except Exception:
+            bitrate_hint = 0
+        if bitrate_hint <= 0:
+            return msg
+
+        if msg.get('request') in {'play', 'seed'}:
+            if 'bitrate' not in msg:
+                msg['bitrate'] = bitrate_hint
+            if 'bandwidth' not in msg:
+                msg['bandwidth'] = bitrate_hint
+            if 'maxbandwidth' not in msg:
+                msg['maxbandwidth'] = bitrate_hint
+            if 'maxBandwidth' not in msg:
+                msg['maxBandwidth'] = bitrate_hint
+            if 'maxBitrate' not in msg:
+                msg['maxBitrate'] = bitrate_hint
+        return msg
+
+    def _apply_bitrate_constraints_to_sdp(self, sdp_text: str, context: str = "SDP") -> str:
+        """Embed bitrate caps into SDP blobs so publishers honor --bitrate."""
+        try:
+            target_kbps = int(getattr(self, "max_bitrate", 0) or getattr(self, "bitrate", 0))
+        except Exception:
+            target_kbps = 0
+
+        if target_kbps <= 0 or not sdp_text:
+            return sdp_text
+
+        lines = sdp_text.splitlines()
+        if not lines:
+            return sdp_text
+
+        video_m_index = next((i for i, line in enumerate(lines) if line.startswith("m=video")), None)
+        if video_m_index is None:
+            return sdp_text
+
+        # Gather payload IDs from the m=video line
+        video_parts = lines[video_m_index].split()
+        payload_ids = [p for p in video_parts[3:] if p.isdigit()]
+
+        # Inject or update bandwidth lines
+        insert_idx = video_m_index + 1
+        while insert_idx < len(lines) and lines[insert_idx].startswith("i="):
+            insert_idx += 1
+
+        cursor = insert_idx
+        b_as_index = None
+        b_tias_index = None
+        while cursor < len(lines) and lines[cursor].startswith("b="):
+            lower = lines[cursor].lower()
+            if lower.startswith("b=as:"):
+                b_as_index = cursor
+            elif lower.startswith("b=tias:"):
+                b_tias_index = cursor
+            cursor += 1
+
+        as_line = f"b=AS:{target_kbps}"
+        tias_line = f"b=TIAS:{max(1, target_kbps) * 1000}"
+
+        if b_as_index is not None:
+            lines[b_as_index] = as_line
+        else:
+            insert_pos = b_tias_index if b_tias_index is not None else cursor
+            lines.insert(insert_pos, as_line)
+            if b_tias_index is not None:
+                b_tias_index += 1
+            if insert_pos <= cursor:
+                cursor += 1
+
+        if b_tias_index is not None:
+            lines[b_tias_index if b_tias_index < len(lines) else len(lines) - 1] = tias_line
+        else:
+            lines.insert(cursor, tias_line)
+            cursor += 1
+
+        # Update / append fmtp line with x-google bitrate hints for each primary payload
+        min_kbps = max(150, min(target_kbps, int(target_kbps * 0.6)))
+        primary_payloads: List[str] = []
+        for payload in payload_ids:
+            rtpmap_prefix = f"a=rtpmap:{payload} "
+            rtp_line = next((line for line in lines if line.startswith(rtpmap_prefix)), None)
+            if not rtp_line:
+                continue
+            codec_name = rtp_line[len(rtpmap_prefix):].split("/")[0].upper()
+            if codec_name in {"RTX", "RED", "ULPFEC", "FLEXFEC"}:
+                continue
+            primary_payloads.append(payload)
+
+        google_params = [
+            f"x-google-max-bitrate={target_kbps}",
+            f"x-google-start-bitrate={target_kbps}",
+            f"x-google-min-bitrate={min_kbps}",
+            f"x-google-bitrate={target_kbps}",
+        ]
+
+        for payload in primary_payloads:
+            fmtp_prefix = f"a=fmtp:{payload}"
+            fmtp_index = next((i for i, line in enumerate(lines) if line.startswith(fmtp_prefix)), None)
+            fmtp_header = fmtp_prefix
+            fmtp_params: List[str] = []
+
+            if fmtp_index is not None:
+                parts = lines[fmtp_index].split(" ", 1)
+                fmtp_header = parts[0]
+                if len(parts) == 2:
+                    fmtp_params = [p.strip() for p in parts[1].split(";") if p.strip()]
+            else:
+                fmtp_index = None
+
+            fmtp_params = [
+                p for p in fmtp_params
+                if not p.startswith(("x-google-max-bitrate", "x-google-min-bitrate", "x-google-start-bitrate", "x-google-bitrate"))
+            ]
+
+            fmtp_params.extend(google_params)
+            fmtp_line = f"{fmtp_header} " + ";".join(fmtp_params)
+
+            if fmtp_index is not None:
+                lines[fmtp_index] = fmtp_line
+            else:
+                rtpmap_index = next((i for i, line in enumerate(lines) if line.startswith(f"a=rtpmap:{payload} ")), None)
+                insert_pos = rtpmap_index + 1 if rtpmap_index is not None else cursor
+                lines.insert(insert_pos, fmtp_line)
+
+        modified = "\r\n".join(lines)
+        if not modified.endswith("\r\n"):
+            modified += "\r\n"
+
+        printc(f"   📶 Embedding {target_kbps} kbps cap into {context}", "07F")
+        return modified
+
     def sendMessage(self, msg): # send message to wss
+        if isinstance(msg, dict):
+            msg = dict(msg)
+            msg = self._inject_viewer_bitrate_hint(msg)
+        else:
+            typeName = type(msg).__name__
+            raise TypeError(f"sendMessage expects dict, got {typeName}")
+
         if self.puuid:
             msg['from'] = self.puuid
 
@@ -2721,6 +2898,13 @@ class WebRTCClient:
                 
                 
     async def sendMessageAsync(self, msg): # send message to wss
+        if isinstance(msg, dict):
+            msg = dict(msg)
+            msg = self._inject_viewer_bitrate_hint(msg)
+        else:
+            typeName = type(msg).__name__
+            raise TypeError(f"sendMessageAsync expects dict, got {typeName}")
+
         if self.puuid:
             msg['from'] = self.puuid
 
@@ -2894,6 +3078,8 @@ class WebRTCClient:
         self._display_chain_unavailable = False
         self._display_chain_unavailable_reason = None
         self._viewer_pending_idle = False
+        if hasattr(self, "_active_hw_decoder_streams"):
+            self._active_hw_decoder_streams.clear()
 
     def _ensure_main_pipeline(self, log: bool = True) -> bool:
         """Ensure the primary Gst.Pipeline exists. Returns True if a new pipeline was created."""
@@ -2917,7 +3103,191 @@ class WebRTCClient:
 
         if self.pipe and log:
             print(self.pipe)
+        if self.pipe:
+            try:
+                self._install_pipeline_bus_watch()
+            except Exception:
+                pass
         return bool(self.pipe)
+
+    def _install_pipeline_bus_watch(self):
+        """Listen for pipeline warnings so we can auto-fallback unstable decoders."""
+        if getattr(self, "_pipeline_bus_watch_installed", False):
+            return
+        if not self.pipe:
+            return
+        try:
+            bus = self.pipe.get_bus()
+        except Exception:
+            bus = None
+        if not bus:
+            return
+        try:
+            bus.add_signal_watch()
+        except Exception:
+            pass
+        try:
+            bus.connect("message::warning", self._on_pipeline_warning)
+            bus.connect("message::error", self._on_pipeline_error)
+        except Exception:
+            return
+        self._pipeline_bus_watch_installed = True
+
+    def _on_pipeline_warning(self, bus, message):
+        if not self._active_hw_decoder_streams:
+            return
+        try:
+            warning, debug = message.parse_warning()
+        except Exception:
+            return
+        src_name = ""
+        try:
+            src_name = message.src.get_name()
+        except Exception:
+            pass
+        combined_text = " ".join(
+            filter(
+                None,
+                (str(warning) if warning else "", debug if debug else "", src_name),
+            )
+        ).lower()
+        if "nvv4l2decoder" in combined_text or "bug in this gstbufferpool subclass" in combined_text:
+            self._handle_hw_decoder_warning(str(warning), debug)
+
+    def _on_pipeline_error(self, bus, message):
+        if not self._active_hw_decoder_streams:
+            return
+        try:
+            err, debug = message.parse_error()
+        except Exception:
+            return
+        combined = " ".join(filter(None, (str(err), debug))).lower()
+        if "nvv4l2decoder" in combined:
+            self._handle_hw_decoder_warning(str(err), debug, force_trigger=True)
+
+    def _handle_hw_decoder_warning(
+        self,
+        warning_text: Optional[str],
+        debug_text: Optional[str],
+        *,
+        force_trigger: bool = False,
+    ):
+        if self._force_hw_decoder:
+            return
+        if getattr(self, "_auto_disable_hw_decoder", False):
+            return
+        now = time.monotonic()
+        if not force_trigger:
+            window = getattr(self, "_hw_decoder_warning_window", 0.0)
+            if not window or (now - window) > 5.0:
+                self._hw_decoder_warning_window = now
+                self._hw_decoder_warning_count = 0
+            self._hw_decoder_warning_count += 1
+            if self._hw_decoder_warning_count < 3:
+                return
+        reason_parts = []
+        if warning_text:
+            reason_parts.append(str(warning_text))
+        if debug_text:
+            reason_parts.append(str(debug_text))
+        reason = "; ".join(reason_parts).strip()
+        self._trigger_hw_decoder_fallback(reason or "repeated hardware decoder warnings")
+
+    def _trigger_hw_decoder_fallback(self, reason: str):
+        if getattr(self, "_auto_disable_hw_decoder", False):
+            return
+        if not self._active_hw_decoder_streams:
+            return
+        self._auto_disable_hw_decoder = True
+        self.disable_hw_decoder = True
+        self._hw_decoder_warning_count = 0
+        self._hw_decoder_warning_window = time.monotonic()
+        printc(
+            "⚠️  Jetson hardware decoder produced repeated warnings; switching viewer to software decoding.",
+            "FF0",
+        )
+        if reason:
+            printc(f"   Reason: {reason}", "FF0")
+        labels = list(self._active_hw_decoder_streams)
+
+        def _apply_fallback():
+            for label in list(labels):
+                try:
+                    self._switch_stream_to_software(label)
+                except Exception as exc:
+                    printwarn(f"Failed to rebuild viewer path for {label}: {exc}")
+            return False
+
+        if "GLib" in globals():
+            GLib.idle_add(_apply_fallback)
+        else:
+            _apply_fallback()
+
+    def _switch_stream_to_software(self, remote_label: str):
+        source = self.display_sources.get(remote_label)
+        if not source:
+            return
+        remote_pad = source.get("remote_pad")
+        pad_name = source.get("pad_name")
+        bin_obj = source.get("bin")
+        sink_pad = source.get("bin_sink_pad")
+        if not remote_pad or not pad_name:
+            return
+        probe_id = None
+        try:
+            probe_id = remote_pad.add_probe(
+                Gst.PadProbeType.BLOCK_DOWNSTREAM, lambda *args: Gst.PadProbeReturn.OK
+            )
+        except Exception:
+            probe_id = None
+        try:
+            if sink_pad and remote_pad.is_linked():
+                remote_pad.unlink(sink_pad)
+        except Exception:
+            pass
+        try:
+            self._release_display_source(remote_label)
+        except Exception:
+            pass
+        if bin_obj:
+            try:
+                bin_obj.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+            try:
+                self.pipe.remove(bin_obj)
+            except Exception:
+                pass
+
+        if not self.display_sources:
+            self._last_viewer_codec = None
+
+        if not self.display_sources:
+            self._last_viewer_codec = None
+        self._active_hw_decoder_streams.discard(remote_label)
+        self.display_remote_map.pop(pad_name, None)
+        caps_name = source.get("caps_name")
+        if not caps_name:
+            try:
+                caps = remote_pad.get_current_caps()
+                caps_name = caps.to_string() if caps else ""
+            except Exception:
+                caps_name = ""
+        try:
+            new_label = self._attach_viewer_video_stream(remote_pad, caps_name)
+        finally:
+            if probe_id is not None:
+                try:
+                    remote_pad.remove_probe(probe_id)
+                except Exception:
+                    pass
+        if not new_label:
+            printwarn("Hardware decoder fallback failed to rebuild viewer pipeline; display may remain blank.")
+        else:
+            if pad_name not in self.display_remote_map:
+                self.display_remote_map[pad_name] = new_label
+            if getattr(self, "display_state", None) != "remote":
+                self._set_display_mode("remote", remote_label=new_label)
 
     def _prime_viewer_display(self):
         """Bring up the idle splash as soon as the viewer starts."""
@@ -3530,6 +3900,8 @@ class WebRTCClient:
         source = self.display_sources.pop(label, None)
         if not source:
             return
+        if source.get("using_hw_decoder"):
+            self._active_hw_decoder_streams.discard(label)
         print(f"[display] Releasing source '{label}'")
 
         selector_pad = source.get("selector_pad")
@@ -3580,7 +3952,9 @@ class WebRTCClient:
         nvvidconv_has_nvbuf = display_config["nvvidconv_has_nvbuf"]
         debug_display = display_config["debug_display"]
 
+        codec_type = None
         if "VP8" in caps_name:
+            codec_type = "VP8"
             fallback_decoder = "vp8dec"
             decoder_desc, using_hw_decoder = self._get_decoder_description("VP8", fallback_decoder)
             if using_hw_decoder and needs_system_memory and not nvvidconv_has_nvbuf:
@@ -3603,6 +3977,7 @@ class WebRTCClient:
                 f"identity name=view_identity_{pad.get_name()}"
             )
         elif "H264" in caps_name:
+            codec_type = "H264"
             fallback_decoder = "openh264dec"
             decoder_desc, using_hw_decoder = self._get_decoder_description("H264", fallback_decoder)
             if using_hw_decoder and needs_system_memory and not nvvidconv_has_nvbuf:
@@ -3662,6 +4037,24 @@ class WebRTCClient:
                 pass
             return None
 
+        source_info = self.display_sources.get(remote_label)
+        if source_info is not None:
+            source_info.update(
+                {
+                    "bin": out,
+                    "bin_sink_pad": sink_pad,
+                    "remote_pad": pad,
+                    "pad_name": pad.get_name(),
+                    "caps_name": caps_name,
+                    "codec": codec_type,
+                    "using_hw_decoder": using_hw_decoder,
+                }
+            )
+        if using_hw_decoder:
+            self._active_hw_decoder_streams.add(remote_label)
+        else:
+            self._active_hw_decoder_streams.discard(remote_label)
+
         if getattr(self, "_viewer_pending_idle", False):
             if debug_display:
                 print("[display] Applying deferred idle splash after remote attachment")
@@ -3670,6 +4063,9 @@ class WebRTCClient:
 
         if debug_display:
             print("Linked incoming video pad to display selector (viewer path)")
+
+        if codec_type:
+            self._last_viewer_codec = codec_type
 
         return remote_label
 
@@ -3707,6 +4103,36 @@ class WebRTCClient:
                 return
             caps = pad.get_current_caps()
             name = caps.to_string()
+
+            detected_width = None
+            detected_height = None
+            if caps is not None and caps.get_size() > 0:
+                try:
+                    structure = caps.get_structure(0)
+                except Exception:
+                    structure = None
+                if structure:
+                    if structure.has_field("width"):
+                        detected_width = structure.get_value("width")
+                    elif structure.has_field("video-width"):
+                        detected_width = structure.get_value("video-width")
+                    if structure.has_field("height"):
+                        detected_height = structure.get_value("height")
+                    elif structure.has_field("video-height"):
+                        detected_height = structure.get_value("video-height")
+            if isinstance(detected_width, (int, float)) and isinstance(detected_height, (int, float)):
+                detected_width = int(detected_width)
+                detected_height = int(detected_height)
+                if detected_width > 0 and detected_height > 0:
+                    for client_data in self.clients.values():
+                        if client_data and client_data.get("direction") == "receive":
+                            client_data["_last_video_width"] = detected_width
+                            client_data["_last_video_height"] = detected_height
+                    if getattr(self, "_last_viewer_codec", None):
+                        printc(f"📺 Remote video: {detected_width}x{detected_height} ({self._last_viewer_codec})", "0F0")
+                    else:
+                        printc(f"📺 Remote video: {detected_width}x{detected_height}", "0F0")
+
             # Parse codec info from caps
             codec_info = ""
             if "encoding-name=" in name:
@@ -4451,6 +4877,7 @@ class WebRTCClient:
         else:
             print("peer not yet created; error")
             return
+        client['direction'] = "receive" if self.view else "send"
         if self.view:
             self._cancel_viewer_restart_timer()
             self._viewer_restart_pending = False
@@ -4483,6 +4910,9 @@ class WebRTCClient:
             if self.novideo and not self.noaudio: # impacts audio and video as well, but chrome / firefox seems to handle it
                 printc("Patching SDP due to Gstreamer webRTC bug - audio-only issue", "A6F") # just chrome doesn't handle this
                 text = replace_ssrc_and_cleanup_sdp(text)
+
+            if self.view:
+                text = self._apply_bitrate_constraints_to_sdp(text, context="outgoing offer")
 
             msg = {'description': {'type': 'offer', 'sdp': text}, 'UUID': client['UUID'], 'session': client['session'], 'streamID':self.stream_id+self.hashcode}
             self.sendMessage(msg)
@@ -4642,6 +5072,27 @@ class WebRTCClient:
             elif self.rotate:
                 msg = {"info":{"rotate_video":self.rotate}, "UUID": client["UUID"]}
                 self.sendMessage(msg)
+            elif self.view:
+                try:
+                    bitrate_hint = int(self.max_bitrate)
+                except Exception:
+                    bitrate_hint = 0
+                if bitrate_hint > 0:
+                    try:
+                        bitrate_payload = {
+                            "bitrate": bitrate_hint,
+                            "bandwidth": bitrate_hint,
+                            "maxbandwidth": bitrate_hint,
+                            "maxBandwidth": bitrate_hint,
+                            "maxBitrate": bitrate_hint,
+                        }
+                        remote_uuid = client.get("UUID")
+                        if remote_uuid:
+                            bitrate_payload["UUID"] = remote_uuid
+                        channel.emit('send-string', json.dumps(bitrate_payload))
+                        printc(f"   📶 Requested {bitrate_hint} kbps from source", "07F")
+                    except Exception as exc:
+                        printwarn(f"Failed to send bitrate request: {exc}")
 
         def on_data_channel_close(channel):
             printc('🔌 Data channel closed', "F77")
@@ -4828,208 +5279,328 @@ class WebRTCClient:
 
         def on_stats(promise, abin, data):
             promise.wait()
-            stats = promise.get_reply()
-            stats = stats.to_string()
-            stats = stats.replace("\\", "")
-            
-            # Only log periodic stats updates, not the full structure
-            if not hasattr(client, '_last_full_stats_log'):
-                client['_last_full_stats_log'] = 0
-            
-            # Calculate bitrate from bytes sent
-            bitrate_sent = 0
-            
-            # Initialize tracking variables if needed
-            if '_last_bytes_sent' not in client:
-                client['_last_bytes_sent'] = 0
-                client['_last_bytes_time'] = time.time()
-            
-            # We'll calculate bitrate from bytes-sent difference later
-            
-            # Try to find video-specific stats
-            video_bitrate = 0
-            video_bytes_sent = None  # Use None to indicate parsing failure
-            audio_bytes_sent = None  # Use None to indicate parsing failure
-            
-            # Look for video stream stats with flexible parsing
-            # Try different formats that might appear in stats
+            stats_reply = promise.get_reply()
+            stats_text = stats_reply.to_string()
+            stats_text = stats_text.replace("\\", "")
+
+            is_receive = client.get("direction") == "receive"
+            current_time = time.time()
+
+            if "_last_full_stats_log" not in client:
+                client["_last_full_stats_log"] = 0
+
+            def extract_counter(text: str, token: str) -> int:
+                if token in text:
+                    try:
+                        segment = text.split(token, 1)[1]
+                        return int(segment.split(",")[0].split(";")[0].strip())
+                    except Exception:
+                        return 0
+                return 0
+
+            def extract_section(text: str, patterns) -> str:
+                for pattern in patterns:
+                    if pattern in text:
+                        try:
+                            return text.split(pattern, 1)[1].split("rtp-", 1)[0]
+                        except Exception:
+                            return ""
+                return ""
+
+            def extract_counter_from_section(section: str, tokens) -> Optional[int]:
+                if not section:
+                    return None
+                for token in tokens:
+                    if token in section:
+                        try:
+                            segment = section.split(token, 1)[1]
+                            return int(segment.split(",")[0].split(";")[0].strip())
+                        except Exception:
+                            continue
+                return None
+
+            def extract_int_from_section(section: str, pattern: str) -> Optional[int]:
+                if not section:
+                    return None
+                match = re.search(pattern, section)
+                if match:
+                    try:
+                        return int(match.group(1))
+                    except Exception:
+                        return None
+                return None
+
             video_patterns = [
                 "kind=(string)video",
-                "kind = (string) video", 
+                "kind = (string) video",
                 "kind=(string) video",
                 "kind =(string)video",
                 "media-type=\"video\"",
-                "media-type='video'"
+                "media-type='video'",
             ]
-            
-            for pattern in video_patterns:
-                if pattern in stats:
-                    try:
-                        # Find the video stream section
-                        video_section = stats.split(pattern)[1].split("rtp-")[0]
-                        # Try different bytes-sent patterns
-                        bytes_patterns = [
-                            "bytes-sent=(guint64)",
-                            "bytes-sent = (guint64)",
-                            "bytes-sent=(guint64) ",
-                            "bytes-sent =(guint64)"
-                        ]
-                        for bytes_pattern in bytes_patterns:
-                            if bytes_pattern in video_section:
-                                video_bytes_match = video_section.split(bytes_pattern)[1]
-                                video_bytes_sent = int(video_bytes_match.split(",")[0].split(";")[0].strip())
-                                break
-                        if video_bytes_sent is not None:
-                            break
-                    except:
-                        pass
-            
-            # Look for audio stream stats with flexible parsing
             audio_patterns = [
                 "kind=(string)audio",
                 "kind = (string) audio",
-                "kind=(string) audio", 
+                "kind=(string) audio",
                 "kind =(string)audio",
                 "media-type=\"audio\"",
-                "media-type='audio'"
+                "media-type='audio'",
             ]
-            
-            for pattern in audio_patterns:
-                if pattern in stats:
-                    try:
-                        # Find the audio stream section
-                        audio_section = stats.split(pattern)[1].split("rtp-")[0]
-                        # Try different bytes-sent patterns
-                        bytes_patterns = [
-                            "bytes-sent=(guint64)",
-                            "bytes-sent = (guint64)",
-                            "bytes-sent=(guint64) ",
-                            "bytes-sent =(guint64)"
-                        ]
-                        for bytes_pattern in bytes_patterns:
-                            if bytes_pattern in audio_section:
-                                audio_bytes_match = audio_section.split(bytes_pattern)[1]
-                                audio_bytes_sent = int(audio_bytes_match.split(",")[0].split(";")[0].strip())
-                                break
-                        if audio_bytes_sent is not None:
-                            break
-                    except:
-                        pass
-            
-            # Extract packets sent
-            packets_sent = 0
-            if "packets-sent=(guint64)" in stats:
-                try:
-                    packets_part = stats.split("packets-sent=(guint64)")[1]
-                    packets_sent = int(packets_part.split(",")[0].split(";")[0])
-                except:
-                    pass
-            
-            # Extract bytes sent
-            bytes_sent = 0
-            if "bytes-sent=(guint64)" in stats:
-                try:
-                    bytes_part = stats.split("bytes-sent=(guint64)")[1]
-                    bytes_sent = int(bytes_part.split(",")[0].split(";")[0])
-                except:
-                    pass
-            
-            # Calculate bitrate from bytes difference
-            current_time = time.time()
-            if bytes_sent > 0 and client['_last_bytes_sent'] > 0:
-                time_diff = current_time - client['_last_bytes_time']
-                if time_diff > 0:
-                    bytes_diff = bytes_sent - client['_last_bytes_sent']
-                    if bytes_diff > 0:
-                        # Convert to kbps (bytes * 8 / seconds / 1000)
-                        bitrate_sent = int((bytes_diff * 8) / (time_diff * 1000))
-            
-            # Update tracking variables
-            if bytes_sent > client['_last_bytes_sent']:
-                client['_last_bytes_sent'] = bytes_sent
-                client['_last_bytes_time'] = current_time
-            
-            # Store current stats for web interface
-            client['_last_bitrate_sent'] = bitrate_sent
-            client['_last_video_bytes'] = video_bytes_sent
-            client['_last_audio_bytes'] = audio_bytes_sent
-            
-            # Only show warning if we successfully parsed stats and video is not sending but audio is
-            if time.time() - client['_last_full_stats_log'] > 30:
-                # Only warn if we successfully parsed both audio and video stats
-                if (video_bytes_sent is not None and audio_bytes_sent is not None and 
-                    video_bytes_sent == 0 and audio_bytes_sent > 0 and bitrate_sent > 0):
-                    printc("⚠️ WARNING: Video stream not sending data (audio-only stream detected)", "F70")
-                client['_last_full_stats_log'] = time.time()
-            
-            # Log bitrate periodically
-            current_time = time.time()
-            if not hasattr(client, '_last_bitrate_log'):
-                client['_last_bitrate_log'] = 0
-            
-            if current_time - client['_last_bitrate_log'] > 10:  # Log every 10 seconds
-                if bitrate_sent > 0:
-                    printc(f"📊 Streaming at {bitrate_sent} kbps", "07F")
-                elif current_time - client.get('_connection_time', current_time) < 5:
-                    # Don't show "no packets" message in first 5 seconds
-                    pass
-                else:
-                    printc(f"📊 Waiting for stream data...", "F70")
-                client['_last_bitrate_log'] = current_time
-            
-            stats = stats.split("fraction-lost=(double)")
-            if (len(stats)>1):
-                stats = stats[1].split(",")[0]
-                # Only log packet loss if it's significant or changed substantially
-                if not hasattr(client, '_last_packet_loss'):
-                    client['_last_packet_loss'] = -1
-                
-                if float(stats) > 0.01 or abs(float(stats) - client['_last_packet_loss']) > 0.005:
-                    if float(stats) > 0.01:
-                        printc(f"📊 Packet loss: {stats} ⚠️", "F77")
-                    elif client['_last_packet_loss'] < 0 or client['_last_packet_loss'] > 0.01:
-                        # Only show excellent message when transitioning from bad to good
-                        if bitrate_sent > 0:
-                            printc(f"📊 Network quality: excellent (bitrate: {bitrate_sent} kbps)", "0F0")
-                        else:
-                            printc(f"📊 Network quality: excellent", "0F0")
-                    client['_last_packet_loss'] = float(stats)
-                # VP8 and AV1 encoders have issues with dynamic bitrate changes
-                # but we should still process stats for monitoring
-                skip_bitrate_adjustment = False
-                if " vp8enc " in self.pipeline: # doesn't support dynamic bitrates
-                    skip_bitrate_adjustment = True
-                elif " av1enc " in self.pipeline: # seg-fault if I try to change it currently
-                    skip_bitrate_adjustment = True
-                stats = float(stats)
-                if not skip_bitrate_adjustment:
-                    if (stats>0.01) and not self.noqos:
-                        old_bitrate = self.bitrate
-                        bitrate = self.bitrate*0.9
-                        if bitrate < self.max_bitrate*0.2:
-                            bitrate = self.max_bitrate*0.2
-                        elif bitrate > self.max_bitrate*0.8:
-                            bitrate = self.bitrate*0.9
-                        
-                        # Only update and print if bitrate actually changed
-                        if int(bitrate) != int(old_bitrate):
-                            self.bitrate = bitrate
-                            printc(f"   └─ Reducing bitrate to {int(bitrate)} kbps (packet loss detected)", "FF0")
-                            self.set_encoder_bitrate(client, int(bitrate))
+            counter_tokens = ["bytes-received=(guint64)", "bytes-sent=(guint64)"]
 
-                    elif (stats<0.003) and not self.noqos:
-                        old_bitrate = self.bitrate
-                        bitrate = self.bitrate*1.05
-                        if bitrate>self.max_bitrate:
-                            bitrate = self.max_bitrate
-                        elif bitrate*2<self.max_bitrate:
-                            bitrate = self.bitrate*1.05
-                        
-                        # Only update and print if bitrate actually changed
-                        if int(bitrate) != int(old_bitrate):
-                            self.bitrate = bitrate
-                            printc(f"   └─ Increasing bitrate to {int(bitrate)} kbps (good connection)", "0F0")
-                            self.set_encoder_bitrate(client, int(bitrate))
+            video_section = extract_section(stats_text, video_patterns)
+            audio_section = extract_section(stats_text, audio_patterns)
+            video_bytes_total = extract_counter_from_section(video_section, counter_tokens)
+            audio_bytes_total = extract_counter_from_section(audio_section, counter_tokens)
+
+            frame_width = extract_int_from_section(video_section, r"frame-width=\(gint\)\s*(\d+)")
+            if frame_width is None:
+                frame_width = extract_int_from_section(video_section, r"frame_width=\(gint\)\s*(\d+)")
+            if frame_width is None:
+                match = re.search(r"frame[-_]width=\([^)]*\)\s*(\d+)", stats_text)
+                if match:
+                    try:
+                        frame_width = int(match.group(1))
+                    except Exception:
+                        frame_width = None
+
+            frame_height = extract_int_from_section(video_section, r"frame-height=\(gint\)\s*(\d+)")
+            if frame_height is None:
+                frame_height = extract_int_from_section(video_section, r"frame_height=\(gint\)\s*(\d+)")
+            if frame_height is None:
+                match = re.search(r"frame[-_]height=\([^)]*\)\s*(\d+)", stats_text)
+                if match:
+                    try:
+                        frame_height = int(match.group(1))
+                    except Exception:
+                        frame_height = None
+
+            bytes_token = "bytes-received=(guint64)" if is_receive else "bytes-sent=(guint64)"
+            packets_token = "packets-received=(guint64)" if is_receive else "packets-sent=(guint64)"
+            bytes_total = extract_counter(stats_text, bytes_token)
+            if bytes_total == 0:
+                alt_bytes = "bytes-sent=(guint64)" if bytes_token.startswith("bytes-received") else "bytes-received=(guint64)"
+                bytes_total = extract_counter(stats_text, alt_bytes)
+            packets_total = extract_counter(stats_text, packets_token)
+            if packets_total == 0:
+                alt_packets = "packets-sent=(guint64)" if packets_token.startswith("packets-received") else "packets-received=(guint64)"
+                packets_total = extract_counter(stats_text, alt_packets)
+
+            bytes_field = "_last_bytes_recv" if is_receive else "_last_bytes_sent"
+            time_field = "_last_bytes_recv_time" if is_receive else "_last_bytes_time"
+            packets_field = "_last_packets_recv" if is_receive else "_last_packets_sent"
+
+            prev_bytes = client.get(bytes_field, 0)
+            prev_time = client.get(time_field, current_time)
+            if bytes_field not in client:
+                client[bytes_field] = bytes_total
+                client[time_field] = current_time
+                prev_bytes = bytes_total
+                prev_time = current_time
+
+            time_diff = current_time - prev_time if prev_time else 0.0
+            bitrate_calc = 0
+            if bytes_total > prev_bytes and time_diff > 0:
+                bitrate_calc = int(((bytes_total - prev_bytes) * 8) / (time_diff * 1000))
+
+            packet_rate = 0.0
+            prev_packets = client.get(packets_field, 0)
+            if packets_field not in client:
+                client[packets_field] = packets_total
+                prev_packets = packets_total
+            if packets_total > prev_packets and time_diff > 0:
+                packet_rate = (packets_total - prev_packets) / time_diff
+
+            if bytes_total < prev_bytes:
+                client[bytes_field] = bytes_total
+                client[time_field] = current_time
+                prev_bytes = bytes_total
+            else:
+                client[bytes_field] = bytes_total
+                client[time_field] = current_time
+
+            if packets_total < prev_packets:
+                client[packets_field] = packets_total
+                prev_packets = packets_total
+            else:
+                client[packets_field] = packets_total
+
+            bitrate_cache_key = "_last_bitrate_recv" if is_receive else "_last_bitrate_sent"
+            bitrate_time_key = f"{bitrate_cache_key}_time"
+            if bitrate_calc > 0:
+                client[bitrate_cache_key] = bitrate_calc
+                client[bitrate_time_key] = current_time
+            else:
+                cached_bitrate = client.get(bitrate_cache_key)
+                cached_time = client.get(bitrate_time_key, 0)
+                if cached_bitrate and (current_time - cached_time) <= 6:
+                    bitrate_calc = cached_bitrate
+
+            client["_last_video_bytes"] = video_bytes_total
+            client["_last_audio_bytes"] = audio_bytes_total
+
+            if is_receive:
+                if packet_rate > 0:
+                    client["_last_packet_rate"] = packet_rate
+                    client["_last_packet_rate_time"] = current_time
+                else:
+                    cached_rate = client.get("_last_packet_rate")
+                    cached_rate_time = client.get("_last_packet_rate_time", 0)
+                    if cached_rate and (current_time - cached_rate_time) <= 6:
+                        packet_rate = cached_rate
+
+                if isinstance(frame_width, int) and frame_width > 0:
+                    client["_last_video_width"] = frame_width
+                else:
+                    frame_width = client.get("_last_video_width")
+
+                if isinstance(frame_height, int) and frame_height > 0:
+                    client["_last_video_height"] = frame_height
+                else:
+                    frame_height = client.get("_last_video_height")
+            else:
+                if isinstance(frame_width, int) and frame_width > 0:
+                    client["_last_video_width"] = frame_width
+                else:
+                    frame_width = client.get("_last_video_width")
+                if isinstance(frame_height, int) and frame_height > 0:
+                    client["_last_video_height"] = frame_height
+                else:
+                    frame_height = client.get("_last_video_height")
+
+            if current_time - client["_last_full_stats_log"] > 30:
+                if (
+                    not is_receive
+                    and video_bytes_total is not None
+                    and audio_bytes_total is not None
+                    and video_bytes_total == 0
+                    and audio_bytes_total > 0
+                    and bitrate_calc > 0
+                ):
+                    printc("⚠️ WARNING: Video stream not sending data (audio-only stream detected)", "F70")
+                client["_last_full_stats_log"] = current_time
+
+            loss_value = None
+            loss_match = re.search(r"fraction-lost=\([^)]*\)\s*([0-9.]+)", stats_text)
+            if loss_match:
+                try:
+                    loss_value = float(loss_match.group(1))
+                except Exception:
+                    loss_value = None
+            if loss_value is None:
+                lost_match = re.search(r"packets-lost=\([^)]*\)\s*(\d+)", stats_text)
+                recv_match = re.search(r"packets-received=\([^)]*\)\s*(\d+)", stats_text)
+                if lost_match and recv_match:
+                    try:
+                        lost_packets = int(lost_match.group(1))
+                        recv_packets = int(recv_match.group(1))
+                        total_packets = lost_packets + recv_packets
+                        if total_packets > 0:
+                            loss_value = lost_packets / total_packets
+                    except Exception:
+                        loss_value = None
+
+            if "_last_bitrate_log" not in client:
+                client["_last_bitrate_log"] = 0
+
+            log_interval = 5 if is_receive else 10
+            if current_time - client["_last_bitrate_log"] > log_interval:
+                if is_receive:
+                    summary_parts = []
+                    if bitrate_calc > 0:
+                        summary_parts.append(f"{bitrate_calc} kbps")
+                    if packet_rate > 0:
+                        summary_parts.append(f"{packet_rate:.0f} pps")
+                    effective_width = (
+                        frame_width
+                        if isinstance(frame_width, int) and frame_width > 0
+                        else client.get("_last_video_width")
+                    )
+                    effective_height = (
+                        frame_height
+                        if isinstance(frame_height, int) and frame_height > 0
+                        else client.get("_last_video_height")
+                    )
+                    if effective_width and effective_height:
+                        summary_parts.append(f"{effective_width}x{effective_height}")
+                    codec_label = getattr(self, "_last_viewer_codec", None)
+                    if codec_label:
+                        summary_parts.append(f"codec {codec_label}")
+                    effective_loss = loss_value
+                    if effective_loss is None:
+                        effective_loss = client.get("_last_packet_loss")
+                    if effective_loss is not None:
+                        try:
+                            loss_pct = float(effective_loss) * 100.0
+                        except Exception:
+                            loss_pct = None
+                    else:
+                        loss_pct = None
+                    if loss_pct is not None:
+                        if loss_pct >= 1.0:
+                            summary_parts.append(f"{loss_pct:.2f}% loss ⚠️")
+                        else:
+                            summary_parts.append(f"{loss_pct:.2f}% loss")
+                    if summary_parts:
+                        printc(f"📥 Receiving {' • '.join(summary_parts)}", "07F")
+                    else:
+                        printc("📥 Waiting for viewer data...", "F70")
+                else:
+                    if bitrate_calc > 0:
+                        printc(f"📊 Streaming at {bitrate_calc} kbps", "07F")
+                    elif current_time - client.get("_connection_time", current_time) < 5:
+                        pass
+                    else:
+                        printc("📊 Waiting for stream data...", "F70")
+                client["_last_bitrate_log"] = current_time
+
+            if loss_value is not None:
+                if "_last_packet_loss" not in client:
+                    client["_last_packet_loss"] = -1
+
+                if loss_value > 0.01 or abs(loss_value - client["_last_packet_loss"]) > 0.005:
+                    if loss_value > 0.01:
+                        printc(f"📊 Packet loss: {loss_value:.3f} ⚠️", "F77")
+                    elif client["_last_packet_loss"] < 0 or client["_last_packet_loss"] > 0.01:
+                        if bitrate_calc > 0:
+                            printc(f"📊 Network quality: excellent (bitrate: {bitrate_calc} kbps)", "0F0")
+                        else:
+                            printc("📊 Network quality: excellent", "0F0")
+                    client["_last_packet_loss"] = loss_value
+
+                if not is_receive:
+                    skip_bitrate_adjustment = False
+                    if " vp8enc " in self.pipeline:
+                        skip_bitrate_adjustment = True
+                    elif " av1enc " in self.pipeline:
+                        skip_bitrate_adjustment = True
+
+                    if not skip_bitrate_adjustment and not self.noqos:
+                        if loss_value > 0.01:
+                            old_bitrate = self.bitrate
+                            bitrate = self.bitrate * 0.9
+                            if bitrate < self.max_bitrate * 0.2:
+                                bitrate = self.max_bitrate * 0.2
+                            elif bitrate > self.max_bitrate * 0.8:
+                                bitrate = self.bitrate * 0.9
+
+                            if int(bitrate) != int(old_bitrate):
+                                self.bitrate = bitrate
+                                printc(f"   └─ Reducing bitrate to {int(bitrate)} kbps (packet loss detected)", "FF0")
+                                self.set_encoder_bitrate(client, int(bitrate))
+
+                        elif loss_value < 0.003:
+                            old_bitrate = self.bitrate
+                            bitrate = self.bitrate * 1.05
+                            if bitrate > self.max_bitrate:
+                                bitrate = self.max_bitrate
+                            elif bitrate * 2 < self.max_bitrate:
+                                bitrate = self.bitrate * 1.05
+
+                            if int(bitrate) != int(old_bitrate):
+                                self.bitrate = bitrate
+                                printc(f"   └─ Increasing bitrate to {int(bitrate)} kbps (good connection)", "0F0")
+                                self.set_encoder_bitrate(client, int(bitrate))
 
         # Debug encoder setup for VP8
         if " vp8enc " in self.pipeline:
@@ -5143,7 +5714,7 @@ class WebRTCClient:
                 client['qa'] = qa
 
             if self.midi and (self.midi_thread == None):
-                self.midi_thread = threading.Thread(target=midi2vdo, args=(self.midi,))
+                self.midi_thread = threading.Thread(target=midi2vdo, args=(self.midi,), daemon=True)
                 self.midi_thread.start()
                 print(self.midi_thread)
                 print("MIDI THREAD STARTED")
@@ -5302,6 +5873,11 @@ class WebRTCClient:
             print("INCOMING ANSWER SDP TYPE: "+msg['type'])
             assert(msg['type'] == 'answer')
             sdp = msg['sdp']
+            if self.view:
+                try:
+                    sdp = self._apply_bitrate_constraints_to_sdp(sdp, context="incoming answer")
+                except Exception as exc:
+                    printwarn(f"Failed to apply bitrate constraints to remote SDP: {exc}")
             res, sdpmsg = GstSdp.SDPMessage.new()
             GstSdp.sdp_message_parse_buffer(bytes(sdp.encode()), sdpmsg)
             answer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.ANSWER, sdpmsg)
@@ -5324,10 +5900,29 @@ class WebRTCClient:
         if not answer:
             print("Not answer created?")
             return
+        text = answer.sdp.as_text()
+        if self.view:
+            try:
+                modified_text = self._apply_bitrate_constraints_to_sdp(text, context="outgoing answer")
+            except Exception as exc:
+                printwarn(f"Failed to apply bitrate constraints to answer SDP: {exc}")
+            else:
+                if modified_text != text:
+                    text = modified_text
+                    try:
+                        res, sdpmsg = GstSdp.SDPMessage.new()
+                        GstSdp.sdp_message_parse_buffer(bytes(text.encode()), sdpmsg)
+                        answer = GstWebRTC.WebRTCSessionDescription.new(
+                            GstWebRTC.WebRTCSDPType.ANSWER, sdpmsg
+                        )
+                    except Exception as exc:
+                        printwarn(f"Failed to rebuild SDP with bitrate constraints: {exc}")
+                        text = answer.sdp.as_text()
+                else:
+                    text = modified_text
         promise = Gst.Promise.new()
         client['webrtc'].emit('set-local-description', answer, promise)
         promise.interrupt()
-        text = answer.sdp.as_text()
         msg = {'description': {'type': 'answer', 'sdp': text}, 'UUID': client['UUID'], 'session': client['session']}
         self.sendMessage(msg)
 
@@ -5395,6 +5990,11 @@ class WebRTCClient:
         if 'sdp' in msg:
             assert(msg['type'] == 'offer')
             sdp = msg['sdp']
+
+            try:
+                sdp = self._apply_bitrate_constraints_to_sdp(sdp, context="incoming offer")
+            except Exception as exc:
+                printwarn(f"Failed to apply bitrate constraints to incoming offer: {exc}")
             
             # Reorder codecs in the remote offer to match local preferences
             preferred_codec = None
@@ -5465,6 +6065,7 @@ class WebRTCClient:
                     self.clients[UUID]["timer"] = None
                     self.clients[UUID]["ping"] = 0
                     self.clients[UUID]["webrtc"] = None
+                    self.clients[UUID]["direction"] = "receive" if self.view else "send"
                 
                 # Set pipeline to NULL after cleaning up elements
                 try:
@@ -5598,10 +6199,12 @@ class WebRTCClient:
                     try:
                         self._reset_display_chain_state()
                         self._display_surface_cleared = False
-                        self.pipe.set_state(Gst.State.PAUSED)
-                        self.pipe.get_state(Gst.SECOND)  # 1 second timeout
-                        self.pipe.set_state(Gst.State.NULL)
-                        self.pipe.get_state(Gst.SECOND)  # 1 second timeout
+                        pause_result = self.pipe.set_state(Gst.State.PAUSED)
+                        if pause_result == Gst.StateChangeReturn.FAILURE:
+                            printwarn("Error pausing pipeline during viewer cleanup")
+                        null_result = self.pipe.set_state(Gst.State.NULL)
+                        if null_result == Gst.StateChangeReturn.FAILURE:
+                            printwarn("Error setting pipeline to NULL during viewer cleanup")
                     except Exception as e:
                         printwarn(f"Error setting pipeline to NULL: {e}")
                         # Force cleanup even if state change failed
@@ -6228,6 +6831,38 @@ class WebRTCClient:
         
         return answer_sdp
 
+    async def _await_state_change(
+        self,
+        element,
+        label: str,
+        timeout_secs: float = 1.0,
+    ) -> Gst.StateChangeReturn:
+        """Poll a Gst.Element state change without blocking the event loop."""
+        if not element:
+            return Gst.StateChangeReturn.SUCCESS
+
+        deadline = time.monotonic() + max(timeout_secs, 0.0)
+        last_result = Gst.StateChangeReturn.ASYNC
+
+        while True:
+            try:
+                last_result, current, pending = element.get_state(0)
+            except Exception as exc:
+                printwarn(f"Error checking {label} state: {exc}")
+                return Gst.StateChangeReturn.FAILURE
+
+            if last_result in (
+                Gst.StateChangeReturn.SUCCESS,
+                Gst.StateChangeReturn.NO_PREROLL,
+                Gst.StateChangeReturn.FAILURE,
+            ):
+                return last_result
+
+            if time.monotonic() >= deadline:
+                return last_result
+
+            await asyncio.sleep(0.05)
+
     async def cleanup_pipeline(self):
         """Safely cleanup pipeline and all resources"""
         async with self.cleanup_lock:
@@ -6235,6 +6870,16 @@ class WebRTCClient:
             self._viewer_restart_enabled = False
             self._viewer_restart_pending = False
             self._cancel_viewer_restart_timer()
+
+            if getattr(self, "ice_processor_task", None):
+                task = self.ice_processor_task
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                self.ice_processor_task = None
             
             # Stop subprocess managers if active
             if self.subprocess_managers:
@@ -6267,18 +6912,27 @@ class WebRTCClient:
             # Clean up main pipeline
             if self.pipe:
                 try:
-                    # First set to PAUSED to stop data flow
-                    self.pipe.set_state(Gst.State.PAUSED)
-                    # Wait for state change with timeout (1 second)
-                    ret = self.pipe.get_state(Gst.SECOND)
-                    if ret[0] != Gst.StateChangeReturn.SUCCESS:
+                    pause_result = self.pipe.set_state(Gst.State.PAUSED)
+                    if pause_result == Gst.StateChangeReturn.ASYNC:
+                        pause_result = await self._await_state_change(
+                            self.pipe, "pipeline pause", timeout_secs=1.0
+                        )
+                    if pause_result not in (
+                        Gst.StateChangeReturn.SUCCESS,
+                        Gst.StateChangeReturn.NO_PREROLL,
+                    ):
                         printwarn("Pipeline didn't pause cleanly, forcing NULL state")
-                    
-                    # Then set to NULL to release resources
-                    self.pipe.set_state(Gst.State.NULL)
-                    # Wait for NULL state with timeout
-                    ret = self.pipe.get_state(Gst.SECOND)
-                    if ret[0] == Gst.StateChangeReturn.SUCCESS:
+
+                    null_result = self.pipe.set_state(Gst.State.NULL)
+                    if null_result == Gst.StateChangeReturn.ASYNC:
+                        null_result = await self._await_state_change(
+                            self.pipe, "pipeline shutdown", timeout_secs=1.5
+                        )
+
+                    if null_result in (
+                        Gst.StateChangeReturn.SUCCESS,
+                        Gst.StateChangeReturn.NO_PREROLL,
+                    ):
                         printc("   └─ ✅ Pipeline cleaned up successfully", "0F0")
                     else:
                         printwarn("Pipeline didn't reach NULL state cleanly")
@@ -6287,7 +6941,7 @@ class WebRTCClient:
                     # Force cleanup even if state change failed
                     try:
                         self.pipe.set_state(Gst.State.NULL)
-                    except:
+                    except Exception:
                         pass
                 finally:
                     # Always clear the pipeline reference to prevent reuse
@@ -6367,6 +7021,7 @@ class WebRTCClient:
                     self.clients[UUID]["timer"] = None
                     self.clients[UUID]["ping"] = 0
                     self.clients[UUID]["webrtc"] = None
+                    self.clients[UUID]["direction"] = "receive" if self.view else "send"
 
                 if 'session' in msg:
                     if not self.clients[UUID]['session']:
@@ -6394,6 +7049,7 @@ class WebRTCClient:
                                     "timer": None,
                                     "ping": 0,
                                     "webrtc": None,
+                                    "direction": "receive" if self.view else "send",
                                     "original_uuid": UUID
                                 }
                             UUID = new_uuid  # Use the new UUID for this session
@@ -9059,6 +9715,7 @@ async def main():
     # Setup signal handlers for graceful shutdown
     shutdown_event = asyncio.Event()
     loop = c.event_loop
+    force_exit_handle = [None]
 
     async def _close_connection():
         conn = c.conn
@@ -9071,6 +9728,14 @@ async def main():
         finally:
             if c.conn is conn:
                 c.conn = None
+
+    async def _sleep_or_shutdown(timeout: float):
+        if timeout <= 0:
+            return
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
 
     def _schedule_shutdown():
         if not c._shutdown_requested:
@@ -9087,6 +9752,10 @@ async def main():
         else:
             shutdown_event.set()
 
+    def _force_exit_due_to_timeout():
+        printc("\n❌ Shutdown timeout reached, forcing exit.", "F00")
+        os._exit(1)
+
     # Track if we're already shutting down
     shutdown_count = [0]
     
@@ -9095,6 +9764,8 @@ async def main():
         if shutdown_count[0] == 1:
             printc("\n🛑 Received interrupt signal, shutting down gracefully...", "F70")
             _schedule_shutdown()
+            if loop and loop.is_running() and force_exit_handle[0] is None:
+                force_exit_handle[0] = loop.call_later(8.0, _force_exit_due_to_timeout)
         elif shutdown_count[0] == 2:
             printc("\n⚠️  Second interrupt, forcing shutdown...", "F00")
             os._exit(1)
@@ -9125,25 +9796,36 @@ async def main():
             res = await c.loop()
         except KeyboardInterrupt:
             printc("\n👋 Shutting down gracefully...", "0FF")
-            await c.cleanup_pipeline()
+            _schedule_shutdown()
             break
         except Exception as e:
             if c._shutdown_requested:
                 break
             printc(f"⚠️  Connection error: {e}", "F77")
             # WebSocket reconnection - peer connections remain active
-            await asyncio.sleep(5)
+            await _sleep_or_shutdown(5)
+    shutdown_event.set()
     
     # Ensure cleanup is called
-    await c.cleanup_pipeline()
+    try:
+        await asyncio.wait_for(c.cleanup_pipeline(), timeout=10)
+    except asyncio.TimeoutError:
+        printc("\n❌ Cleanup timed out; forcing exit.", "F00")
+        os._exit(1)
     
     # Stop web server if running
     if webserver:
         await webserver.stop()
-    
+
     # Restore original signal handlers
     signal.signal(signal.SIGINT, original_sigint)
     signal.signal(signal.SIGTERM, original_sigterm)
+    if force_exit_handle[0] is not None:
+        try:
+            force_exit_handle[0].cancel()
+        except Exception:
+            pass
+        force_exit_handle[0] = None
     
     # Cancel stats task if running (if it exists)
     if 'stats_task' in locals() and stats_task:
