@@ -2286,6 +2286,82 @@ class WebRTCSubprocessManager:
 
 
 class WebRTCClient:
+    def _get_gst_property_if_available(self, element, prop_name: str) -> Tuple[Any, bool]:
+        """Try to read a GStreamer property; return (value, available_flag)."""
+        try:
+            return element.get_property(prop_name), True
+        except Exception:
+            pass
+
+        props = getattr(element, "props", None)
+        if props:
+            attr_name = prop_name.replace("-", "_")
+            if hasattr(props, attr_name):
+                try:
+                    return getattr(props, attr_name), True
+                except Exception:
+                    pass
+        return None, False
+
+    def _set_gst_property_if_available(self, element, prop_name: str, value: Any) -> bool:
+        """Attempt to set a GStreamer property while tolerating missing bindings."""
+        try:
+            element.set_property(prop_name, value)
+            return True
+        except Exception:
+            pass
+
+        props = getattr(element, "props", None)
+        if props:
+            attr_name = prop_name.replace("-", "_")
+            if hasattr(props, attr_name):
+                try:
+                    setattr(props, attr_name, value)
+                    return True
+                except Exception:
+                    pass
+        return False
+
+    def _apply_loss_recovery_overrides(self, client: Dict[str, Any]) -> bool:
+        """Best-effort attempt to enable redundancy on existing transceivers."""
+        webrtc = client.get("webrtc")
+        if not webrtc:
+            return False
+
+        updated = False
+        if not self.nored:
+            target_fec_type = GstWebRTC.WebRTCFECType.ULP_RED
+            current_fec_type, fec_type_available = self._get_gst_property_if_available(webrtc, "preferred-fec-type")
+            needs_update = not fec_type_available or current_fec_type != target_fec_type
+            if needs_update:
+                try:
+                    webrtc.set_property("preferred-fec-type", target_fec_type)
+                    updated = True
+                except Exception:
+                    pass
+
+        index = 0
+        while True:
+            try:
+                trans = webrtc.emit("get-transceiver", index)
+            except Exception:
+                break
+            if not trans:
+                break
+            if not self.nored:
+                current_fec, fec_available = self._get_gst_property_if_available(trans, "do-fec")
+                if fec_available and bool(current_fec):
+                    pass
+                elif self._set_gst_property_if_available(trans, "do-fec", True):
+                    updated = True
+            current_rtx, rtx_available = self._get_gst_property_if_available(trans, "do-retransmission")
+            if rtx_available and bool(current_rtx):
+                pass
+            elif self._set_gst_property_if_available(trans, "do-retransmission", True):
+                updated = True
+            index += 1
+        return updated
+
     def __init__(self, params):
         self.params = params  # Store params for room recording manager
         self.pipeline = params.pipeline
@@ -2299,6 +2375,7 @@ class WebRTCClient:
         self.server = params.server
         self.stream_id = params.streamid
         self.view = params.view
+        self.auto_view_buffer = getattr(params, 'auto_view_buffer', False)
         self.room_name = params.room
         self.room_hashcode = None
         self.multiviewer = params.multiviewer
@@ -2314,6 +2391,13 @@ class WebRTCClient:
         self.framebuffer = params.framebuffer
         self.midi = params.midi
         self.nored = params.nored
+        self.force_red = getattr(params, 'force_red', False)
+        self.force_rtx_requested = getattr(params, 'force_rtx', False)
+        self.force_rtx = self.force_rtx_requested or self.force_red
+        self._rtx_support_warned = False
+        if self.force_red and self.nored:
+            printwarn("Both --force-red and --nored specified; honoring --force-red and enabling redundancy")
+            self.nored = False
         self.noqos = params.noqos
         self.midi_thread = None
         self.midiout = None
@@ -2379,6 +2463,7 @@ class WebRTCClient:
         self._hw_decoder_warning_window = 0.0
         self._pipeline_bus_watch_installed = False
         self._last_viewer_codec = None
+        self._loss_hint_shown = False
         
         # ICE/TURN configuration
         self.stun_server = getattr(params, 'stun_server', None)
@@ -3953,7 +4038,8 @@ class WebRTCClient:
         debug_display = display_config["debug_display"]
 
         codec_type = None
-        if "VP8" in caps_name:
+        caps_upper = caps_name.upper()
+        if "VP8" in caps_upper:
             codec_type = "VP8"
             fallback_decoder = "vp8dec"
             decoder_desc, using_hw_decoder = self._get_decoder_description("VP8", fallback_decoder)
@@ -3976,7 +4062,7 @@ class WebRTCClient:
                 "queue max-size-buffers=0 max-size-time=0 ! "
                 f"identity name=view_identity_{pad.get_name()}"
             )
-        elif "H264" in caps_name:
+        elif "H264" in caps_upper:
             codec_type = "H264"
             fallback_decoder = "openh264dec"
             decoder_desc, using_hw_decoder = self._get_decoder_description("H264", fallback_decoder)
@@ -3993,6 +4079,39 @@ class WebRTCClient:
             conversion_chain = build_conversion_chain(using_hw_decoder)
             pipeline_desc = (
                 "queue ! rtph264depay ! h264parse ! "
+                f"{decoder_desc} ! "
+                "queue max-size-buffers=0 max-size-time=0 ! "
+                f"{conversion_chain} ! "
+                "queue max-size-buffers=0 max-size-time=0 ! "
+                f"identity name=view_identity_{pad.get_name()}"
+            )
+        elif "AV1" in caps_upper:
+            codec_type = "AV1"
+            if not gst_element_available("rtpav1depay"):
+                printwarn(
+                    "AV1 stream received but `rtpav1depay` is unavailable. Install gst-plugins-bad 1.24+ or gst-plugins-rs."
+                )
+                return None
+            if not gst_element_available("av1parse"):
+                printwarn("AV1 stream received but `av1parse` is unavailable. Install gst-plugins-rs or gst-plugins-bad.")
+                return None
+            fallback_decoder = "av1dec"
+            decoder_desc, using_hw_decoder = self._get_decoder_description("AV1", fallback_decoder)
+            if using_hw_decoder and needs_system_memory and not nvvidconv_has_nvbuf:
+                printwarn(
+                    "Selected AV1 hardware decoder requires nvvidconv nvbuf-memory-type support; falling back to software."
+                )
+                decoder_desc = fallback_decoder
+                using_hw_decoder = False
+            decoder_factory = decoder_desc.split()[0]
+            if not gst_element_available(decoder_factory):
+                printwarn(
+                    f"AV1 decoder `{decoder_factory}` not found. Install gst-libav (av1dec) or another AV1 decoder plugin."
+                )
+                return None
+            conversion_chain = build_conversion_chain(using_hw_decoder)
+            pipeline_desc = (
+                "queue ! rtpav1depay ! av1parse ! "
                 f"{decoder_desc} ! "
                 "queue max-size-buffers=0 max-size-time=0 ! "
                 f"{conversion_chain} ! "
@@ -4885,6 +5004,58 @@ class WebRTCClient:
             self._viewer_last_play_request = 0.0
             self._viewer_last_disconnect = 0.0
 
+        configured_transceivers: Set[int] = set()
+
+        def configure_transceiver(trans, index: Optional[int] = None):
+            if not trans:
+                return
+            trans_id = id(trans)
+            if trans_id in configured_transceivers:
+                return
+            configured_transceivers.add(trans_id)
+            label = f"transceiver[{index}]" if index is not None else "transceiver"
+
+            if not self.nored:
+                try:
+                    trans.set_property("fec-type", GstWebRTC.WebRTCFECType.ULP_RED)
+                    print(f"FEC ENABLED ({label})")
+                except Exception as exc:
+                    printwarn(f"Failed to enable FEC on {label}: {exc}")
+            force_fec = self.force_red or client.get("_auto_redundancy_active")
+            if force_fec:
+                if not self._set_gst_property_if_available(trans, "do-fec", True):
+                    if self.force_red:
+                        printwarn(f"{label}: Unable to force FEC (property unsupported)")
+            rtx_supported = False
+            force_rtx = self.force_rtx or client.get("_auto_redundancy_active")
+            if force_rtx:
+                rtx_supported = self._set_gst_property_if_available(trans, "do-retransmission", True)
+                if not rtx_supported and self.force_rtx and not self._rtx_support_warned:
+                    printwarn(
+                        f"{label}: RTX not supported by this GStreamer build; continuing with FEC only. Upgrade to GStreamer 1.24+ to enable retransmissions."
+                    )
+                    self._rtx_support_warned = True
+                elif self.force_rtx and rtx_supported:
+                    print(f"RTX ENABLED ({label})")
+            try:
+                trans.set_property("do-nack", True)
+                print(f"SEND NACKS ENABLED ({label})")
+            except Exception as exc:
+                printwarn(f"Failed to enable NACK on {label}: {exc}")
+
+        def configure_existing_transceivers():
+            index = 0
+            while True:
+                try:
+                    trans = client['webrtc'].emit("get-transceiver", index)
+                except Exception as exc:
+                    printwarn(f"Failed to access transceiver[{index}]: {exc}")
+                    break
+                if not trans:
+                    break
+                configure_transceiver(trans, index=index)
+                index += 1
+
         def on_offer_created(promise, _, __):
             # Offer created, sending to peer
             promise.wait()
@@ -4919,7 +5090,7 @@ class WebRTCClient:
 
         def on_new_tranceiver(element, trans):
             # New transceiver added
-            pass
+            configure_transceiver(trans)
 
         def on_negotiation_needed(element):
             # Negotiation needed, creating offer
@@ -4957,6 +5128,7 @@ class WebRTCClient:
             if state == 2: # connected
                 printc("\n🎬 Peer connection established!", "0F0")
                 printc("   └─ Viewer connected successfully\n", "0F0")
+                self._loss_hint_shown = False
                 if self.view:
                     try:
                         self._set_display_mode("connecting")
@@ -5031,10 +5203,10 @@ class WebRTCClient:
             else:
                 printc("NO HEARTBEAT", "F44")
                 if self.view:
-                    print("Viewer mode heartbeat timeout; keeping pipeline running")
+                    print("Viewer heartbeat timeout; restarting peer connection")
                     client['ping'] = 0
-                    client['timer'] = threading.Timer(3, pingTimer)
-                    client['timer'].start()
+                    self.stop_pipeline(client['UUID'])
+                    return
                 else:
                     self.stop_pipeline(client['UUID'])
 
@@ -5289,14 +5461,32 @@ class WebRTCClient:
             if "_last_full_stats_log" not in client:
                 client["_last_full_stats_log"] = 0
 
-            def extract_counter(text: str, token: str) -> int:
+            def extract_counter(text: str, token: str) -> Optional[int]:
+                if not text:
+                    return None
                 if token in text:
                     try:
                         segment = text.split(token, 1)[1]
                         return int(segment.split(",")[0].split(";")[0].strip())
                     except Exception:
-                        return 0
-                return 0
+                        pass
+                base_key = token.split("=", 1)[0] if "=" in token else token
+                if base_key:
+                    pattern = rf"{re.escape(base_key)}\s*=\s*\([^)]*\)\s*(\d+)"
+                    match = re.search(pattern, text)
+                    if match:
+                        try:
+                            return int(match.group(1))
+                        except Exception:
+                            pass
+                    fallback_pattern = rf"{re.escape(base_key)}\s*=\s*(\d+)"
+                    match = re.search(fallback_pattern, text)
+                    if match:
+                        try:
+                            return int(match.group(1))
+                        except Exception:
+                            pass
+                return None
 
             def extract_section(text: str, patterns) -> str:
                 for pattern in patterns:
@@ -5311,12 +5501,9 @@ class WebRTCClient:
                 if not section:
                     return None
                 for token in tokens:
-                    if token in section:
-                        try:
-                            segment = section.split(token, 1)[1]
-                            return int(segment.split(",")[0].split(";")[0].strip())
-                        except Exception:
-                            continue
+                    value = extract_counter(section, token)
+                    if value is not None:
+                        return value
                 return None
 
             def extract_int_from_section(section: str, pattern: str) -> Optional[int]:
@@ -5328,6 +5515,31 @@ class WebRTCClient:
                         return int(match.group(1))
                     except Exception:
                         return None
+                return None
+
+            def extract_float_value(text: str, token: str) -> Optional[float]:
+                if not text:
+                    return None
+                patterns = []
+                if "=" in token:
+                    patterns.append(rf"{re.escape(token)}\s*([0-9]+(?:\.[0-9]+)?)")
+                    base_key = token.split("=", 1)[0]
+                else:
+                    base_key = token
+                if base_key:
+                    patterns.extend(
+                        [
+                            rf"{re.escape(base_key)}\s*=\s*\([^)]*\)\s*([0-9]+(?:\.[0-9]+)?)",
+                            rf"{re.escape(base_key)}\s*=\s*([0-9]+(?:\.[0-9]+)?)",
+                        ]
+                    )
+                for pattern in patterns:
+                    match = re.search(pattern, text)
+                    if match:
+                        try:
+                            return float(match.group(1))
+                        except Exception:
+                            continue
                 return None
 
             video_patterns = [
@@ -5378,13 +5590,18 @@ class WebRTCClient:
             bytes_token = "bytes-received=(guint64)" if is_receive else "bytes-sent=(guint64)"
             packets_token = "packets-received=(guint64)" if is_receive else "packets-sent=(guint64)"
             bytes_total = extract_counter(stats_text, bytes_token)
-            if bytes_total == 0:
+            if bytes_total is None:
                 alt_bytes = "bytes-sent=(guint64)" if bytes_token.startswith("bytes-received") else "bytes-received=(guint64)"
                 bytes_total = extract_counter(stats_text, alt_bytes)
+            if bytes_total is None:
+                bytes_total = 0
+
             packets_total = extract_counter(stats_text, packets_token)
-            if packets_total == 0:
+            if packets_total is None:
                 alt_packets = "packets-sent=(guint64)" if packets_token.startswith("packets-received") else "packets-received=(guint64)"
                 packets_total = extract_counter(stats_text, alt_packets)
+            if packets_total is None:
+                packets_total = 0
 
             bytes_field = "_last_bytes_recv" if is_receive else "_last_bytes_sent"
             time_field = "_last_bytes_recv_time" if is_receive else "_last_bytes_time"
@@ -5481,30 +5698,217 @@ class WebRTCClient:
                 client["_last_full_stats_log"] = current_time
 
             loss_value = None
-            loss_match = re.search(r"fraction-lost=\([^)]*\)\s*([0-9.]+)", stats_text)
-            if loss_match:
-                try:
-                    loss_value = float(loss_match.group(1))
-                except Exception:
-                    loss_value = None
-            if loss_value is None:
-                lost_match = re.search(r"packets-lost=\([^)]*\)\s*(\d+)", stats_text)
-                recv_match = re.search(r"packets-received=\([^)]*\)\s*(\d+)", stats_text)
-                if lost_match and recv_match:
+            lost_packets_total = None
+            recv_packets_total = None
+            rtcp_loss_fraction = None
+            counter_loss_fraction = None
+            recovery_counter = None
+            raw_fraction: Optional[float] = None
+            residual_fraction: Optional[float] = None
+
+            fraction_tokens = [
+                "fraction-lost=(double)",
+                "fraction_lost=(double)",
+                "fractionLost=(double)",
+                "fraction-lost",
+            ]
+            for token in fraction_tokens:
+                rtcp_loss_fraction = extract_float_value(video_section, token)
+                if rtcp_loss_fraction is not None:
+                    break
+            if rtcp_loss_fraction is None:
+                for token in fraction_tokens:
+                    rtcp_loss_fraction = extract_float_value(stats_text, token)
+                    if rtcp_loss_fraction is not None:
+                        break
+
+            loss_tokens = [
+                "packets-lost=(guint64)",
+                "packets_lost=(guint64)",
+                "packetsLost=(guint64)",
+                "packets-lost",
+            ]
+            recv_tokens = [
+                "packets-received=(guint64)",
+                "packets_received=(guint64)",
+                "packetsReceived=(guint64)",
+                "packets-received",
+            ]
+
+            lost_packets_total = extract_counter_from_section(video_section, loss_tokens)
+            recv_packets_total = extract_counter_from_section(video_section, recv_tokens)
+            if lost_packets_total is None:
+                lost_packets_total = extract_counter(stats_text, "packets-lost=(guint64)")
+                if lost_packets_total is None:
+                    lost_packets_total = extract_counter(stats_text, "packets-lost")
+            if recv_packets_total is None:
+                recv_packets_total = extract_counter(stats_text, "packets-received=(guint64)")
+                if recv_packets_total is None:
+                    recv_packets_total = extract_counter(stats_text, "packets-received")
+
+            if (
+                isinstance(lost_packets_total, int)
+                and isinstance(recv_packets_total, int)
+                and lost_packets_total >= 0
+                and recv_packets_total >= 0
+            ):
+                total_packets = lost_packets_total + recv_packets_total
+                if total_packets > 0:
+                    counter_loss_fraction = lost_packets_total / total_packets
+
+            if rtcp_loss_fraction is not None:
+                loss_value = rtcp_loss_fraction
+                client["_last_raw_loss"] = rtcp_loss_fraction
+            if counter_loss_fraction is not None:
+                if loss_value is None:
+                    loss_value = counter_loss_fraction
+                client["_last_counter_loss"] = counter_loss_fraction
+
+            def _extract_int(pattern: str) -> Optional[int]:
+                match = re.search(pattern, stats_text)
+                if match:
                     try:
-                        lost_packets = int(lost_match.group(1))
-                        recv_packets = int(recv_match.group(1))
-                        total_packets = lost_packets + recv_packets
-                        if total_packets > 0:
-                            loss_value = lost_packets / total_packets
+                        return int(match.group(1))
                     except Exception:
-                        loss_value = None
+                        return None
+                return None
+
+            repaired_total = _extract_int(r"packets-repaired\s*=\s*\([^)]*\)\s*(\d+)")
+            fec_total = _extract_int(r"fec-packets-recovered\s*=\s*\([^)]*\)\s*(\d+)")
+            if fec_total is None:
+                fec_total = _extract_int(r"fec-recovered-packets\s*=\s*\([^)]*\)\s*(\d+)")
+            rtx_total = _extract_int(r"retransmitted-packets-received\s*=\s*\([^)]*\)\s*(\d+)")
+
+            fec_delta = None
+            if isinstance(fec_total, int):
+                client["_fec_seen"] = True
+                prev_fec_total = client.get("_prev_fec_total")
+                if isinstance(prev_fec_total, int) and fec_total >= prev_fec_total:
+                    fec_delta = fec_total - prev_fec_total
+                elif prev_fec_total is None:
+                    fec_delta = fec_total
+                client["_prev_fec_total"] = fec_total
+            rtx_delta = None
+            if isinstance(rtx_total, int):
+                client["_rtx_seen"] = True
+                prev_rtx_total = client.get("_prev_rtx_total")
+                if isinstance(prev_rtx_total, int) and rtx_total >= prev_rtx_total:
+                    rtx_delta = rtx_total - prev_rtx_total
+                elif prev_rtx_total is None:
+                    rtx_delta = rtx_total
+                client["_prev_rtx_total"] = rtx_total
+            if isinstance(fec_delta, int) and fec_delta > 0:
+                client["_fec_active"] = True
+            elif "_fec_active" not in client:
+                client["_fec_active"] = None
+            if isinstance(rtx_delta, int) and rtx_delta > 0:
+                client["_rtx_active"] = True
+            elif "_rtx_active" not in client:
+                client["_rtx_active"] = None
+
+            if repaired_total is not None:
+                recovery_counter = repaired_total
+            else:
+                recovered_components = [value for value in (fec_total, rtx_total) if isinstance(value, int)]
+                if recovered_components:
+                    recovery_counter = sum(recovered_components)
+
+            if lost_packets_total is not None and recv_packets_total is not None:
+                prev_lost = client.get("_prev_loss_counter_lost")
+                prev_recv = client.get("_prev_loss_counter_recv")
+                interval_lost = client.get("_interval_loss_lost", 0)
+                interval_total = client.get("_interval_loss_total", 0)
+
+                if (
+                    isinstance(prev_lost, int)
+                    and isinstance(prev_recv, int)
+                    and lost_packets_total >= prev_lost
+                    and recv_packets_total >= prev_recv
+                ):
+                    delta_lost = lost_packets_total - prev_lost
+                    delta_recv = recv_packets_total - prev_recv
+                    if delta_lost >= 0 and delta_recv >= 0:
+                        interval_lost += delta_lost
+                        interval_total += delta_lost + delta_recv
+                else:
+                    interval_lost = 0
+                    interval_total = 0
+
+                client["_prev_loss_counter_lost"] = lost_packets_total
+                client["_prev_loss_counter_recv"] = recv_packets_total
+                client["_interval_loss_lost"] = interval_lost
+                client["_interval_loss_total"] = interval_total
+            else:
+                client.setdefault("_interval_loss_lost", 0)
+                client.setdefault("_interval_loss_total", 0)
+
+            if recovery_counter is not None:
+                prev_recovered = client.get("_prev_loss_counter_recovered")
+                interval_recovered = client.get("_interval_loss_recovered", 0)
+                if (
+                    isinstance(prev_recovered, int)
+                    and recovery_counter >= prev_recovered
+                ):
+                    delta_recovered = recovery_counter - prev_recovered
+                    if delta_recovered >= 0:
+                        interval_recovered += delta_recovered
+                else:
+                    interval_recovered = 0
+                client["_prev_loss_counter_recovered"] = recovery_counter
+                client["_interval_loss_recovered"] = interval_recovered
+            elif "_interval_loss_recovered" not in client:
+                client["_interval_loss_recovered"] = 0
 
             if "_last_bitrate_log" not in client:
                 client["_last_bitrate_log"] = 0
 
+            raw_fraction = rtcp_loss_fraction
+            if raw_fraction is None:
+                raw_fraction = client.get("_last_raw_loss")
+            if raw_fraction is not None:
+                client["_last_raw_loss"] = raw_fraction
+
+            residual_fraction = counter_loss_fraction
+            if residual_fraction is None:
+                residual_fraction = client.get("_last_counter_loss")
+            if residual_fraction is not None:
+                client["_last_counter_loss"] = residual_fraction
+
+            if "_last_interval_loss" not in client:
+                client["_last_interval_loss"] = None
+
+            interval_fraction_for_use = client.get("_last_interval_loss")
+
             log_interval = 5 if is_receive else 10
             if current_time - client["_last_bitrate_log"] > log_interval:
+                interval_loss_value = None
+                interval_lost = client.get("_interval_loss_lost", 0)
+                interval_total = client.get("_interval_loss_total", 0)
+                interval_recovered = client.get("_interval_loss_recovered", 0)
+                if interval_total > 0:
+                    interval_loss_value = interval_lost / interval_total
+                elif (
+                    interval_total == 0
+                    and interval_lost == 0
+                    and client.get("_prev_loss_counter_lost") is not None
+                    and client.get("_prev_loss_counter_recv") is not None
+                ):
+                    interval_loss_value = 0.0
+                if interval_loss_value is not None:
+                    residual_fraction = interval_loss_value
+                    client["_last_counter_loss"] = residual_fraction
+                elif counter_loss_fraction is not None:
+                    residual_fraction = counter_loss_fraction
+                    client["_last_counter_loss"] = residual_fraction
+                elif residual_fraction is None:
+                    residual_fraction = client.get("_last_counter_loss")
+
+                if interval_loss_value is not None:
+                    interval_fraction_for_use = interval_loss_value
+                    client["_last_interval_loss"] = interval_loss_value
+                else:
+                    interval_fraction_for_use = client.get("_last_interval_loss")
+
                 if is_receive:
                     summary_parts = []
                     if bitrate_calc > 0:
@@ -5526,25 +5930,185 @@ class WebRTCClient:
                     codec_label = getattr(self, "_last_viewer_codec", None)
                     if codec_label:
                         summary_parts.append(f"codec {codec_label}")
-                    effective_loss = loss_value
-                    if effective_loss is None:
-                        effective_loss = client.get("_last_packet_loss")
-                    if effective_loss is not None:
-                        try:
-                            loss_pct = float(effective_loss) * 100.0
-                        except Exception:
-                            loss_pct = None
-                    else:
-                        loss_pct = None
-                    if loss_pct is not None:
-                        if loss_pct >= 1.0:
-                            summary_parts.append(f"{loss_pct:.2f}% loss ⚠️")
-                        else:
-                            summary_parts.append(f"{loss_pct:.2f}% loss")
+                    denom_for_raw = interval_total + max(interval_recovered, 0)
+                    residual_for_summary = interval_fraction_for_use
+                    if residual_for_summary is None:
+                        residual_for_summary = residual_fraction
+                    if residual_for_summary is None:
+                        residual_for_summary = client.get("_last_counter_loss")
+                    raw_loss_pct = raw_fraction * 100.0 if raw_fraction is not None else None
+                    residual_pct = residual_for_summary * 100.0 if residual_for_summary is not None else None
+                    recovered_pct = None
+                    if interval_recovered and denom_for_raw > 0:
+                        recovered_pct = (interval_recovered / denom_for_raw) * 100.0
+                    loss_summary = ""
+                    if raw_loss_pct is not None and residual_pct is not None:
+                        loss_summary = f"loss {raw_loss_pct:.2f}% raw → {residual_pct:.2f}%"
+                        if recovered_pct is not None and recovered_pct > 0:
+                            loss_summary += f" (recovered {recovered_pct:.2f}%)"
+                    elif residual_pct is not None:
+                        loss_summary = f"loss raw unknown → {residual_pct:.2f}% (post-repair)"
+                        if recovered_pct is not None and recovered_pct > 0:
+                            loss_summary += f" (recovered {recovered_pct:.2f}%)"
+                    elif raw_loss_pct is not None:
+                        loss_summary = f"loss {raw_loss_pct:.2f}% raw"
+                    if loss_summary:
+                        if residual_pct is not None and residual_pct >= 1.0:
+                            loss_summary += " ⚠️"
+                        summary_parts.append(loss_summary)
                     if summary_parts:
-                        printc(f"📥 Receiving {' • '.join(summary_parts)}", "07F")
+                        summary_text = f"📥 Receiving {' • '.join(summary_parts)}"
+                        summary_color = "07F"
+                        summary_state = {
+                            "bitrate": bitrate_calc,
+                            "packet_rate": int(round(packet_rate)) if packet_rate > 0 else 0,
+                            "resolution": (
+                                effective_width if effective_width else 0,
+                                effective_height if effective_height else 0,
+                            ),
+                            "codec": codec_label or "",
+                            "loss": loss_summary,
+                        }
                     else:
-                        printc("📥 Waiting for viewer data...", "F70")
+                        summary_text = "📥 Waiting for viewer data..."
+                        summary_color = "F70"
+                        summary_state = None
+
+                    last_summary = client.get("_last_receive_summary")
+                    last_summary_time = client.get("_last_receive_summary_ts", 0.0)
+                    last_state = client.get("_last_receive_summary_state")
+                    should_emit_summary = False
+                    if summary_state is not None:
+                        if not last_state:
+                            should_emit_summary = True
+                        else:
+                            bitrate_prev = last_state.get("bitrate", 0)
+                            bitrate_delta = abs(summary_state["bitrate"] - bitrate_prev)
+                            bitrate_threshold = max(300, int(bitrate_prev * 0.15))
+
+                            pps_prev = last_state.get("packet_rate", 0)
+                            pps_delta = abs(summary_state["packet_rate"] - pps_prev)
+                            pps_threshold = max(15, int(pps_prev * 0.2))
+
+                            resolution_changed = summary_state["resolution"] != last_state.get("resolution")
+                            codec_changed = summary_state["codec"] != last_state.get("codec")
+                            loss_changed = summary_state["loss"] != last_state.get("loss")
+
+                            if (
+                                bitrate_prev == 0
+                                or bitrate_delta >= bitrate_threshold
+                                or pps_delta >= pps_threshold
+                                or resolution_changed
+                                or codec_changed
+                                or loss_changed
+                            ):
+                                should_emit_summary = True
+                        if not should_emit_summary and (current_time - last_summary_time) >= 30:
+                            should_emit_summary = True
+                    else:
+                        should_emit_summary = summary_text != last_summary or (current_time - last_summary_time) >= 30
+                    if should_emit_summary:
+                        printc(summary_text, summary_color)
+                        client["_last_receive_summary"] = summary_text
+                        client["_last_receive_summary_ts"] = current_time
+                        client["_last_receive_summary_state"] = summary_state
+                    if (
+                        (self.force_red or client.get("_auto_redundancy_active"))
+                        and not client.get("_fec_active")
+                        and not client.get("_fec_codec_warning_shown")
+                    ):
+                        codec_label_upper = (codec_label or "").upper()
+                        if codec_label_upper == "H264":
+                            printwarn(
+                                "Remote sender is H264 without RED/FEC. Chrome typically omits FEC for H264, so sustained loss will still stutter unless RTX is available (requires GStreamer ≥1.24)."
+                            )
+                            client["_fec_codec_warning_shown"] = True
+                    loss_for_hint = raw_loss_pct if raw_loss_pct is not None else residual_pct
+                    if (
+                        self.view
+                        and self.auto_view_buffer
+                        and loss_for_hint is not None
+                        and loss_for_hint >= 2.0
+                        and client.get("webrtc")
+                    ):
+                        current_latency = client.get("_latency_applied", max(self.buffer, 10))
+                        target_latency = current_latency
+                        if loss_for_hint >= 10.0:
+                            target_latency = max(target_latency, 2000)
+                        elif loss_for_hint >= 5.0:
+                            target_latency = max(target_latency, 1500)
+                        elif loss_for_hint >= 2.0:
+                            target_latency = max(target_latency, 1000)
+                        last_raise = client.get("_latency_last_raise", 0.0)
+                        if (
+                            target_latency > current_latency
+                            and (current_time - last_raise) >= 10.0
+                        ):
+                            try:
+                                client["webrtc"].set_property("latency", int(target_latency))
+                                client["_latency_applied"] = int(target_latency)
+                                client["_latency_last_raise"] = current_time
+                                printc(
+                                    f"   🔄 Increasing jitter buffer to {int(target_latency)} ms (loss ≈ {loss_for_hint:.2f}%)",
+                                    "0FF",
+                                )
+                            except Exception as exc:
+                                printwarn(f"Failed to raise jitter buffer latency: {exc}")
+                    suppress_hint = False
+                    if (
+                        loss_for_hint is not None
+                        and loss_for_hint >= 5.0
+                        and not self.force_red
+                        and not self.nored
+                        and client.get("_fec_active") is not True
+                        and not client.get("_auto_redundancy_active")
+                    ):
+                        attempts = client.get("_auto_redundancy_attempts", 0)
+                        last_auto = client.get("_auto_redundancy_last", 0.0)
+                        if attempts < 2 and (current_time - last_auto) >= 10:
+                            success = self._apply_loss_recovery_overrides(client)
+                            client["_auto_redundancy_last"] = current_time
+                            if success:
+                                client["_auto_redundancy_attempts"] = attempts + 1
+                                suppress_hint = True
+                                client["_auto_redundancy_active"] = True
+                                printc("   ⚙️ Attempting to enable redundancy automatically (high loss detected)", "0FF")
+                                try:
+                                    on_negotiation_needed(client['webrtc'])
+                                except Exception as exc:
+                                    printwarn(f"Failed to trigger renegotiation for redundancy: {exc}")
+                            else:
+                                client["_auto_redundancy_attempts"] = attempts + 1
+                    if (
+                        not suppress_hint
+                        and not self._loss_hint_shown
+                        and loss_for_hint is not None
+                        and loss_for_hint >= 2.0
+                    ):
+                        suggestions = []
+                        fec_active = client.get("_fec_active")
+                        fec_seen = client.get("_fec_seen", False)
+                        rtx_state = client.get("_rtx_active")
+                        rtx_seen = client.get("_rtx_seen", False)
+                        auto_redundancy = client.get("_auto_redundancy_active", False)
+                        rtx_active = (rtx_state is True) or self.force_rtx
+                        if self.nored and not self.force_red:
+                            suggestions.append("removing `--nored` to restore FEC")
+                        elif fec_active is False and not self.force_red and not auto_redundancy:
+                            suggestions.append("adding `--force-red` to embed redundancy when the publisher allows it")
+                        elif fec_active is None and fec_seen and not self.force_red and not auto_redundancy:
+                            suggestions.append("adding `--force-red` to override peers that refuse redundancy")
+                        if (rtx_state is False or (rtx_seen and rtx_state is not True)) and not rtx_active and not self._rtx_support_warned:
+                            suggestions.append("adding `--force-rtx`")
+                        if getattr(self, "buffer", 0) < 500:
+                            suggestions.append("raising the jitter buffer (e.g. `--buffer 800`)")
+                        if suggestions:
+                            if len(suggestions) == 1:
+                                suggestion_text = suggestions[0]
+                            else:
+                                suggestion_text = ", ".join(suggestions[:-1]) + f", or {suggestions[-1]}"
+                            printc(f"   💡 Consider {suggestion_text} to improve recovery under loss.", "FF0")
+                            self._loss_hint_shown = True
                 else:
                     if bitrate_calc > 0:
                         printc(f"📊 Streaming at {bitrate_calc} kbps", "07F")
@@ -5553,54 +6117,173 @@ class WebRTCClient:
                     else:
                         printc("📊 Waiting for stream data...", "F70")
                 client["_last_bitrate_log"] = current_time
+                client["_interval_loss_lost"] = 0
+                client["_interval_loss_total"] = 0
+                client["_interval_loss_recovered"] = 0
+                if interval_loss_value is not None:
+                    loss_value = interval_loss_value
+                elif residual_fraction is not None:
+                    loss_value = residual_fraction
 
-            if loss_value is not None:
-                if "_last_packet_loss" not in client:
-                    client["_last_packet_loss"] = -1
+            quality_loss_value = None
+            quality_basis = None
+            if raw_fraction is not None:
+                quality_loss_value = raw_fraction
+                quality_basis = "raw"
+            else:
+                residual_for_quality = interval_fraction_for_use
+                if residual_for_quality is None:
+                    residual_for_quality = residual_fraction
+                if residual_for_quality is None:
+                    residual_for_quality = client.get("_last_counter_loss")
+                if residual_for_quality is not None:
+                    quality_loss_value = residual_for_quality
+                    quality_basis = "post-repair"
+            if quality_loss_value is None and loss_value is not None:
+                quality_loss_value = loss_value
 
-                if loss_value > 0.01 or abs(loss_value - client["_last_packet_loss"]) > 0.005:
+            packet_loss_display = None
+            packet_loss_basis = None
+            if raw_fraction is not None:
+                packet_loss_display = raw_fraction
+                packet_loss_basis = "raw"
+            else:
+                packet_display_candidate = interval_fraction_for_use
+                if packet_display_candidate is None:
+                    packet_display_candidate = residual_fraction
+                if packet_display_candidate is None:
+                    packet_display_candidate = client.get("_last_counter_loss")
+                if packet_display_candidate is not None:
+                    packet_loss_display = packet_display_candidate
+                    packet_loss_basis = "post-repair"
+            if packet_loss_display is None and loss_value is not None:
+                packet_loss_display = loss_value
+                if packet_loss_basis is None:
+                    packet_loss_basis = "post-repair"
+
+            if quality_loss_value is not None:
+                previous_quality = client.get("_last_packet_loss", -1.0)
+                previous_label = client.get("_last_quality_label")
+                quality_pct = None
+                try:
+                    quality_pct = quality_loss_value * 100.0
+                except Exception:
+                    quality_pct = None
+
+                prev_display = client.get("_last_packet_loss_display", -1.0)
+                display_pct = None
+                significant_display_change = False
+                should_log_display = False
+                if packet_loss_display is not None:
+                    try:
+                        display_pct = packet_loss_display * 100.0
+                    except Exception:
+                        display_pct = None
+                    significant_display_change = abs(packet_loss_display - prev_display) > 0.005
+                    if prev_display < 0 and packet_loss_display >= 0:
+                        should_log_display = True
+                    elif packet_loss_display > 0.01 and significant_display_change:
+                        should_log_display = True
+                    elif packet_loss_display <= 0.01 and prev_display > 0.01:
+                        should_log_display = True
+
+                def _classify_loss(loss_percent: Optional[float]) -> Tuple[str, str]:
+                    if loss_percent is None:
+                        return ("unknown", "F77")
+                    if loss_percent >= 20.0:
+                        return ("unusable", "F00")
+                    if loss_percent >= 10.0:
+                        return ("poor", "F60")
+                    if loss_percent >= 5.0:
+                        return ("degraded", "FA0")
+                    if loss_percent >= 2.0:
+                        return ("fair", "CF0")
+                    if loss_percent > 0.0:
+                        return ("good", "6F0")
+                    return ("excellent", "0F0")
+
+                quality_label, quality_color = _classify_loss(quality_pct)
+                if raw_fraction is None and quality_basis != "raw":
+                    quality_label, quality_color = ("unknown", "888")
+                significant_quality_change = abs(quality_loss_value - previous_quality) > 0.005
+                should_log_quality = (
+                    previous_quality < 0
+                    or previous_label != quality_label
+                    or significant_quality_change
+                )
+
+                if should_log_display or should_log_quality:
+                    detail_parts = []
+                    loss_basis = packet_loss_basis or quality_basis or "observed"
+                    quality_display_label = quality_label
+                    if isinstance(quality_label, str) and quality_label.lower() not in ("excellent", "good", "unknown"):
+                        quality_display_label = f"{quality_label} ⚠️"
+                    quality_label = quality_display_label
+                    if raw_fraction is None and (loss_basis or "").startswith("post-repair"):
+                        loss_basis = "post-repair (raw unavailable)"
+                    if display_pct is not None:
+                        detail_parts.append(f"{loss_basis} loss {display_pct:.2f}%")
+                    elif quality_pct is not None:
+                        detail_parts.append(f"{loss_basis} loss {quality_pct:.2f}%")
+                    if bitrate_calc > 0:
+                        detail_parts.append(f"bitrate {bitrate_calc} kbps")
+                    detail_suffix = f" ({', '.join(detail_parts)})" if detail_parts else ""
+                    icon_map = {
+                        "unusable": "🛑",
+                        "poor": "⚠️",
+                        "degraded": "⚠️",
+                        "fair": "⚠️",
+                        "unknown": "⚠️",
+                    }
+                    icon = icon_map.get(quality_label, "")
+                    label_with_icon = f"{quality_label}{' ' + icon if icon else ''}"
+                    printc(f"📊 Network quality: {label_with_icon}{detail_suffix}", quality_color)
+                    client["_last_quality_label"] = quality_label
+                    if packet_loss_display is not None:
+                        client["_last_packet_loss_display"] = packet_loss_display
+                elif significant_display_change and packet_loss_display is not None:
+                    client["_last_packet_loss_display"] = packet_loss_display
+
+                client["_last_packet_loss"] = quality_loss_value
+                if (
+                    client.get("_last_packet_loss_display", -1.0) < 0
+                    and packet_loss_display is not None
+                ):
+                    client["_last_packet_loss_display"] = packet_loss_display
+
+            if loss_value is not None and not is_receive:
+                skip_bitrate_adjustment = False
+                if " vp8enc " in self.pipeline:
+                    skip_bitrate_adjustment = True
+                elif " av1enc " in self.pipeline:
+                    skip_bitrate_adjustment = True
+
+                if not skip_bitrate_adjustment and not self.noqos:
                     if loss_value > 0.01:
-                        printc(f"📊 Packet loss: {loss_value:.3f} ⚠️", "F77")
-                    elif client["_last_packet_loss"] < 0 or client["_last_packet_loss"] > 0.01:
-                        if bitrate_calc > 0:
-                            printc(f"📊 Network quality: excellent (bitrate: {bitrate_calc} kbps)", "0F0")
-                        else:
-                            printc("📊 Network quality: excellent", "0F0")
-                    client["_last_packet_loss"] = loss_value
-
-                if not is_receive:
-                    skip_bitrate_adjustment = False
-                    if " vp8enc " in self.pipeline:
-                        skip_bitrate_adjustment = True
-                    elif " av1enc " in self.pipeline:
-                        skip_bitrate_adjustment = True
-
-                    if not skip_bitrate_adjustment and not self.noqos:
-                        if loss_value > 0.01:
-                            old_bitrate = self.bitrate
+                        old_bitrate = self.bitrate
+                        bitrate = self.bitrate * 0.9
+                        if bitrate < self.max_bitrate * 0.2:
+                            bitrate = self.max_bitrate * 0.2
+                        elif bitrate > self.max_bitrate * 0.8:
                             bitrate = self.bitrate * 0.9
-                            if bitrate < self.max_bitrate * 0.2:
-                                bitrate = self.max_bitrate * 0.2
-                            elif bitrate > self.max_bitrate * 0.8:
-                                bitrate = self.bitrate * 0.9
 
-                            if int(bitrate) != int(old_bitrate):
-                                self.bitrate = bitrate
-                                printc(f"   └─ Reducing bitrate to {int(bitrate)} kbps (packet loss detected)", "FF0")
-                                self.set_encoder_bitrate(client, int(bitrate))
+                        if int(bitrate) != int(old_bitrate):
+                            self.bitrate = bitrate
+                            printc(f"   └─ Reducing bitrate to {int(bitrate)} kbps (packet loss detected)", "FF0")
+                            self.set_encoder_bitrate(client, int(bitrate))
 
-                        elif loss_value < 0.003:
-                            old_bitrate = self.bitrate
+                    elif loss_value < 0.003:
+                        old_bitrate = self.bitrate
+                        bitrate = self.bitrate * 1.05
+                        if bitrate > self.max_bitrate:
+                            bitrate = self.max_bitrate
+                        elif bitrate * 2 < self.max_bitrate:
                             bitrate = self.bitrate * 1.05
-                            if bitrate > self.max_bitrate:
-                                bitrate = self.max_bitrate
-                            elif bitrate * 2 < self.max_bitrate:
-                                bitrate = self.bitrate * 1.05
 
-                            if int(bitrate) != int(old_bitrate):
-                                self.bitrate = bitrate
-                                printc(f"   └─ Increasing bitrate to {int(bitrate)} kbps (good connection)", "0F0")
-                                self.set_encoder_bitrate(client, int(bitrate))
+                        if int(bitrate) != int(old_bitrate):
+                            self.bitrate = bitrate
+                            printc(f"   └─ Increasing bitrate to {int(bitrate)} kbps (good connection)", "0F0")
+                            self.set_encoder_bitrate(client, int(bitrate))
 
         # Debug encoder setup for VP8
         if " vp8enc " in self.pipeline:
@@ -5653,6 +6336,7 @@ class WebRTCClient:
                 buffer_ms = max(self.buffer, 10)
                 client['webrtc'].set_property('latency', buffer_ms)
                 client['webrtc'].set_property('async-handling', True)
+                client["_latency_applied"] = buffer_ms
             except Exception as E:
                 pass
             self.pipe.add(client['webrtc'])
@@ -5667,7 +6351,7 @@ class WebRTCClient:
                 pass
             elif self.h264:
                 direction = GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY
-                caps = Gst.caps_from_string("application/x-rtp,media=video,encoding-name=H264,payload=102,clock-rate=90000,packetization-mode=(string)1")
+                caps = Gst.caps_from_string("application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,packetization-mode=(string)1")
                 tcvr = client['webrtc'].emit('add-transceiver', direction, caps)
                 if Gst.version().minor > 18:
                     tcvr.set_property("codec-preferences",caps) ## supported as of around June 2021 in gstreamer for answer side?
@@ -5686,6 +6370,7 @@ class WebRTCClient:
                 buffer_ms = max(self.buffer, 10)
                 client['webrtc'].set_property('latency', buffer_ms)
                 client['webrtc'].set_property('async-handling', True)
+                client["_latency_applied"] = buffer_ms
             except Exception as E:
                 pass
             self.pipe.add(client['webrtc'])
@@ -5719,6 +6404,19 @@ class WebRTCClient:
                 print(self.midi_thread)
                 print("MIDI THREAD STARTED")
 
+        if client.get('webrtc') and self.force_red:
+            target_fec_type = GstWebRTC.WebRTCFECType.ULP_RED
+            current_fec_type, fec_type_available = self._get_gst_property_if_available(
+                client['webrtc'], "preferred-fec-type"
+            )
+            if not fec_type_available or current_fec_type != target_fec_type:
+                try:
+                    client['webrtc'].set_property('preferred-fec-type', target_fec_type)
+                    print("PREFERRED FEC TYPE set to ULP_RED")
+                except Exception:
+                    # Older GStreamer builds (≤1.22) do not expose preferred-fec-type; fall back silently
+                    pass
+
         try:
             client['webrtc'].connect('notify::ice-connection-state', on_ice_connection_state)
             client['webrtc'].connect('notify::connection-state', on_connection_state)
@@ -5736,24 +6434,14 @@ class WebRTCClient:
             client['webrtc'].connect('pad-removed', self.on_remote_pad_removed)
             client['webrtc'].connect('on-ice-candidate', send_ice_remote_candidate_message)
             client['webrtc'].connect('on-data-channel', on_data_channel)
+            client['webrtc'].connect('on-new-transceiver', on_new_tranceiver)
         else:
             client['webrtc'].connect('on-ice-candidate', send_ice_local_candidate_message)
             client['webrtc'].connect('on-negotiation-needed', on_negotiation_needed)
             client['webrtc'].connect('on-new-transceiver', on_new_tranceiver)
 
         try:
-            if not self.streamin:
-                trans = client['webrtc'].emit("get-transceiver",0)
-                if trans is not None:
-                    try:
-                        if not self.nored:
-                            trans.set_property("fec-type", GstWebRTC.WebRTCFECType.ULP_RED)
-                            print("FEC ENABLED")
-                    except Exception as E:
-                        pass
-                    trans.set_property("do-nack", True)
-                    print("SEND NACKS ENABLED")
-
+            configure_existing_transceivers()
         except Exception as E:
             printwarn(get_exception_info(E))
 
@@ -8571,6 +9259,8 @@ async def main():
     parser.add_argument('--webserver', type=int, metavar='PORT', help='Enable web interface on specified port (e.g., --webserver 8080) for monitoring stats, logs, and controls.')
     parser.add_argument('--noqos', action='store_true', help='Do not try to automatically reduce video bitrate if packet loss gets too high. The default will reduce the bitrate if needed.')
     parser.add_argument('--nored', action='store_true', help='Disable error correction redundency for transmitted video. This may reduce the bandwidth used by half, but it will be more sensitive to packet loss')
+    parser.add_argument('--force-red', action='store_true', help='Force negotiation of RED/ULPFEC/RTX redundancy when supported by the remote peer (H264/VP8/AV1). Increases bandwidth but improves resilience to packet loss.')
+    parser.add_argument('--force-rtx', action='store_true', help='Force-enable RTX retransmissions when supported by the local GStreamer build (requires webrtcbin from GStreamer 1.24 or newer).')
     parser.add_argument('--novideo', action='store_true', help='Disables video input.')
     parser.add_argument('--noaudio', action='store_true', help='Disables audio input.')
     parser.add_argument('--led', action='store_true', help='Enable GPIO pin 12 as an LED indicator light; for Raspberry Pi.')
@@ -8598,6 +9288,7 @@ async def main():
     parser.add_argument('--framebuffer', type=str, help='VDO.Ninja to local frame buffer; performant and Numpy/OpenCV friendly')
     parser.add_argument('--debug', action='store_true', help='Show added debug information from Gsteamer and other aspects of the app')
     parser.add_argument('--buffer',  type=int, default=200, help='The jitter buffer latency in milliseconds; default is 200ms, minimum is 10ms. (gst +v1.18)')
+    parser.add_argument('--auto-view-buffer', action='store_true', help='Viewer mode: dynamically raise jitter buffer latency when packet loss is detected (opt-in).')
     parser.add_argument('--password', type=str, nargs='?', default="someEncryptionKey123", required=False, const='', help='Specify a custom password. If setting to false, password/encryption will be disabled.')
     parser.add_argument('--salt', type=str, default=None, help='Specify a custom salt for encryption. If not provided, will be derived from hostname (default: vdo.ninja)')
     parser.add_argument('--hostname', type=str, default='https://vdo.ninja/', help='Your URL for vdo.ninja, if self-hosting the website code')
@@ -8661,11 +9352,25 @@ async def main():
             else:
                 setattr(args, attr, expanded)
     
+    gst_version = Gst.version()
+    args.gst_version = gst_version
+
     # Display header
     printc("\n╔═══════════════════════════════════════════════╗", "0FF")
     printc("║          🥷 Raspberry Ninja                   ║", "0FF") 
     printc("║     Multi-Platform WebRTC Publisher           ║", "0FF")
     printc("╚═══════════════════════════════════════════════╝\n", "0FF")
+
+    if args.view:
+        gst_major, gst_minor, gst_micro, gst_nano = gst_version
+        printc("Viewer connection tips:", "0AF")
+        printc("  • For unstable links try `--buffer 1500` or `--buffer 2000`.", "0AF")
+        printc("  • Opt in to automatic buffer scaling with `--auto-view-buffer` when stutter appears.", "0AF")
+        if gst_major > 1 or (gst_major == 1 and gst_minor >= 24):
+            printc("  • RTX is available; pair `--force-red` with `--force-rtx` when the sender supports it.", "0AF")
+        else:
+            printc("  • This build is FEC-only; `--force-red` plus a higher buffer helps with heavy loss.", "0AF")
+        print()
     
     # Validate buffer value to prevent segfaults
     if args.buffer < 10:
