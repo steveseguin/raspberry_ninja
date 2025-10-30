@@ -2322,6 +2322,17 @@ class WebRTCClient:
                     pass
         return False
 
+    def _analyze_remote_redundancy(self, sdp_text: str) -> Dict[str, bool]:
+        """Parse remote SDP for redundancy features."""
+        try:
+            lowered = sdp_text.lower()
+        except Exception:
+            lowered = str(sdp_text).lower()
+        red = bool(re.search(r'a=rtpmap:\d+\s+red/90000', lowered))
+        ulpfec = bool(re.search(r'a=rtpmap:\d+\s+ulpfec/90000', lowered))
+        rtx = bool(re.search(r'a=rtpmap:\d+\s+rtx/90000', lowered))
+        return {"red": red, "ulpfec": ulpfec, "rtx": rtx}
+
     def _apply_loss_recovery_overrides(self, client: Dict[str, Any]) -> bool:
         """Best-effort attempt to enable redundancy on existing transceivers."""
         webrtc = client.get("webrtc")
@@ -2369,6 +2380,7 @@ class WebRTCClient:
         self.pipe = None
         self.h264 = params.h264
         self.vp8 = params.vp8
+        self.vp9 = getattr(params, 'vp9', False)
         self.pipein = params.pipein
         self.bitrate = params.bitrate
         self.max_bitrate = params.bitrate
@@ -2394,6 +2406,7 @@ class WebRTCClient:
         self.force_red = getattr(params, 'force_red', False)
         self.force_rtx_requested = getattr(params, 'force_rtx', False)
         self.force_rtx = self.force_rtx_requested or self.force_red
+        self._rtx_from_force_red = self.force_red and not self.force_rtx_requested
         self._rtx_support_warned = False
         if self.force_red and self.nored:
             printwarn("Both --force-red and --nored specified; honoring --force-red and enabling redundancy")
@@ -5043,21 +5056,44 @@ class WebRTCClient:
             if not self.nored:
                 try:
                     trans.set_property("fec-type", GstWebRTC.WebRTCFECType.ULP_RED)
-                    print(f"FEC ENABLED ({label})")
+                    print(f"ULP_RED redundancy requested ({label})")
+                    if isinstance(client, dict):
+                        client["_local_red_requested"] = True
                 except Exception as exc:
-                    printwarn(f"Failed to enable FEC on {label}: {exc}")
+                    printwarn(f"Failed to request ULP_RED redundancy on {label}: {exc}")
             force_fec = self.force_red or client.get("_auto_redundancy_active")
             if force_fec:
-                if not self._set_gst_property_if_available(trans, "do-fec", True):
-                    if self.force_red:
-                        printwarn(f"{label}: Unable to force FEC (property unsupported)")
+                if self._set_gst_property_if_available(trans, "do-fec", True):
+                    print(f"{label}: ULPFEC parity requested")
+                    if isinstance(client, dict):
+                        client["_local_ulpfec_forced"] = True
+                elif self.force_red:
+                    if isinstance(client, dict):
+                        client["_local_ulpfec_forced"] = False
+                        remote_has_red = client.get("_remote_offered_red")
+                        remote_has_ulpfec = client.get("_remote_offered_ulpfec")
+                        if remote_has_ulpfec:
+                            printwarn(
+                                f"{label}: Local GStreamer build cannot force ULPFEC parity; relying on the publisher's advertised ULPFEC."
+                            )
+                        elif remote_has_red:
+                            printwarn(
+                                f"{label}: Remote offer provides RED wrappers but no ULPFEC parity. Duplicate payloads only; expect stutter under sustained loss."
+                            )
+                        else:
+                            printwarn(
+                                f"{label}: Remote offer lacks RED/ULPFEC support; `--force-red` cannot add redundancy without publisher cooperation."
+                            )
+                    else:
+                        printwarn(f"{label}: Unable to request ULPFEC parity (property unsupported)")
             rtx_supported = False
             force_rtx = self.force_rtx or client.get("_auto_redundancy_active")
             if force_rtx:
                 rtx_supported = self._set_gst_property_if_available(trans, "do-retransmission", True)
                 if not rtx_supported and self.force_rtx and not self._rtx_support_warned:
+                    reason_suffix = " (auto-requested because --force-red)" if self._rtx_from_force_red else ""
                     printwarn(
-                        f"{label}: RTX not supported by this GStreamer build; continuing with FEC only. Upgrade to GStreamer 1.24+ to enable retransmissions."
+                        f"{label}: RTX not supported by this GStreamer build{reason_suffix}; continuing without retransmissions. Upgrade to GStreamer 1.24+ to enable RTX."
                     )
                     self._rtx_support_warned = True
                 elif self.force_rtx and rtx_supported:
@@ -5823,10 +5859,14 @@ class WebRTCClient:
                     rtx_delta = rtx_total
                 client["_prev_rtx_total"] = rtx_total
             if isinstance(fec_delta, int) and fec_delta > 0:
+                if client.get("_fec_active") is not True:
+                    printc("   ✅ ULPFEC parity packets recovering loss", "0F0")
                 client["_fec_active"] = True
             elif "_fec_active" not in client:
                 client["_fec_active"] = None
             if isinstance(rtx_delta, int) and rtx_delta > 0:
+                if client.get("_rtx_active") is not True:
+                    printc("   ✅ RTX retransmissions recovering loss", "0F0")
                 client["_rtx_active"] = True
             elif "_rtx_active" not in client:
                 client["_rtx_active"] = None
@@ -6045,7 +6085,7 @@ class WebRTCClient:
                         codec_label_upper = (codec_label or "").upper()
                         if codec_label_upper == "H264":
                             printwarn(
-                                "Remote sender is H264 without RED/FEC. Chrome typically omits FEC for H264, so sustained loss will still stutter unless RTX is available (requires GStreamer ≥1.24)."
+                                "Remote sender is H264 without RED/ULPFEC redundancy. Chrome typically omits redundancy for H264, so sustained loss will still stutter unless RTX is available (requires GStreamer ≥1.24)."
                             )
                             client["_fec_codec_warning_shown"] = True
                     loss_for_hint = raw_loss_pct if raw_loss_pct is not None else residual_pct
@@ -6118,9 +6158,9 @@ class WebRTCClient:
                         auto_redundancy = client.get("_auto_redundancy_active", False)
                         rtx_active = (rtx_state is True) or self.force_rtx
                         if self.nored and not self.force_red:
-                            suggestions.append("removing `--nored` to restore FEC")
+                            suggestions.append("removing `--nored` to restore RED/ULPFEC redundancy")
                         elif fec_active is False and not self.force_red and not auto_redundancy:
-                            suggestions.append("adding `--force-red` to embed redundancy when the publisher allows it")
+                            suggestions.append("adding `--force-red` to embed RED/ULPFEC redundancy when the publisher allows it")
                         elif fec_active is None and fec_seen and not self.force_red and not auto_redundancy:
                             suggestions.append("adding `--force-red` to override peers that refuse redundancy")
                         if (rtx_state is False or (rtx_seen and rtx_state is not True)) and not rtx_active and not self._rtx_support_warned:
@@ -6375,14 +6415,45 @@ class WebRTCClient:
                 except Exception as exc:
                     printwarn(f"Display initialization failed: {exc}")
            
-            if self.vp8:     
-                pass
-            elif self.h264:
+            if self.vp8 or self.vp9 or self.av1 or self.h264:
                 direction = GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY
-                caps = Gst.caps_from_string("application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,packetization-mode=(string)1")
-                tcvr = client['webrtc'].emit('add-transceiver', direction, caps)
-                if Gst.version().minor > 18:
-                    tcvr.set_property("codec-preferences",caps) ## supported as of around June 2021 in gstreamer for answer side?
+                codec_label = None
+                codec_caps = None
+                if self.vp8:
+                    codec_label = "VP8"
+                    codec_caps = Gst.caps_from_string(
+                        "application/x-rtp,media=video,encoding-name=VP8,clock-rate=90000"
+                    )
+                elif self.vp9:
+                    codec_label = "VP9"
+                    codec_caps = Gst.caps_from_string(
+                        "application/x-rtp,media=video,encoding-name=VP9,clock-rate=90000"
+                    )
+                elif self.av1:
+                    codec_label = "AV1X"
+                    try:
+                        codec_caps = Gst.caps_from_string(
+                            "application/x-rtp,media=video,encoding-name=AV1X,clock-rate=90000"
+                        )
+                    except Exception:
+                        codec_label = "AV1"
+                        codec_caps = Gst.caps_from_string(
+                            "application/x-rtp,media=video,encoding-name=AV1,clock-rate=90000"
+                        )
+                elif self.h264:
+                    codec_label = "H264"
+                    codec_caps = Gst.caps_from_string(
+                        "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,packetization-mode=(string)1"
+                    )
+                if codec_caps:
+                    tcvr = client['webrtc'].emit('add-transceiver', direction, codec_caps)
+                    if tcvr and Gst.version().minor > 18:
+                        try:
+                            tcvr.set_property("codec-preferences", codec_caps)  # supported on newer GStreamer builds
+                        except Exception as exc:
+                            printwarn(f"Failed to set codec preference for {codec_label}: {exc}")
+                    display_label = "AV1" if codec_label in {"AV1", "AV1X"} else codec_label
+                    printc(f"   🎯 Preferring {display_label} for incoming video", "0AF")
 
         elif not self.multiviewer:
             client['webrtc'] = self.pipe.get_by_name('sendrecv')
@@ -6706,6 +6777,28 @@ class WebRTCClient:
         if 'sdp' in msg:
             assert(msg['type'] == 'offer')
             sdp = msg['sdp']
+            redundancy_features = self._analyze_remote_redundancy(sdp)
+            client["_remote_offered_red"] = redundancy_features["red"]
+            client["_remote_offered_ulpfec"] = redundancy_features["ulpfec"]
+            client["_remote_offered_rtx"] = redundancy_features["rtx"]
+            redundancy_parts: List[str] = []
+            if redundancy_features["red"]:
+                if redundancy_features["ulpfec"]:
+                    redundancy_parts.append("RED+ULPFEC")
+                else:
+                    redundancy_parts.append("RED (no ULPFEC)")
+            else:
+                redundancy_parts.append("no RED/ULPFEC")
+            if redundancy_features["rtx"]:
+                redundancy_parts.append("RTX")
+            redundancy_summary = " + ".join(redundancy_parts)
+            redundancy_color = "0AF" if (redundancy_features["red"] or redundancy_features["rtx"]) else "F70"
+            printc(f"   🛰️ Remote offer redundancy: {redundancy_summary}", redundancy_color)
+            if self.force_red:
+                if not redundancy_features["red"]:
+                    printwarn("Remote offer omitted RED; `--force-red` cannot add redundancy unless the publisher enables it.")
+                elif redundancy_features["red"] and not redundancy_features["ulpfec"]:
+                    printwarn("Remote offer provides RED wrappers without ULPFEC parity; expect duplicate payloads only.")
 
             try:
                 sdp = self._apply_bitrate_constraints_to_sdp(sdp, context="incoming offer")
@@ -6716,6 +6809,8 @@ class WebRTCClient:
             preferred_codec = None
             if self.vp8:
                 preferred_codec = 'vp8'
+            elif self.vp9:
+                preferred_codec = 'vp9'
             elif self.av1:
                 preferred_codec = 'av1'
             elif self.h264:
@@ -9286,7 +9381,7 @@ async def main():
     parser.add_argument('--webserver', type=int, metavar='PORT', help='Enable web interface on specified port (e.g., --webserver 8080) for monitoring stats, logs, and controls.')
     parser.add_argument('--noqos', action='store_true', help='Do not try to automatically reduce video bitrate if packet loss gets too high. The default will reduce the bitrate if needed.')
     parser.add_argument('--nored', action='store_true', help='Disable error correction redundency for transmitted video. This may reduce the bandwidth used by half, but it will be more sensitive to packet loss')
-    parser.add_argument('--force-red', action='store_true', help='Force negotiation of RED/ULPFEC/RTX redundancy when supported by the remote peer (H264/VP8/AV1). Increases bandwidth but improves resilience to packet loss.')
+    parser.add_argument('--force-red', action='store_true', help='Force negotiation of RED wrappers plus ULPFEC/RTX redundancy when supported by the remote peer (H264/VP8/AV1). Increases bandwidth but improves resilience to packet loss.')
     parser.add_argument('--force-rtx', action='store_true', help='Force-enable RTX retransmissions when supported by the local GStreamer build (requires webrtcbin from GStreamer 1.24 or newer).')
     parser.add_argument('--novideo', action='store_true', help='Disables video input.')
     parser.add_argument('--noaudio', action='store_true', help='Disables audio input.')
@@ -9397,7 +9492,7 @@ async def main():
         if gst_major > 1 or (gst_major == 1 and gst_minor >= 24):
             printc("  • RTX is available; pair `--force-red` with `--force-rtx` when the sender supports it.", "0AF")
         else:
-            printc("  • This build is FEC-only; `--force-red` plus a higher buffer helps with heavy loss.", "0AF")
+            printc("  • This build lacks RTX; redundancy is limited to RED/ULPFEC. `--force-red` plus a higher buffer helps with heavy loss.", "0AF")
         print()
     
     # Validate buffer value to prevent segfaults
