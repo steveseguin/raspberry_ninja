@@ -1,5 +1,48 @@
 # Changelog
 
+# Release 4.1.0
+
+**Release Date:** 2025-10-30
+
+## ✨ Minor Release
+
+This release includes new features and improvements.
+
+### Core Changes (publish.py)
+
+The main streaming script has been updated. New features or improvements have been added.
+
+### Commits
+
+- more error correction (74f11c1)
+- chore: release v4.0.0 [release] (14923a4)
+- error correction (6866ed5)
+- feat(webrtc): Enhance hardware decoder control and graceful shutdown (da01229)
+- feat(webrtc): Add options to disable hardware decoder for viewers (87fabd2)
+- feat(viewer-display): Prime display with idle splash and defer video-off state (ab4cf6d)
+- docs(viewer): Document splash screen options and auto-reconnect (8fb06ec)
+- feat(display): Implement persistent idle state after client disconnect (08d99b7)
+- feat(viewer): Improve display management and stream restart robustness (cdbdfac)
+- ``` fix(gstreamer): Improve display pipeline and client cleanup robustness (a985840)
+- feat(console): Add customizable splash screens, background, and input control (83f280e)
+- fix(jetson): Configure dedicated console for auto-start service (91820b4)
+- fix(install/jetson): Update GStreamer and X11 dependencies (e95649d)
+- chore(jetson): Remove obsolete Gtk/GStreamer patch script (dee61ef)
+- docs(jetson): Clarify Jetson Nano 16GB image for desktop preview (7ab69cf)
+- ``` fix(jetson): Re-enable GStreamer `gtksink` preview in desktop sessions (8e3257b)
+- feat(jetson): Enhance X11 display sink selection to prevent EGL issues (544a4bc)
+
+### Installation
+
+For installation instructions, please refer to the platform-specific guides:
+- [Raspberry Pi](./raspberry_pi/README.md)
+- [NVIDIA Jetson](./nvidia_jetson/README.md)
+- [Orange Pi](./orangepi/README.md)
+- [Ubuntu](./ubuntu/README.md)
+
+
+---
+
 # Release 4.0.0
 
 **Release Date:** 2025-10-30
