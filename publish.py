@@ -2446,13 +2446,22 @@ class WebRTCClient:
         self._viewer_restart_short_delay = 30.0
         self._viewer_restart_long_delay = 180.0
         self._viewer_pending_idle = False
-        flag_disable_hw = getattr(params, 'disable_hw_decoder', False)
+        request_force_avdec = getattr(params, 'force_avdec_decoder', False)
+        self.force_avdec_decoder = False
+        if request_force_avdec:
+            if gst_element_available("avdec_h264"):
+                self.force_avdec_decoder = True
+            else:
+                printwarn("`--force-avdec-decoder` requested but `avdec_h264` is unavailable; using default decoder.")
+        flag_disable_hw = getattr(params, 'disable_hw_decoder', False) or self.force_avdec_decoder
         self._user_disable_hw_decoder = bool(flag_disable_hw)
         self._force_hw_decoder = bool(RN_FORCE_HW_DECODER) and not self._user_disable_hw_decoder
         env_disable = bool(RN_DISABLE_HW_DECODER and not self._force_hw_decoder)
         self._auto_disable_hw_decoder = False
         self.disable_hw_decoder = bool(self._user_disable_hw_decoder or env_disable)
-        if self._user_disable_hw_decoder:
+        if self.force_avdec_decoder:
+            printc("Using multi-threaded software decoder via avdec_h264", "77F")
+        elif self._user_disable_hw_decoder:
             printc("Hardware decoder disabled by --disable-hw-decoder", "FF0")
         elif env_disable:
             printc("Hardware decoder disabled via RN_DISABLE_HW_DECODER", "FF0")
@@ -2544,12 +2553,20 @@ class WebRTCClient:
         """Create a decoder element preferring Jetson hardware when available."""
         disable_hw = getattr(self, "disable_hw_decoder", False)
         force_hw = getattr(self, "_force_hw_decoder", False)
-        factory_name, properties, using_hw = select_preferred_decoder(
-            codec,
-            fallback,
-            disable_hw=disable_hw,
-            force_hw=force_hw,
-        )
+        use_avdec = getattr(self, "force_avdec_decoder", False) and codec.upper() == "H264"
+        if use_avdec:
+            factory_name = "avdec_h264"
+            properties = {}
+            using_hw = False
+            if gst_element_supports_property("avdec_h264", "max-threads"):
+                properties["max-threads"] = 0
+        else:
+            factory_name, properties, using_hw = select_preferred_decoder(
+                codec,
+                fallback,
+                disable_hw=disable_hw,
+                force_hw=force_hw,
+            )
         element_name = name
         if using_hw and factory_name != fallback:
             element_name = f"{name}_hw"
@@ -2586,12 +2603,20 @@ class WebRTCClient:
         """Return pipeline description fragment for the preferred decoder."""
         disable_hw = getattr(self, "disable_hw_decoder", False)
         force_hw = getattr(self, "_force_hw_decoder", False)
-        factory_name, properties, using_hw = select_preferred_decoder(
-            codec,
-            fallback,
-            disable_hw=disable_hw,
-            force_hw=force_hw,
-        )
+        use_avdec = getattr(self, "force_avdec_decoder", False) and codec.upper() == "H264"
+        if use_avdec:
+            factory_name = "avdec_h264"
+            properties: Dict[str, Any] = {}
+            using_hw = False
+            if gst_element_supports_property("avdec_h264", "max-threads"):
+                properties["max-threads"] = 0
+        else:
+            factory_name, properties, using_hw = select_preferred_decoder(
+                codec,
+                fallback,
+                disable_hw=disable_hw,
+                force_hw=force_hw,
+            )
         parts = [factory_name]
 
         for key, value in properties.items():
@@ -6227,6 +6252,9 @@ class WebRTCClient:
                         detail_parts.append(f"{loss_basis} loss {quality_pct:.2f}%")
                     if bitrate_calc > 0:
                         detail_parts.append(f"bitrate {bitrate_calc} kbps")
+                    active_latency = client.get("_latency_applied")
+                    if isinstance(active_latency, (int, float)):
+                        detail_parts.append(f"buffer {int(active_latency)} ms")
                     detail_suffix = f" ({', '.join(detail_parts)})" if detail_parts else ""
                     icon_map = {
                         "unusable": "🛑",
@@ -9270,6 +9298,7 @@ async def main():
     parser.add_argument('--splashscreen-idle', type=str, default=None, help='Path to an image displayed when the viewer is idle or no stream is active.')
     parser.add_argument('--splashscreen-connecting', type=str, default=None, help='Path to an image displayed while the viewer is connecting to a stream.')
     parser.add_argument('--disable-hw-decoder', action='store_true', help='Force software decoding for incoming streams even if hardware decoders are available.')
+    parser.add_argument('--force-avdec-decoder', action='store_true', help='Viewer: prefer the multi-threaded software decoder (avdec_h264); implies software decoding.')
     parser.add_argument('--save', action='store_true', help='Save a copy of the outbound stream to disk. Publish Live + Store the video.')
     parser.add_argument('--record-room', action='store_true', help='Record all streams in a room to separate files. Requires --room parameter.')
     parser.add_argument('--record-streams', type=str, help='Comma-separated list of stream IDs to record from a room. Optional filter for --record-room.')
