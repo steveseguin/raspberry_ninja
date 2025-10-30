@@ -6903,7 +6903,6 @@ class WebRTCClient:
                     finally:
                         # Always clear the pipeline reference to prevent reuse
                         self.pipe = None
-
     async def _add_room_stream(self, stream_id):
         """Add a stream for room recording"""
         if stream_id in self.room_recorders:
@@ -10469,8 +10468,11 @@ async def main():
         if shutdown_count[0] == 1:
             printc("\n🛑 Received interrupt signal, shutting down gracefully...", "F70")
             _schedule_shutdown()
-            if loop and loop.is_running() and force_exit_handle[0] is None:
-                force_exit_handle[0] = loop.call_later(8.0, _force_exit_due_to_timeout)
+            if force_exit_handle[0] is None:
+                timer = threading.Timer(8.0, _force_exit_due_to_timeout)
+                timer.daemon = True
+                timer.start()
+                force_exit_handle[0] = timer
         elif shutdown_count[0] == 2:
             printc("\n⚠️  Second interrupt, forcing shutdown...", "F00")
             os._exit(1)
