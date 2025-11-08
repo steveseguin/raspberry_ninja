@@ -5626,9 +5626,80 @@ class WebRTCClient:
 
         return remote_label
 
+    def _sink_viewer_aux_pad(self, pad: Gst.Pad, caps_name: str, label: str) -> bool:
+        """Link auxiliary RTP pads (such as RTX) to a drop sink so they don't disturb the viewer display."""
+        if not self.pipe:
+            return False
+        try:
+            aux_bin = Gst.parse_bin_from_description(
+                "queue leaky=downstream max-size-buffers=0 max-size-time=0 max-size-bytes=0 ! "
+                "fakesink sync=false async=false",
+                True,
+            )
+        except Exception as exc:
+            printwarn(f"Viewer: failed to build auxiliary {label} sink: {exc}")
+            return False
+
+        aux_bin.set_name(f"viewer_aux_bin_{pad.get_name()}")
+        try:
+            self.pipe.add(aux_bin)
+            aux_bin.sync_state_with_parent()
+        except Exception as exc:
+            printwarn(f"Viewer: failed to add auxiliary {label} bin: {exc}")
+            try:
+                aux_bin.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+            return False
+
+        sink_pad = aux_bin.get_static_pad("sink")
+        if not sink_pad:
+            printwarn("Viewer auxiliary bin does not expose a sink pad; cannot attach auxiliary stream.")
+            try:
+                self.pipe.remove(aux_bin)
+            except Exception:
+                pass
+            return False
+
+        result = pad.link(sink_pad)
+        if result != Gst.PadLinkReturn.OK:
+            reason = result.value_nick if hasattr(result, "value_nick") else result
+            printwarn(f"Viewer: failed to link auxiliary {label} pad ({pad.get_name()}): {reason}")
+            try:
+                aux_bin.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+            try:
+                self.pipe.remove(aux_bin)
+            except Exception:
+                pass
+            return False
+
+        aux_bins = getattr(self, "_viewer_aux_pad_bins", None)
+        if aux_bins is None:
+            aux_bins = {}
+            self._viewer_aux_pad_bins = aux_bins
+        aux_bins[pad.get_name()] = aux_bin
+        printc(f"[viewer] Ignoring auxiliary {label} stream ({caps_name})", "777")
+        return True
+
     def on_remote_pad_removed(self, webrtc, pad: Gst.Pad):
         """Handle removal of remote pads for viewer mode."""
         pad_name = pad.get_name()
+        aux_bins = getattr(self, "_viewer_aux_pad_bins", None)
+        if aux_bins:
+            aux_bin = aux_bins.pop(pad_name, None)
+            if aux_bin:
+                print(f"[viewer] Auxiliary pad removed: {pad_name}")
+                try:
+                    aux_bin.set_state(Gst.State.NULL)
+                except Exception:
+                    pass
+                try:
+                    self.pipe.remove(aux_bin)
+                except Exception:
+                    pass
+                return
         remote_map = getattr(self, "display_remote_map", None)
         if remote_map is None:
             print(f"[display] Remote pad removed but display map missing: {pad_name}")
@@ -5664,6 +5735,7 @@ class WebRTCClient:
 
             detected_width = None
             detected_height = None
+            encoding_name = None
             if caps is not None and caps.get_size() > 0:
                 try:
                     structure = caps.get_structure(0)
@@ -5678,6 +5750,16 @@ class WebRTCClient:
                         detected_height = structure.get_value("height")
                     elif structure.has_field("video-height"):
                         detected_height = structure.get_value("video-height")
+                    if structure.has_field("encoding-name"):
+                        try:
+                            encoding_name = structure.get_string("encoding-name")
+                        except Exception:
+                            try:
+                                value = structure.get_value("encoding-name")
+                            except Exception:
+                                value = None
+                            if isinstance(value, str):
+                                encoding_name = value
             if isinstance(detected_width, (int, float)) and isinstance(detected_height, (int, float)):
                 detected_width = int(detected_width)
                 detected_height = int(detected_height)
@@ -5692,11 +5774,12 @@ class WebRTCClient:
                         printc(f"📺 Remote video: {detected_width}x{detected_height}", "0F0")
 
             # Parse codec info from caps
-            codec_info = ""
-            if "encoding-name=" in name:
+            if not encoding_name and "encoding-name=" in name:
                 codec = name.split("encoding-name=(string)")[1].split(",")[0].split(")")[0]
-                codec_info = f" [{codec}]"
+                encoding_name = codec
+            codec_info = f" [{encoding_name}]" if encoding_name else ""
             print(f"Incoming stream{codec_info}: {name}")
+            encoding_upper = (encoding_name or "").upper()
             
             # In room recording mode, find the client from webrtc element
             if self.room_recording:
@@ -6051,6 +6134,11 @@ class WebRTCClient:
                     appsink = self.pipe.get_by_name('appsink')
                     appsink.connect("new-sample", self.on_new_socket_sample)
                 elif self.view and "video" in name.lower():
+                    if encoding_upper == "RTX":
+                        if self._sink_viewer_aux_pad(pad, name, "RTX"):
+                            return
+                        printwarn("Failed to attach auxiliary RTX pad; stream may continue without retransmissions.")
+                        return
                     print("DISPLAY OUTPUT MODE BEING SETUP")
                     if self.recording_enabled and "video" in name:
                         if self.setup_recording_pipeline(pad, name):
