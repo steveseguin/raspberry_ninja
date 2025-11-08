@@ -78,6 +78,31 @@ def env_flag(name: str) -> bool:
 RN_DISABLE_HW_DECODER = env_flag("RN_DISABLE_HW_DECODER")
 RN_FORCE_HW_DECODER = env_flag("RN_FORCE_HW_DECODER")
 
+H264_PROFILE_ALIASES = {
+    "baseline": "42001f",
+    "constrained-baseline": "42e01f",
+    "constrained_baseline": "42e01f",
+    "main": "4d0032",
+    "high": "640032",
+    "high10": "6e0032",
+    "high-10": "6e0032",
+    "high422": "7a0032",
+    "high-422": "7a0032",
+    "high444": "f40032",
+    "high-444": "f40032",
+}
+
+def sanitize_profile_level_id(value: Optional[str]) -> Optional[str]:
+    """Normalize a profile-level-id string to lowercase hex without 0x prefix."""
+    if not value:
+        return None
+    cleaned = value.strip().lower()
+    if cleaned.startswith("0x"):
+        cleaned = cleaned[2:]
+    if not re.fullmatch(r"[0-9a-f]{6}", cleaned):
+        return None
+    return cleaned
+
 _hw_decoder_warning_refs: Set[weakref.ReferenceType] = set()
 _gst_log_hook_installed = False
 
@@ -2637,6 +2662,11 @@ class WebRTCClient:
         self.vp8 = params.vp8
         self.vp9 = getattr(params, 'vp9', False)
         self.av1 = getattr(params, 'av1', False)
+        self._force_h264_profile_id = sanitize_profile_level_id(
+            getattr(params, "force_h264_profile_id", None)
+        )
+        self._forced_profile_notice_shown = False
+        self._remote_h264_profile_id: Optional[str] = None
         self.pipein = params.pipein
         self.bitrate = params.bitrate
         self.max_bitrate = params.bitrate
@@ -3219,6 +3249,150 @@ class WebRTCClient:
 
         printc(f"   📶 Embedding {target_kbps} kbps cap into {context}", "07F")
         return modified
+
+    def _capture_remote_video_profiles(self, sdp_text: str) -> None:
+        """Record the remote offer's video fmtp values so we can mirror them in our answer."""
+        if not sdp_text or not self.view:
+            self._remote_h264_profile_id = None
+            return
+
+        lines = sdp_text.splitlines()
+        video_payloads: Set[str] = set()
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("m=video"):
+                parts = line.split()
+                if len(parts) > 3:
+                    video_payloads = {p for p in parts[3:] if p.isdigit()}
+                break
+
+        if not video_payloads:
+            self._remote_h264_profile_id = None
+            return
+
+        payload_to_codec: Dict[str, str] = {}
+        payload_to_fmtp: Dict[str, str] = {}
+
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("a=rtpmap:"):
+                try:
+                    prefix, codec_info = line.split(None, 1)
+                except ValueError:
+                    continue
+                payload = prefix.split(":")[1]
+                if payload not in video_payloads:
+                    continue
+                codec_name = codec_info.split("/")[0].upper()
+                payload_to_codec[payload] = codec_name
+            elif line.startswith("a=fmtp:"):
+                parts = line.split(" ", 1)
+                payload = parts[0].split(":")[1]
+                if payload not in video_payloads:
+                    continue
+                payload_to_fmtp[payload] = parts[1].strip() if len(parts) == 2 else ""
+
+        previous_profile = self._remote_h264_profile_id
+        new_profile = None
+
+        for payload, codec_name in payload_to_codec.items():
+            if codec_name != "H264":
+                continue
+            fmtp = payload_to_fmtp.get(payload)
+            if not fmtp:
+                continue
+            profile = self._extract_profile_level_id_from_fmtp(fmtp)
+            if profile:
+                new_profile = profile
+                break
+
+        self._remote_h264_profile_id = new_profile
+        if new_profile and new_profile != previous_profile:
+            printc(f"   🎯 Remote H264 profile-level-id detected: {new_profile}", "0AF")
+
+    @staticmethod
+    def _extract_profile_level_id_from_fmtp(fmtp: str) -> Optional[str]:
+        """Return profile-level-id from an fmtp fragment."""
+        if not fmtp:
+            return None
+        for token in fmtp.split(";"):
+            if not token:
+                continue
+            key, _, value = token.partition("=")
+            if key.strip().lower() == "profile-level-id":
+                return sanitize_profile_level_id(value)
+        return None
+
+    def _target_h264_profile_id(self) -> Optional[str]:
+        """Decide which profile-level-id we should advertise back to the sender."""
+        return self._force_h264_profile_id or self._remote_h264_profile_id
+
+    def _apply_h264_profile_override(self, sdp_text: str, profile_id: str) -> str:
+        """Rewrite H264 fmtp lines to use the requested profile-level-id."""
+        normalized = sanitize_profile_level_id(profile_id)
+        if not sdp_text or not normalized:
+            return sdp_text
+
+        lines = sdp_text.splitlines()
+        ends_with_crlf = sdp_text.endswith("\r\n")
+
+        h264_payloads: Set[str] = set()
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line.startswith("a=rtpmap:"):
+                continue
+            try:
+                prefix, codec_info = line.split(None, 1)
+            except ValueError:
+                continue
+            payload = prefix.split(":")[1]
+            codec_name = codec_info.split("/")[0].upper()
+            if codec_name == "H264":
+                h264_payloads.add(payload)
+
+        if not h264_payloads:
+            return sdp_text
+
+        changed = False
+
+        for idx, raw_line in enumerate(lines):
+            line = raw_line.strip()
+            if not line.startswith("a=fmtp:"):
+                continue
+            header_and_payload = raw_line.split(" ", 1)
+            header = header_and_payload[0]
+            payload = header.split(":")[1]
+            if payload not in h264_payloads:
+                continue
+            params_str = header_and_payload[1] if len(header_and_payload) == 2 else ""
+            params = [p.strip() for p in params_str.split(";") if p.strip()]
+            replaced = False
+            for idx_param, param in enumerate(params):
+                key, _, _ = param.partition("=")
+                if key.strip().lower() == "profile-level-id":
+                    params[idx_param] = f"profile-level-id={normalized}"
+                    replaced = True
+                    break
+            if not replaced:
+                params.append(f"profile-level-id={normalized}")
+            new_line = header
+            if params:
+                new_line = f"{header} {';'.join(params)}"
+            if new_line != raw_line:
+                lines[idx] = new_line
+                changed = True
+
+        if not changed:
+            return sdp_text
+
+        updated = "\r\n".join(lines)
+        if ends_with_crlf and not updated.endswith("\r\n"):
+            updated += "\r\n"
+        return updated
 
     def _determine_primary_video_codec(self) -> Optional[Tuple[str, Optional[str]]]:
         """Return the (codec, fmtp) tuple describing the local publisher's primary video codec."""
@@ -8210,6 +8384,7 @@ class WebRTCClient:
             return
         text = answer.sdp.as_text()
         if self.view:
+            rebuild_answer = False
             try:
                 modified_text = self._apply_bitrate_constraints_to_sdp(text, context="outgoing answer")
             except Exception as exc:
@@ -8217,17 +8392,26 @@ class WebRTCClient:
             else:
                 if modified_text != text:
                     text = modified_text
-                    try:
-                        res, sdpmsg = GstSdp.SDPMessage.new()
-                        GstSdp.sdp_message_parse_buffer(bytes(text.encode()), sdpmsg)
-                        answer = GstWebRTC.WebRTCSessionDescription.new(
-                            GstWebRTC.WebRTCSDPType.ANSWER, sdpmsg
-                        )
-                    except Exception as exc:
-                        printwarn(f"Failed to rebuild SDP with bitrate constraints: {exc}")
-                        text = answer.sdp.as_text()
-                else:
-                    text = modified_text
+                    rebuild_answer = True
+            target_profile = self._target_h264_profile_id()
+            if target_profile:
+                updated_text = self._apply_h264_profile_override(text, target_profile)
+                if updated_text != text:
+                    text = updated_text
+                    rebuild_answer = True
+                    if self._force_h264_profile_id and not getattr(self, "_forced_profile_notice_shown", False):
+                        printc(f"   🎛 Forcing H264 profile-level-id {target_profile}", "0AF")
+                        self._forced_profile_notice_shown = True
+            if rebuild_answer:
+                try:
+                    res, sdpmsg = GstSdp.SDPMessage.new()
+                    GstSdp.sdp_message_parse_buffer(bytes(text.encode()), sdpmsg)
+                    answer = GstWebRTC.WebRTCSessionDescription.new(
+                        GstWebRTC.WebRTCSDPType.ANSWER, sdpmsg
+                    )
+                except Exception as exc:
+                    printwarn(f"Failed to rebuild SDP with viewer constraints: {exc}")
+                    text = answer.sdp.as_text()
         promise = Gst.Promise.new()
         client['webrtc'].emit('set-local-description', answer, promise)
         promise.interrupt()
@@ -8320,6 +8504,7 @@ class WebRTCClient:
             if preferred_codec:
                 sdp = self.prefer_codec(sdp, preferred_codec)
             if self.view:
+                self._capture_remote_video_profiles(sdp)
                 try:
                     self._update_viewer_redundancy_from_sdp(sdp)
                 except Exception as exc:
@@ -10902,6 +11087,8 @@ async def main():
     parser.add_argument('--h264', action='store_true', help='Prioritize h264 over vp8')
     parser.add_argument('--x264', action='store_true', help='Prioritizes x264 encoder over hardware encoder')
     parser.add_argument('--openh264', action='store_true', help='Prioritizes OpenH264 encoder over hardware encoder')
+    parser.add_argument('--force-h264-profile', type=str, default=None, help='Viewer: force a named H264 profile (baseline, constrained-baseline, main, high, high10, high422, high444) instead of mirroring the sender')
+    parser.add_argument('--force-h264-profile-id', type=str, default=None, help='Viewer: force a custom H264 profile-level-id (hex, e.g. 42001f). Overrides --force-h264-profile.')
     parser.add_argument('--vp8', action='store_true', help='Prioritizes vp8 codec over h264; software encoder')
     parser.add_argument('--vp9', action='store_true', help='Prioritizes vp9 codec over h264; software encoder')
     parser.add_argument('--aom', action='store_true', help='Prioritizes AV1-AOM codec; software encoder')
@@ -11007,6 +11194,22 @@ async def main():
         else:
             print(f"Config file not found: {config_path}")
     
+    if args.force_h264_profile and not args.force_h264_profile_id:
+        alias = args.force_h264_profile.strip().lower()
+        mapped = H264_PROFILE_ALIASES.get(alias)
+        if mapped:
+            args.force_h264_profile_id = mapped
+        else:
+            known = ", ".join(sorted({k.replace("_", "-") for k in H264_PROFILE_ALIASES.keys()}))
+            printc(f"Warning: Unknown --force-h264-profile value '{args.force_h264_profile}'. Known values: {known}", "FF0")
+    if args.force_h264_profile_id:
+        sanitized_profile = sanitize_profile_level_id(args.force_h264_profile_id)
+        if sanitized_profile:
+            args.force_h264_profile_id = sanitized_profile
+        else:
+            printc(f"Warning: Ignoring invalid --force-h264-profile-id '{args.force_h264_profile_id}'. Expected 6 hex characters.", "FF0")
+            args.force_h264_profile_id = None
+
     # Normalize splash screen paths if provided
     for attr in ('splashscreen_idle', 'splashscreen_connecting'):
         path = getattr(args, attr, None)
