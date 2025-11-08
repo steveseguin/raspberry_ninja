@@ -1,5 +1,40 @@
 # Changelog
 
+# Release 6.0.0
+
+**Release Date:** 2025-11-08
+
+## 🚀 Major Release
+
+This release includes breaking changes or significant new features.
+
+### Core Changes (publish.py)
+
+The main streaming script has been updated. This includes significant changes that may affect compatibility.
+
+### Commits
+
+- Add files via upload (c46b5e9)
+- feat(jetson-install): Implement Jetson Nano media toolchain installer (a7c077d)
+- feat(publish): Add publisher-side redundancy and viewer auto-retry controls (3bd5a14)
+- feat(webrtc): Improve redundancy negotiation and status reporting (3fdd679)
+
+### Installation
+
+For installation instructions, please refer to the platform-specific guides:
+- [Raspberry Pi](./raspberry_pi/README.md)
+- [NVIDIA Jetson](./nvidia_jetson/README.md)
+- [Orange Pi](./orangepi/README.md)
+- [Ubuntu](./ubuntu/README.md)
+
+### ⚠️ Upgrade Notes
+
+This is a major version upgrade. Please review the changes carefully before updating.
+It's recommended to backup your configuration before upgrading.
+
+
+---
+
 # Release 5.0.0
 
 **Release Date:** 2025-10-30
