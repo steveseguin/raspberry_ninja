@@ -1,369 +1,541 @@
-### This has has been tested on April 21st, 2023 on a Nano 2GB /w jetpack 4 firmware updated
+#!/usr/bin/env bash
+set -euo pipefail
+
+JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc || echo 4)}
+PYTHON_VERSION=${PYTHON_VERSION:-3.11.9}
+MESON_VERSION=${MESON_VERSION:-1.4.1}
+GSTREAMER_VERSION=${GSTREAMER_VERSION:-1.26.7}
+GSTREAMER_SERIES="${GSTREAMER_VERSION%.*}"
+GLIB_VERSION=${GLIB_VERSION:-2.80.5}
+GOBJECT_INTROSPECTION_VERSION=${GOBJECT_INTROSPECTION_VERSION:-1.80.1}
+GLIB_SERIES="${GLIB_VERSION%.*}"
+GOBJECT_INTROSPECTION_SERIES="${GOBJECT_INTROSPECTION_VERSION%.*}"
+LIBCAMERA_TAG=${LIBCAMERA_TAG:-v0.3.2}
+SRT_TAG=${SRT_TAG:-v1.5.3}
+LIBSRTP_TAG=${LIBSRTP_TAG:-v2.6.0}
+LIBNICE_TAG=${LIBNICE_TAG:-0.1.21}
+LIBVPX_VERSION=${LIBVPX_VERSION:-1.13.1}
+DAV1D_VERSION=${DAV1D_VERSION:-1.3.0}
+KVAZAAR_VERSION=${KVAZAAR_VERSION:-2.3.0}
+FFMPEG_TAG=${FFMPEG_TAG:-n7.0}
+X264_GIT_REF=${X264_GIT_REF:-stable}
+PYTHON_PREFIX=${PYTHON_PREFIX:-/usr/local}
+PYTHON_BIN="${PYTHON_PREFIX}/bin/python${PYTHON_VERSION%.*}"
+INCLUDE_DISTRO_UPGRADE=${INCLUDE_DISTRO_UPGRADE:-0}
+
+prepend_env_path() {
+	local var="$1"
+	local value="$2"
+	local current="${!var:-}"
+	if [[ -z "${current}" ]]; then
+		printf -v "${var}" '%s' "${value}"
+	elif [[ ":${current}:" != *":${value}:"* ]]; then
+		printf -v "${var}" '%s' "${value}:${current}"
+	fi
+	export "${var}"
+}
+
+DEBIAN_FRONTEND=${DEBIAN_FRONTEND:-noninteractive}
+export DEBIAN_FRONTEND
+
+prepend_env_path PATH "${PYTHON_PREFIX}/bin"
+prepend_env_path PATH "/usr/local/sbin"
+prepend_env_path PATH "/usr/local/bin"
+prepend_env_path PKG_CONFIG_PATH "/usr/local/lib/pkgconfig"
+prepend_env_path PKG_CONFIG_PATH "/usr/local/share/pkgconfig"
+prepend_env_path LD_LIBRARY_PATH "/usr/local/lib"
+prepend_env_path LIBRARY_PATH "/usr/local/lib"
+prepend_env_path CMAKE_PREFIX_PATH "/usr/local"
+prepend_env_path PYTHONPATH "${PYTHON_PREFIX}/lib/python${PYTHON_VERSION%.*}/site-packages"
+
+### Updated for 2024 builds targeting Jetson Nano 2GB/4GB with JetPack 4 base images
 ## Manual involvement is needed at steps...
 
 cd ~
-mkdir nvgst
-sudo cp /usr/lib/aarch64-linux-gnu/gstreamer-1.0/libgstomx.so ./nvgst/
-sudo cp /usr/lib/aarch64-linux-gnu/gstreamer-1.0/libgstnv* ./nvgst/
+mkdir -p nvgst
+if [[ -d /usr/lib/aarch64-linux-gnu/gstreamer-1.0 ]]; then
+	sudo cp -a /usr/lib/aarch64-linux-gnu/gstreamer-1.0/libgstomx.so ./nvgst/ || true
+	sudo cp -a /usr/lib/aarch64-linux-gnu/gstreamer-1.0/libgstnv* ./nvgst/ || true
+fi
 
-sudo mv /var/lib/dpkg/info/ /var/lib/dpkg/backup/
-sudo mkdir /var/lib/dpkg/info/
+if [[ "${INCLUDE_DISTRO_UPGRADE}" == "1" ]]; then
+	echo "[info] Running distro-upgrade block (INCLUDE_DISTRO_UPGRADE=1)."
+	sudo apt-get update
+	sudo apt autoremove -y || true
+	sudo apt-get -f install || true
+	sudo apt-get upgrade -y
+	sudo apt-get dist-upgrade -y
+else
+	echo "[info] Skipping legacy distro upgrade steps (default). Set INCLUDE_DISTRO_UPGRADE=1 to enable."
+	sudo apt-get update
+fi
 
-sudo apt-get update
-sudo apt autoremove -y
+APT_BUILD_PACKAGES=(
+	apt-transport-https
+	autoconf
+	automake
+	autopoint
+	autotools-dev
+	bison
+	build-essential
+	ca-certificates
+	ccache
+	checkinstall
+	cmake
+	curl
+	flex
+	git
+	libgdbm-compat-dev
+	libgdbm-dev
+	libboost-dev
+	libncurses5-dev
+	libncursesw5-dev
+	libnss3-dev
+	libgnutls28-dev
+	libkmod-dev
+	libreadline-dev
+	libsqlite3-dev
+	libtiff5-dev
+	libudev-dev
+	libtool
+	pkg-config
+	python3
+	python3-dev
+	python3-pip
+	python3-rtmidi
+	tar
+	tk-dev
+	unzip
+	uuid-dev
+	wget
+	yasm
+)
 
-sudo apt-get -f install
-sudo mv /var/lib/dpkg/info/* /var/lib/dpkg/backup/
-sudo rm -rf /var/lib/dpkg/info
-sudo mv /var/lib/dpkg/backup/ /var/lib/dpkg/info/
+APT_MEDIA_PACKAGES=(
+	desktop-file-utils
+	doxygen
+	fonts-freefont-ttf
+	freeglut3
+	graphviz
+	gtk-doc-tools
+	imagemagick
+	iso-codes
+	ladspa-sdk
+	libaa1-dev
+	liba52-0.7.4-dev
+	libaom-dev
+	libasound2-dev
+	libass-dev
+	libatk-bridge2.0-dev
+	libatk1.0-dev
+	libavc1394-dev
+	libavcodec-dev
+	libavdevice-dev
+	libavfilter-dev
+	libavformat-dev
+	libavutil-dev
+	libbz2-dev
+	libc6
+	libc6-dev
+	libcaca-dev
+	libcairo2-dev
+	libcdaudio-dev
+	libcdio-dev
+	libcdparanoia-dev
+	libcap-dev
+	libcurl4-openssl-dev
+	libdca-dev
+	libdbus-1-dev
+	libdc1394-22-dev
+	libdrm-dev
+	libdv4-dev
+	libdvdnav-dev
+	libdvdread-dev
+	libdw-dev
+	libegl1-mesa-dev
+	libelf-dev
+	libepoxy-dev
+	libexempi-dev
+	libexif-dev
+	libfaad-dev
+	libffi-dev
+	libflac-dev
+	libfreetype6-dev
+	libgdk-pixbuf2.0-dev
+	libgif-dev
+	libgirepository1.0-dev
+	libgl1-mesa-dev
+	libglib2.0-dev
+	libgles2-mesa-dev
+	libgtk-3-dev
+	libgme-dev
+	libgmp-dev
+	libgsl0-dev
+	libgsm1-dev
+	libgudev-1.0-dev
+	libgupnp-igd-1.0-dev
+	libiec61883-dev
+	libraw1394-dev
+	libiptcdata0-dev
+	libjpeg-dev
+	libjson-glib-dev
+	libkate-dev
+	liblzma-dev
+	libmad0-dev
+	libmodplug-dev
+	libmms-dev
+	libmount-dev
+	libmp3lame-dev
+	libmpcdec-dev
+	libmpg123-dev
+	libmpeg2-4-dev
+	libnuma-dev
+	libnuma1
+	libogg-dev
+	libomxil-bellagio-dev
+	libopencore-amrnb-dev
+	libopencore-amrwb-dev
+	libopus-dev
+	liborc-0.4-dev
+	libofa0-dev
+	libpango1.0-dev
+	libpng-dev
+	libpulse-dev
+	librsvg2-dev
+	librtmp-dev
+	libsdl2-dev
+	libsdl2-image-dev
+	libsdl2-mixer-dev
+	libsdl2-net-dev
+	libsdl2-ttf-dev
+	libselinux-dev
+	libshout3-dev
+	libsidplay1-dev
+	libsnappy-dev
+	libsoxr-dev
+	libsoup2.4-dev
+	libsoundtouch-dev
+	libsndfile1-dev
+	libspandsp-dev
+	libspeex-dev
+	libssh-dev
+	libssl-dev
+	libtag1-dev
+	libtheora-dev
+	libtwolame-dev
+	libunwind-dev
+	libusb-1.0-0-dev
+	libva-dev
+	libv4l-dev
+	libvdpau-dev
+	libvisual-0.4-dev
+	libvo-amrwbenc-dev
+	libvorbis-dev
+	libvorbisidec-dev
+	libopenjp2-7-dev
+	libvpx-dev
+	libwavpack-dev
+	libwebrtc-audio-processing-dev
+	libwebp-dev
+	libx11-dev
+	libx264-dev
+	libx265-dev
+	libxcb-shape0-dev
+	libxcb-shm0-dev
+	libxcb-xfixes0-dev
+	libxcb1-dev
+	libxt-dev
+	libxkbcommon-dev
+	libxml2-dev
+	libxvidcore-dev
+	libyaml-dev
+	libzbar-dev
+	libzvbi-dev
+	zlib1g-dev
+	policykit-1-gnome
+	pulseaudio
+	python3-jinja2
+	python3-ply
+	python3-yaml
+	shared-mime-info
+	texinfo
+	tclsh
+	wayland-protocols
+)
 
-sudo apt-get upgrade -y
-sudo apt-get install git -y
-
-sudo apt-get remove chrom* -y  ## we need to remove chrome else it will prevent us from upgrading
-
-sudo apt remove thunderbird libreoffice-* -y   # free up space
-sudo rm -rf /usr/local/cuda/samples \
-	/usr/src/cudnn_samples_* \
-	/usr/src/tensorrt/data \
-	/usr/src/tensorrt/samples \
-	/usr/share/visionworks* ~/VisionWorks-SFM*Samples \
-	/opt/nvidia/deepstream/deepstream*/samples
-sudo apt-get purge gnome-shell ubuntu-wallpapers-bionic light-themes libvisionworks* -y
+sudo apt-get install -y "${APT_BUILD_PACKAGES[@]}"
+sudo apt-get install -y "${APT_MEDIA_PACKAGES[@]}"
 sudo apt-get autoremove -y
-sudo apt clean -y
 
- ## allow the release upgrade
-sudo truncate -s 0 /etc/update-manager/release-upgrades
-sudo echo "[DEFAULT]" | sudo tee -a  /etc/update-manager/release-upgrades
-sudo echo "Prompt=lts" | sudo tee -a  /etc/update-manager/release-upgrades
+if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1 || [[ "$("${PYTHON_BIN}" -V 2>/dev/null)" != "Python ${PYTHON_VERSION}" ]]; then
+	cd ~
+	rm -rf "Python-${PYTHON_VERSION}" python.tgz
+	wget "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz" -O python.tgz
+	tar -xf python.tgz
+	cd "Python-${PYTHON_VERSION}"
+	./configure --prefix="${PYTHON_PREFIX}" --enable-optimizations --with-lto --enable-shared
+	make -j"${JOBS}"
+	sudo make altinstall
+	sudo ldconfig
+	cd ~
+	rm -rf "Python-${PYTHON_VERSION}" python.tgz
+fi
 
-sudo apt dist-upgrade -y
-reboot
-
-do-release-upgrade -f DistUpgradeViewNonInteractive
-lsb_release -a  ## should be 20.04 or newer now
-
-##  reboot as needed
-
-# sudo swapon -a ## turn swap back on
-
-## Once we have our distro ugpraded to something compatible with Python 3.8, we can now move on
-
-sudo apt-get install build-essential yasm cmake libtool libc6 libc6-dev unzip wget libnuma1 libnuma-dev -y
-sudo apt-get install python3 python3-pip -y
-sudo apt-get autoremove -y
-sudo apt-get install apt-transport-https ca-certificates -y
-sudo apt-get install -y python3-rtmidi
-
-sudo pip3 install scikit-build
-sudo pip3 install ninja
-sudo pip3 install websockets
-
-
-sudo apt-get install ccache curl bison flex \
-	libasound2-dev libbz2-dev libcap-dev libdrm-dev libegl1-mesa-dev \
-	libfaad-dev libgl1-mesa-dev libgles2-mesa-dev libgmp-dev libgsl0-dev \
-	libjpeg-dev libmms-dev libmpg123-dev libogg-dev \
-	liborc-0.4-dev libpango1.0-dev libpng-dev librtmp-dev \
-	libgif-dev pkg-config libmp3lame-dev \
-	libopencore-amrnb-dev libopencore-amrwb-dev libcurl4-openssl-dev \
-	libsidplay1-dev libx264-dev libusb-1.0 pulseaudio libpulse-dev \
-	libomxil-bellagio-dev libfreetype6-dev checkinstall fonts-freefont-ttf -y
-
-sudo apt-get install libcamera-dev
-sudo apt-get install libatk1.0-dev -y
-sudo apt-get install -y libgdk-pixbuf2.0-dev
-sudo apt-get install libffi6 libffi-dev -y
-sudo apt-get install -y libselinux-dev
-sudo apt-get install -y libmount-dev
-sudo apt-get install libelf-dev -y
-sudo apt-get install libdbus-1-dev -y
-
-sudo apt-get install autotools-dev automake autoconf \
-	autopoint libxml2-dev zlib1g-dev libglib2.0-dev \
-	gtk-doc-tools \
-	libgudev-1.0-dev libxt-dev libvorbis-dev libcdparanoia-dev \
-	libtheora-dev libvisual-0.4-dev iso-codes \
-	libgtk-3-dev libraw1394-dev libiec61883-dev libavc1394-dev \
-	libv4l-dev libcairo2-dev libcaca-dev libspeex-dev \
-	libshout3-dev libaa1-dev libflac-dev libdv4-dev \
-	libtag1-dev libwavpack-dev libsoup2.4-dev \
-	libcdaudio-dev libdc1394-22-dev ladspa-sdk libass-dev \
-	libcurl4-gnutls-dev libdca-dev libdvdnav-dev \
-	libexempi-dev libexif-dev libgme-dev libgsm1-dev \
-	libiptcdata0-dev libkate-dev \
-	libmodplug-dev libmpcdec-dev libofa0-dev libopus-dev \
-	librsvg2-dev \
-	libsndfile1-dev libsoundtouch-dev libspandsp-dev libx11-dev \
-	libxvidcore-dev libzbar-dev libzvbi-dev liba52-0.7.4-dev \
-	libcdio-dev libdvdread-dev libmad0-dev \
-	libmpeg2-4-dev \
-	libtwolame-dev \
-	yasm python3-dev libgirepository1.0-dev -y
-
-sudo apt-get install -y tar freeglut3 libssl-dev policykit-1-gnome -y
-sudo apt-get install libwebrtc-audio-processing-dev libvpx-dev -y
-
+sudo "${PYTHON_BIN}" -m ensurepip --upgrade
+sudo "${PYTHON_BIN}" -m pip install --upgrade pip setuptools wheel
+sudo "${PYTHON_BIN}" -m pip install --upgrade scikit-build ninja websockets jinja2 PyYAML mako ply
 export GIT_SSL_NO_VERIFY=1
-export PATH=$PATH:/usr/local/bin
 
 ### MESON - specific version
-cd ~
-git clone https://github.com/mesonbuild/meson.git
-cd meson
-git checkout 0.64.1 ## everything after this is version 1.x?
-git fetch --all
-sudo python3 setup.py install
-
-pip3 install pycairo
+sudo "${PYTHON_BIN}" -m pip install --upgrade "meson==${MESON_VERSION}"
+sudo "${PYTHON_BIN}" -m pip install --upgrade pycairo
 
 # AAC - optional (needed for rtmp only really)
 cd ~
+rm -rf fdk-aac
 git clone --depth 1 https://github.com/mstorsjo/fdk-aac.git
-cd fdk-aac 
-autoreconf -fiv 
-./configure 
-make -j4 
+cd fdk-aac
+autoreconf -fiv
+./configure --prefix=/usr/local
+make -j"${JOBS}"
 sudo make install
+sudo ldconfig
 
 # AV1 - optional
 cd ~
-git clone --depth 1 https://code.videolan.org/videolan/dav1d.git
+rm -rf dav1d
+git clone --depth 1 --branch "${DAV1D_VERSION}" https://code.videolan.org/videolan/dav1d.git
 cd dav1d
-mkdir build
-cd build
-meson .. 
-ninja 
-sudo ninja install
+meson setup build --buildtype=release --prefix=/usr/local \
+	-Denable_tools=false \
+	-Denable_tests=false \
+	-Denable_docs=false \
+	-Denable_examples=false
+ninja -C build -j "${JOBS}"
+sudo ninja -C build -j "${JOBS}" install
 sudo ldconfig
-sudo libtoolize
 
 # HEVC - optional
 cd ~
-git clone --depth 1 https://github.com/ultravideo/kvazaar.git
+rm -rf kvazaar
+git clone --depth 1 --branch "v${KVAZAAR_VERSION}" https://github.com/ultravideo/kvazaar.git
 cd kvazaar
-./autogen.sh
-./configure
-make -j4
-sudo make install
+git submodule update --init --recursive || true
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=ON
+cmake --build build -j"${JOBS}"
+sudo cmake --install build
+sudo ldconfig
 
-sudo apt-get -y install \
-    doxygen \
-    graphviz \
-    imagemagick \
-    libavcodec-dev \
-    libavdevice-dev \
-    libavfilter-dev \
-    libavformat-dev \
-    libavutil-dev \
-    libmp3lame-dev \
-    libopencore-amrwb-dev \
-    libsdl2-dev \
-    libsdl2-image-dev \
-    libsdl2-mixer-dev \
-    libsdl2-net-dev \
-    libsdl2-ttf-dev \
-    libsnappy-dev \
-    libsoxr-dev \
-    libssh-dev \
-    libtool \
-    libv4l-dev \
-    libva-dev \
-    libvdpau-dev \
-    libvo-amrwbenc-dev \
-    libvorbis-dev \
-    libwebp-dev \
-    libx265-dev \
-    libxcb-shape0-dev \
-    libxcb-shm0-dev \
-    libxcb-xfixes0-dev \
-    libxcb1-dev \
-    libxml2-dev \
-    lzma-dev \
-    texinfo \
-    libaom-dev \
-    zlib1g-dev \
-    libgmp-dev \
-    tclsh \
-    libvpx-dev
+# H.264 - from source for latest optimisations
+cd ~
+rm -rf x264
+git clone --depth 1 --branch "${X264_GIT_REF}" https://code.videolan.org/videolan/x264.git
+cd x264
+./configure --prefix=/usr/local --enable-pic --enable-shared --enable-strip
+make -j"${JOBS}"
+sudo make install
+sudo ldconfig
+
+# VP8/VP9 - multi-thread capable build
+cd ~
+rm -rf libvpx
+git clone --depth 1 --branch "v${LIBVPX_VERSION}" https://github.com/webmproject/libvpx.git
+cd libvpx
+./configure --prefix=/usr/local --enable-vp8 --enable-vp9 --enable-shared --enable-pic --enable-multithread --enable-runtime-cpu-detect --disable-examples --disable-unit-tests --disable-docs
+make -j"${JOBS}"
+sudo make install
+sudo ldconfig
 
 # SRT - optional
 cd ~
-git clone https://github.com/Haivision/srt
+rm -rf srt
+git clone --branch "${SRT_TAG}" --depth 1 https://github.com/Haivision/srt.git
 cd srt
-./configure
-make
-sudo make install
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DENABLE_SHARED=ON -DENABLE_STATIC=OFF
+cmake --build build -j"${JOBS}"
+sudo cmake --install build
 sudo ldconfig
 
 ### FFMPEG
 cd ~
-[ ! -d FFmpeg ] && git clone https://github.com/FFmpeg/FFmpeg.git
+[ ! -d FFmpeg ] && git clone --branch "${FFMPEG_TAG}" --depth 1 https://github.com/FFmpeg/FFmpeg.git
 cd FFmpeg
-git pull
-make distclean 
-sudo ./configure \
+git fetch --tags
+git checkout "${FFMPEG_TAG}"
+make distclean || true
+./configure \
+	--prefix=/usr/local \
+	--arch=aarch64 \
 	--extra-cflags="-I/usr/local/include" \
-	--arch=armhf \
 	--extra-ldflags="-L/usr/local/lib" \
-        --extra-libs="-lpthread -lm -latomic" \
+	--extra-libs="-lpthread -lm -latomic" \
+	--enable-gpl \
+	--enable-version3 \
+	--enable-nonfree \
+	--enable-shared \
+	--disable-static \
+	--enable-pthreads \
+	--enable-libfdk-aac \
+	--enable-libx264 \
+	--enable-libx265 \
+	--enable-libvpx \
+	--enable-libdav1d \
+	--enable-libkvazaar \
 	--enable-libaom \
 	--enable-libsrt \
 	--enable-librtmp \
 	--enable-libopus \
-	--enable-gmp \
-	--enable-version3 \
-	--enable-libdrm \
-	--enable-shared  \
-	--enable-pic \
-	--enable-libvpx \
 	--enable-libvorbis \
-	--enable-libfdk-aac \
-	--enable-libvpx \
-	--target-os=linux \
-	--enable-gpl  \
-	--enable-pthreads \
-	--enable-libkvazaar \
-	--enable-hardcoded-tables \
-        --enable-libopencore-amrwb \
-        --enable-libopencore-amrnb \
-	--enable-nonfree \
 	--enable-libmp3lame \
+	--enable-libass \
 	--enable-libfreetype \
-	--enable-libx264 \
-	--enable-omx \
-	--enable-libx265 \
 	--enable-libwebp \
-	--enable-mmal \
+	--enable-libsnappy \
+	--enable-libsoxr \
+	--enable-libssh \
+	--enable-libxml2 \
+	--enable-libdrm \
+	--enable-libopencore-amrnb \
+	--enable-libopencore-amrwb \
+	--enable-libvo-amrwbenc \
+	--enable-libpulse \
+	--enable-omx \
 	--enable-indev=alsa \
 	--enable-outdev=alsa \
-	--enable-libsnappy \
-	--enable-libxml2 \
-	--enable-libssh \
-	--enable-libsoxr \
-	--disable-vdpau \
-	--enable-libdav1d  \
-	--enable-libass \
-        --disable-mmal \
-        --arch=armel \
-	--enable-openssl 
-libtoolize
-make -j4
-libtoolize
-sudo make install -j4
+	--enable-hardcoded-tables \
+	--enable-openssl
+make -j"${JOBS}"
+sudo make install
 sudo ldconfig
 
 sudo apt-get remove gstreamer1.0* -y
-sudo rm /usr/lib/aarch64-linux-gnu/gstreamer-1.0/ -r
+sudo rm -rf /usr/lib/aarch64-linux-gnu/gstreamer-1.0/
 sudo rm -rf /usr/lib/gst*
 sudo rm -rf /usr/bin/gst*
 sudo rm -rf /usr/include/gstreamer-1.0
+sudo rm -rf /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/
 
-sudo apt-get install -y policykit-1-gnome
-sudo apt-get install -y wayland-protocols
-sudo apt-get install -y libxkbcommon-dev
-sudo apt-get install -y libepoxy-dev
-sudo apt-get install -y libatk-bridge2.0
-
-export PATH=$PATH:/usr/local/bin
 cd ~
-wget https://download.gnome.org/sources/glib/2.76/glib-2.76.1.tar.xz -O glib.tar.xz
+rm -rf "glib-${GLIB_VERSION}" glib.tar.xz
+wget "https://download.gnome.org/sources/glib/${GLIB_SERIES}/glib-${GLIB_VERSION}.tar.xz" -O glib.tar.xz
 tar -xvf glib.tar.xz 
-cd glib-2.76.1
+cd "glib-${GLIB_VERSION}"
 mkdir build
 cd build
 meson --prefix=/usr/local -Dman=false ..
-sudo ninja
-sudo ninja install
+ninja -j "${JOBS}"
+sudo ninja -j "${JOBS}" install
 sudo ldconfig
-sudo libtoolize
 
-export PATH=$PATH:/usr/local/bin
 cd ~
-git clone https://github.com/sctplab/usrsctp.git
+rm -rf usrsctp
+git clone --depth 1 https://github.com/sctplab/usrsctp.git
 cd usrsctp
-mkdir build
-sudo meson build  --prefix=/usr/local
-sudo ninja -C build install -j4
+git fetch --tags
+git checkout master
+rm -rf build
+meson setup build --prefix=/usr/local --buildtype=release
+ninja -C build -j "${JOBS}"
+sudo ninja -C build -j "${JOBS}" install
 sudo ldconfig
-sudo libtoolize
 
-export PATH=$PATH:/usr/local/bin
 cd ~
-wget https://download.gnome.org/sources/gobject-introspection/1.76/gobject-introspection-1.76.1.tar.xz -O gobject.tar.xz
-sudo rm  gobject-introspection-1.76.1 -r || true
+rm -f gobject.tar.xz
+wget "https://download.gnome.org/sources/gobject-introspection/${GOBJECT_INTROSPECTION_SERIES}/gobject-introspection-${GOBJECT_INTROSPECTION_VERSION}.tar.xz" -O gobject.tar.xz
+sudo rm -rf "gobject-introspection-${GOBJECT_INTROSPECTION_VERSION}" || true
 tar -xvf gobject.tar.xz
-cd gobject-introspection-1.76.1
-mkdir build
-cd build
-sudo meson --prefix=/usr/local --buildtype=release  ..
-sudo ninja
-sudo ninja install
+cd "gobject-introspection-${GOBJECT_INTROSPECTION_VERSION}"
+rm -rf build
+meson setup build --prefix=/usr/local --buildtype=release
+ninja -C build -j "${JOBS}"
+sudo ninja -C build -j "${JOBS}" install
 sudo ldconfig
-sudo libtoolize
+systemctl --user enable pulseaudio.socket || true
 
-systemctl --user enable pulseaudio.socket
-sudo apt-get install -y wayland-protocols
-sudo apt-get install -y libxkbcommon-dev
-sudo apt-get install -y libepoxy-dev
-sudo apt-get install -y libatk-bridge2.0
-
-export PATH=$PATH:/usr/local/bin
 cd ~
-git clone https://github.com/libnice/libnice.git
+rm -rf libnice
+git clone --branch "${LIBNICE_TAG}" --depth 1 https://gitlab.freedesktop.org/libnice/libnice.git
 cd libnice
-mkdir build
-cd build
-meson --prefix=/usr/local --buildtype=release ..
-sudo ninja
-sudo ninja install
+git fetch --tags
+git checkout "${LIBNICE_TAG}"
+rm -rf build
+meson setup build --prefix=/usr/local --buildtype=release
+ninja -C build -j "${JOBS}"
+sudo ninja -C build -j "${JOBS}" install
 sudo ldconfig
-sudo libtoolize
 
-export PATH=$PATH:/usr/local/bin
 cd ~
-git clone https://github.com/cisco/libsrtp
+rm -rf libsrtp
+git clone --branch "${LIBSRTP_TAG}" --depth 1 https://github.com/cisco/libsrtp.git
 cd libsrtp
-./configure --enable-openssl --prefix=/usr/local
-make -j4
+git fetch --tags
+git checkout "${LIBSRTP_TAG}"
+./configure --enable-openssl --enable-pic --prefix=/usr/local
+make -j"${JOBS}"
 sudo make shared_library
-sudo make install -j4
+sudo make install -j"${JOBS}"
 sudo ldconfig
-sudo libtoolize
 
-export PATH=$PATH:/usr/local/bin
 cd ~
-[ ! -d gstreamer ] && git clone git://anongit.freedesktop.org/git/gstreamer/gstreamer
+rm -rf gstreamer
+git clone https://gitlab.freedesktop.org/gstreamer/gstreamer.git
 cd gstreamer
-git pull
-sudo rm -r build || true
-[ ! -d build ] && mkdir build
-cd build
-sudo meson --prefix=/usr/local -Dbuildtype=release -Dgst-plugins-base:gl_winsys=egl -Ddoc=disabled -Dtests=disabled -Dexamples=disabled -Dges=disabled -Dgst-examples:*=disabled -Ddevtools=disabled ..
-cd ..
-sudo ninja -C build install -j4
+git checkout "refs/tags/${GSTREAMER_VERSION}"
+git submodule update --init --recursive
+rm -rf build
+meson setup build --prefix=/usr/local --buildtype=release \
+	-Dgst-plugins-base:gl_winsys=egl \
+	-Ddoc=disabled \
+	-Dtests=disabled \
+	-Dexamples=disabled \
+	-Dges=disabled \
+	-Ddevtools=disabled \
+	-Dauto_features=enabled \
+	-Dintrospection=enabled \
+	-Dlibav=disabled \
+	-Dgst-plugins-good:qt5=disabled \
+	-Dgst-plugins-good:qt6=disabled \
+	-Dgst-plugins-good:rpicamsrc=disabled \
+	-Dgstreamer:libunwind=disabled \
+	-Dgstreamer:libdw=disabled \
+	-Dgstreamer:dbghelp=disabled \
+	-Dgstreamer:ptp-helper=disabled \
+	-Dgst-plugins-bad:va=disabled \
+	-Dgst-plugins-bad:mse=disabled \
+	-Dgst-plugins-bad:build-gir=false \
+	-Dgst-plugins-base:gl-gir=false
+ninja -C build -j "${JOBS}"
+sudo ninja -C build -j "${JOBS}" install
 sudo ldconfig
-
-export PATH=$PATH:/usr/local/bin
-sudo apt-get install libyaml-dev python3-yaml python3-ply python3-jinja2 -y
 cd ~
+rm -rf libcamera
 git clone https://git.libcamera.org/libcamera/libcamera.git
 cd libcamera
-meson setup build
-sudo ninja -C build install -j4 ## too many cores and you'll crash a raspiberry pi zero 2
+git fetch --tags
+git checkout "${LIBCAMERA_TAG}"
+git submodule update --init --recursive
+rm -rf build
+meson setup build --buildtype=release --prefix=/usr/local
+ninja -C build -j "${JOBS}"
+sudo ninja -C build -j "${JOBS}" install ## too many cores and you'll crash a raspiberry pi zero 2
 sudo ldconfig
 cd ~
 
-sudo cp ~/nvgst/libgstnvarguscamerasrc.so /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/
-sudo cp ~/nvgst/libgstnvivafilter.so /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/
-sudo cp ~/nvgst/libgstnvv4l2camerasrc.so /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/
-sudo cp ~/nvgst/libgstnvvideocuda.so /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/
-sudo cp ~/nvgst/libgstomx.so /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/
-sudo cp ~/nvgst/libgstnvjpeg.so /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/
-sudo cp ~/nvgst/libgstnvvidconv.so /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/
-sudo cp ~/nvgst/libgstnvvideosink.so /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/
-sudo cp ~/nvgst/libgstnvtee.so /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/
-sudo cp ~/nvgst/libgstnvvideo4linux2.so /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/
-sudo cp ~/nvgst/libgstnvvideosinks.so /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/
-sudo rm /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/libgstnvcompositor.so # isn't compatible anymore
+sudo mkdir -p /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0
+for plugin in \
+	libgstnvarguscamerasrc.so \
+	libgstnvivafilter.so \
+	libgstnvv4l2camerasrc.so \
+	libgstnvvideocuda.so \
+	libgstomx.so \
+	libgstnvjpeg.so \
+	libgstnvvidconv.so \
+	libgstnvvideosink.so \
+	libgstnvtee.so \
+	libgstnvvideo4linux2.so \
+	libgstnvvideosinks.so; do
+	if [[ -f "${HOME}/nvgst/${plugin}" ]]; then
+		sudo cp "${HOME}/nvgst/${plugin}" /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/
+	fi
+done
+sudo rm -f /usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/libgstnvcompositor.so # isn't compatible anymore
