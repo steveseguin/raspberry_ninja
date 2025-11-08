@@ -19,6 +19,7 @@ import subprocess
 import struct
 import glob
 import signal
+import weakref
 import mmap
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, Set, List
@@ -57,6 +58,8 @@ gi.require_version('GstWebRTC', '1.0')
 from gi.repository import GstWebRTC
 gi.require_version('GstSdp', '1.0')
 from gi.repository import GstSdp
+gi.require_version('GstRtp', '1.0')
+from gi.repository import GstRtp
 
 
 try:
@@ -74,6 +77,72 @@ def env_flag(name: str) -> bool:
 
 RN_DISABLE_HW_DECODER = env_flag("RN_DISABLE_HW_DECODER")
 RN_FORCE_HW_DECODER = env_flag("RN_FORCE_HW_DECODER")
+
+_hw_decoder_warning_refs: Set[weakref.ReferenceType] = set()
+_gst_log_hook_installed = False
+
+
+def _hw_decoder_ref_cleanup(ref):
+    _hw_decoder_warning_refs.discard(ref)
+
+
+def _gst_hw_warning_log_hook(
+    category,
+    level,
+    file_,
+    function,
+    line,
+    obj,
+    message,
+    user_data,
+):
+    if level < Gst.DebugLevel.WARNING:
+        return
+    text = ""
+    try:
+        text = message.get()
+    except Exception:
+        text = ""
+    combined = " ".join(filter(None, (text, file_, function)))
+    combined_lower = combined.lower()
+    if not any(
+        token in combined_lower for token in ("nvv4l2decoder", "gstbufferpool", "v4l2bufferpool")
+    ):
+        return
+    force = level >= Gst.DebugLevel.ERROR
+    if bool(os.environ.get("RN_DEBUG_VIEWER")):
+        print(
+            f"[viewer] GST log hook captured hardware decoder warning (force={force}): {combined.strip()}"
+        )
+    for ref in list(_hw_decoder_warning_refs):
+        inst = ref()
+        if not inst:
+            _hw_decoder_warning_refs.discard(ref)
+            continue
+        try:
+            inst._handle_hw_decoder_warning(text, combined, force_trigger=force)
+        except Exception:
+            continue
+
+
+def _ensure_gst_hw_warning_hook():
+    global _gst_log_hook_installed
+    if _gst_log_hook_installed:
+        return
+    try:
+        Gst.debug_add_log_function(_gst_hw_warning_log_hook, None)
+        _gst_log_hook_installed = True
+    except Exception:
+        pass
+
+
+def _register_hw_decoder_warning_listener(instance):
+    _ensure_gst_hw_warning_hook()
+    if getattr(instance, "_hw_decoder_warning_ref", None):
+        return
+    ref = weakref.ref(instance, _hw_decoder_ref_cleanup)
+    _hw_decoder_warning_refs.add(ref)
+    instance._hw_decoder_warning_ref = ref
 
 def generate_unique_ndi_name(base_name):
     return f"{base_name}_{int(time.time())}"
@@ -470,11 +539,70 @@ def select_preferred_decoder(
     codec_key = codec.upper()
 
     if is_jetson_device() and gst_element_available("nvv4l2decoder"):
-        if codec_key in {"VP8", "H264"}:
+        if codec_key in {"VP8", "H264", "VP9"}:
             # enable-max-performance prefers direct NVDEC usage on Jetson
             return "nvv4l2decoder", {"enable-max-performance": True}, True
 
     return fallback, {}, False
+
+
+def clamp_int(value: Any, minimum: int, maximum: int) -> int:
+    """Clamp a dynamic value to the inclusive integer range provided."""
+    try:
+        ivalue = int(value)
+    except Exception:
+        return minimum
+    return max(minimum, min(maximum, ivalue))
+
+
+def build_publisher_redundancy_fragment(args: Any) -> Tuple[str, Optional[Dict[str, int]]]:
+    """
+    Construct a pipeline fragment that wraps outgoing RTP with RED + ULPFEC
+    when publisher-side redundancy is enabled.
+    """
+    if getattr(args, "view", False) or getattr(args, "streamin", False):
+        return "", None
+    if getattr(args, "video_pipeline", None):
+        # Custom pipelines are assumed to manage redundancy themselves.
+        return "", None
+    if getattr(args, "nored", False) or getattr(args, "novideo", False):
+        return "", None
+    if not getattr(args, "force_red", False):
+        # Leave publisher offers untouched unless redundancy is explicitly requested.
+        return "", None
+
+    red_pt = clamp_int(getattr(args, "publisher_red_pt", 123), 0, 127)
+    fec_pt = clamp_int(getattr(args, "publisher_fec_pt", 125), 0, 127)
+    red_distance = max(1, clamp_int(getattr(args, "publisher_red_distance", 1), 0, 4))
+    fec_percentage = clamp_int(getattr(args, "publisher_fec_percentage", 20), 0, 100)
+    stream_tag = getattr(args, "streamid", "publisher")
+    queue_suffix = re.sub(r"[^A-Za-z0-9_]", "_", stream_tag) or "default"
+    queue_name = f"publisher_red_queue_{queue_suffix}"
+    fec_name = f"publisher_fec_{queue_suffix}"
+    red_name = f"publisher_red_{queue_suffix}"
+    setattr(args, "_publisher_redundancy_queue_name", queue_name)
+    setattr(args, "_publisher_redundancy_fec_name", fec_name)
+    setattr(args, "_publisher_redundancy_red_name", red_name)
+
+    caps = (
+        f"application/x-rtp,media=video,encoding-name=RED,payload={red_pt},clock-rate=90000"
+    )
+    fragment = (
+        f" ! queue name={queue_name} max-size-buffers=6 max-size-time=60000000 leaky=upstream "
+        f"! rtpulpfecenc name={fec_name} pt={fec_pt} percentage={fec_percentage} "
+        f"! rtpredenc name={red_name} pt={red_pt} distance={red_distance} "
+        f'! capssetter replace=false caps="{caps}" '
+    )
+
+    return fragment, {
+        "red_pt": red_pt,
+        "fec_pt": fec_pt,
+        "red_distance": red_distance,
+        "fec_percentage": fec_percentage,
+        "queue_name": queue_name,
+        "fec_name": fec_name,
+        "red_name": red_name,
+    }
 
 
 def select_display_sink(default_sink: str = "autovideosink") -> str:
@@ -2322,16 +2450,97 @@ class WebRTCClient:
                     pass
         return False
 
-    def _analyze_remote_redundancy(self, sdp_text: str) -> Dict[str, bool]:
-        """Parse remote SDP for redundancy features."""
-        try:
-            lowered = sdp_text.lower()
-        except Exception:
-            lowered = str(sdp_text).lower()
-        red = bool(re.search(r'a=rtpmap:\d+\s+red/90000', lowered))
-        ulpfec = bool(re.search(r'a=rtpmap:\d+\s+ulpfec/90000', lowered))
-        rtx = bool(re.search(r'a=rtpmap:\d+\s+rtx/90000', lowered))
-        return {"red": red, "ulpfec": ulpfec, "rtx": rtx}
+    def _apply_loss_controls(
+        self,
+        client: Dict[str, Any],
+        trans,
+        *,
+        label: str = "transceiver",
+        force_fec: bool = False,
+        force_rtx: bool = False,
+        announce: bool = True,
+    ) -> bool:
+        """Configure FEC/RTX/NACK on a transceiver, handling legacy and modern APIs."""
+        webrtc = client.get("webrtc")
+        fec_applied = False
+        redundancy_allowed = not self.nored
+        auto_redundancy = bool(client.get("_auto_redundancy_active"))
+        base_redundancy = (self.force_red or auto_redundancy) and redundancy_allowed
+        fec_requested = bool(force_fec) or base_redundancy
+
+        if fec_requested:
+            # Legacy GStreamer advertised do-fec; newer releases use fec-type (enum) and percentages.
+            if self._set_gst_property_if_available(trans, "do-fec", True):
+                fec_applied = True
+            else:
+                try:
+                    trans.set_property("fec-type", GstWebRTC.WebRTCFECType.ULP_RED)
+                    fec_applied = True
+                except Exception:
+                    if self._set_gst_property_if_available(
+                        trans, "fec-type", GstWebRTC.WebRTCFECType.ULP_RED
+                    ):
+                        fec_applied = True
+            if force_fec:
+                if self._set_gst_property_if_available(trans, "fec-percentage", 100):
+                    fec_applied = True
+            if webrtc:
+                try:
+                    webrtc.set_property("preferred-fec-type", GstWebRTC.WebRTCFECType.ULP_RED)
+                    fec_applied = True
+                except Exception:
+                    pass
+        else:
+            # User explicitly disabled redundancy; try to turn FEC off where supported.
+            self._set_gst_property_if_available(trans, "do-fec", False)
+            if webrtc:
+                try:
+                    webrtc.set_property("preferred-fec-type", GstWebRTC.WebRTCFECType.NONE)
+                except Exception:
+                    pass
+
+        nack_success = self._set_gst_property_if_available(trans, "do-nack", True)
+        if announce:
+            if nack_success:
+                print(f"SEND NACKS ENABLED ({label})")
+            else:
+                printwarn(f"Failed to enable NACK on {label}: property unavailable")
+
+        rtx_requested = bool(self.force_rtx or force_rtx)
+        rtx_success = False
+        rtx_via_nack = False
+        if rtx_requested:
+            rtx_success = self._set_gst_property_if_available(trans, "do-retransmission", True)
+            if not rtx_success and nack_success:
+                # Modern webrtcbin drives RTX via jitterbuffer do-nack instead of a separate property.
+                rtx_success = True
+                rtx_via_nack = True
+            if rtx_success and announce:
+                suffix = ""
+                if rtx_via_nack:
+                    suffix = " (via jitterbuffer do-nack)"
+                elif force_rtx or self.force_rtx:
+                    suffix = " (forced)"
+                elif not self.nored:
+                    suffix = " (auto)"
+                print(f"RTX ENABLED ({label}){suffix}")
+            elif force_rtx and announce and not self._rtx_support_warned:
+                if nack_success:
+                    printwarn(
+                        f"{label}: RTX not supported by this GStreamer build; continuing with NACK only."
+                    )
+                else:
+                    printwarn(
+                        f"{label}: RTX not supported by this GStreamer build; continuing with FEC/PLI only."
+                    )
+                self._rtx_support_warned = True
+
+        if fec_applied and announce:
+            print(f"FEC ENABLED ({label})")
+        if force_fec and not fec_applied and self.force_red and announce:
+            printwarn(f"{label}: Unable to force FEC on this GStreamer build.")
+
+        return fec_applied or rtx_success
 
     def _apply_loss_recovery_overrides(self, client: Dict[str, Any]) -> bool:
         """Best-effort attempt to enable redundancy on existing transceivers."""
@@ -2340,7 +2549,10 @@ class WebRTCClient:
             return False
 
         updated = False
-        if not self.nored:
+        redundancy_allowed = not self.nored
+        auto_redundancy = bool(client.get("_auto_redundancy_active"))
+        redundancy_requested = (self.force_red or auto_redundancy) and redundancy_allowed
+        if redundancy_requested:
             target_fec_type = GstWebRTC.WebRTCFECType.ULP_RED
             current_fec_type, fec_type_available = self._get_gst_property_if_available(webrtc, "preferred-fec-type")
             needs_update = not fec_type_available or current_fec_type != target_fec_type
@@ -2359,19 +2571,62 @@ class WebRTCClient:
                 break
             if not trans:
                 break
-            if not self.nored:
-                current_fec, fec_available = self._get_gst_property_if_available(trans, "do-fec")
-                if fec_available and bool(current_fec):
-                    pass
-                elif self._set_gst_property_if_available(trans, "do-fec", True):
-                    updated = True
-            current_rtx, rtx_available = self._get_gst_property_if_available(trans, "do-retransmission")
-            if rtx_available and bool(current_rtx):
-                pass
-            elif self._set_gst_property_if_available(trans, "do-retransmission", True):
+            force_fec = (self.force_red or auto_redundancy) and redundancy_allowed
+            force_rtx = self.force_rtx
+            if self._apply_loss_controls(
+                client,
+                trans,
+                label=f"transceiver[{index}]",
+                force_fec=force_fec,
+                force_rtx=force_rtx,
+                announce=False,
+            ):
                 updated = True
             index += 1
         return updated
+
+    def _install_viewer_rtpbin_overrides(self, webrtc: Optional[Gst.Element]) -> None:
+        """Disable webrtcbin FEC handlers so the viewer redundancy wrapper stays authoritative."""
+        if not self.view or not webrtc:
+            return
+        if bool(getattr(webrtc, "_rn_fec_override_installed", False)):
+            return
+        setattr(webrtc, "_rn_fec_override_installed", True)
+
+        try:
+            rtpbin = webrtc.get_child_by_name("rtpbin")
+        except Exception as exc:
+            if bool(os.environ.get("RN_DEBUG_VIEWER")):
+                printwarn(f"[viewer] Unable to inspect webrtcbin RTP bin: {exc}")
+            return
+
+        if not rtpbin:
+            return
+
+        blocked = 0
+        block_mask = GObject.SignalMatchType.ID
+        for signal_name in ("request-fec-decoder-full", "request-fec-decoder"):
+            signal_id = GObject.signal_lookup(signal_name, rtpbin.__gtype__)
+            if not signal_id:
+                continue
+            blocked += GObject.signal_handlers_block_matched(
+                rtpbin,
+                block_mask,
+                signal_id,
+                0,
+                None,
+                None,
+                None,
+            )
+
+        if blocked:
+            label = "handlers" if blocked != 1 else "handler"
+            printc(
+                f"Viewer: disabled webrtcbin internal FEC decoders ({blocked} {label})",
+                "0AF",
+            )
+        elif bool(os.environ.get("RN_DEBUG_VIEWER")):
+            print("[viewer] No internal FEC handlers were blocked")
 
     def __init__(self, params):
         self.params = params  # Store params for room recording manager
@@ -2381,6 +2636,7 @@ class WebRTCClient:
         self.h264 = params.h264
         self.vp8 = params.vp8
         self.vp9 = getattr(params, 'vp9', False)
+        self.av1 = getattr(params, 'av1', False)
         self.pipein = params.pipein
         self.bitrate = params.bitrate
         self.max_bitrate = params.bitrate
@@ -2406,7 +2662,6 @@ class WebRTCClient:
         self.force_red = getattr(params, 'force_red', False)
         self.force_rtx_requested = getattr(params, 'force_rtx', False)
         self.force_rtx = self.force_rtx_requested or self.force_red
-        self._rtx_from_force_red = self.force_red and not self.force_rtx_requested
         self._rtx_support_warned = False
         if self.force_red and self.nored:
             printwarn("Both --force-red and --nored specified; honoring --force-red and enabling redundancy")
@@ -2450,31 +2705,43 @@ class WebRTCClient:
         self._display_chain_unavailable = False
         self._display_chain_unavailable_reason = None
         self._display_direct_mode = False
-        self._viewer_restart_enabled = True
+        self._viewer_fec_decoders: Dict[str, Gst.Element] = {}
+        self._pending_viewer_fec_decoders: Dict[str, Gst.Element] = {}
+        self._viewer_fec_probe_counts: Dict[str, Dict[str, int]] = {}
+        self._viewer_fec_probe_aliases: Dict[str, str] = {}
+        disable_auto_retry = bool(getattr(params, "no_auto_retry", False))
+        self._viewer_restart_enabled = not disable_auto_retry
         self._viewer_restart_pending = False
         self._viewer_restart_timer = None
         self._viewer_restart_attempts = 0
         self._viewer_last_play_request = 0.0
         self._viewer_last_disconnect = 0.0
-        self._viewer_restart_short_delay = 30.0
-        self._viewer_restart_long_delay = 180.0
+        initial_delay = float(getattr(params, "viewer_retry_initial", 15.0))
+        short_delay = float(getattr(params, "viewer_retry_short", 45.0))
+        long_delay = float(getattr(params, "viewer_retry_long", 180.0))
+        # Ensure a monotonic progression of retry windows.
+        self._viewer_restart_initial_delay = max(0.0, initial_delay)
+        self._viewer_restart_short_delay = max(self._viewer_restart_initial_delay, short_delay)
+        self._viewer_restart_long_delay = max(self._viewer_restart_short_delay, long_delay)
+        self._viewer_redundancy_autodisable = False
+        self._viewer_redundancy_info: Optional[Dict[str, Any]] = None
+        self._viewer_redundancy_history_ns = 200_000_000  # 200 ms of RTP history for FEC recovery
         self._viewer_pending_idle = False
-        request_force_avdec = getattr(params, 'force_avdec_decoder', False)
-        self.force_avdec_decoder = False
-        if request_force_avdec:
-            if gst_element_available("avdec_h264"):
-                self.force_avdec_decoder = True
-            else:
-                printwarn("`--force-avdec-decoder` requested but `avdec_h264` is unavailable; using default decoder.")
-        flag_disable_hw = getattr(params, 'disable_hw_decoder', False) or self.force_avdec_decoder
+        self._viewer_enable_fec = bool(getattr(params, "viewer_enable_fec", False))
+        self._viewer_fec_runtime_disabled = False
+        self._viewer_fec_notice_shown = False
+        self._viewer_fec_no_parity_threshold = max(200, int(os.environ.get("RN_FEC_NO_PARITY_THRESHOLD", 320)))
+        self._viewer_fec_last_source = None
+        self._publisher_fec_probe_id = 0
+        self._publisher_fec_probe_pad = None
+        self._publisher_fec_probe_counts: Dict[str, int] = {}
+        flag_disable_hw = getattr(params, 'disable_hw_decoder', False)
         self._user_disable_hw_decoder = bool(flag_disable_hw)
         self._force_hw_decoder = bool(RN_FORCE_HW_DECODER) and not self._user_disable_hw_decoder
         env_disable = bool(RN_DISABLE_HW_DECODER and not self._force_hw_decoder)
         self._auto_disable_hw_decoder = False
         self.disable_hw_decoder = bool(self._user_disable_hw_decoder or env_disable)
-        if self.force_avdec_decoder:
-            printc("Using multi-threaded software decoder via avdec_h264", "77F")
-        elif self._user_disable_hw_decoder:
+        if self._user_disable_hw_decoder:
             printc("Hardware decoder disabled by --disable-hw-decoder", "FF0")
         elif env_disable:
             printc("Hardware decoder disabled via RN_DISABLE_HW_DECODER", "FF0")
@@ -2483,9 +2750,14 @@ class WebRTCClient:
         self._active_hw_decoder_streams: Set[str] = set()
         self._hw_decoder_warning_count = 0
         self._hw_decoder_warning_window = 0.0
+        self._pending_hw_decoder_warning: Optional[Dict[str, Any]] = None
+        self._pending_hw_decoder_warning_count = 0
         self._pipeline_bus_watch_installed = False
         self._last_viewer_codec = None
         self._loss_hint_shown = False
+        self._hw_decoder_warning_ref = None
+        if getattr(self, "view", None):
+            _register_hw_decoder_warning_listener(self)
         
         # ICE/TURN configuration
         self.stun_server = getattr(params, 'stun_server', None)
@@ -2566,20 +2838,12 @@ class WebRTCClient:
         """Create a decoder element preferring Jetson hardware when available."""
         disable_hw = getattr(self, "disable_hw_decoder", False)
         force_hw = getattr(self, "_force_hw_decoder", False)
-        use_avdec = getattr(self, "force_avdec_decoder", False) and codec.upper() == "H264"
-        if use_avdec:
-            factory_name = "avdec_h264"
-            properties = {}
-            using_hw = False
-            if gst_element_supports_property("avdec_h264", "max-threads"):
-                properties["max-threads"] = 0
-        else:
-            factory_name, properties, using_hw = select_preferred_decoder(
-                codec,
-                fallback,
-                disable_hw=disable_hw,
-                force_hw=force_hw,
-            )
+        factory_name, properties, using_hw = select_preferred_decoder(
+            codec,
+            fallback,
+            disable_hw=disable_hw,
+            force_hw=force_hw,
+        )
         element_name = name
         if using_hw and factory_name != fallback:
             element_name = f"{name}_hw"
@@ -2616,20 +2880,12 @@ class WebRTCClient:
         """Return pipeline description fragment for the preferred decoder."""
         disable_hw = getattr(self, "disable_hw_decoder", False)
         force_hw = getattr(self, "_force_hw_decoder", False)
-        use_avdec = getattr(self, "force_avdec_decoder", False) and codec.upper() == "H264"
-        if use_avdec:
-            factory_name = "avdec_h264"
-            properties: Dict[str, Any] = {}
-            using_hw = False
-            if gst_element_supports_property("avdec_h264", "max-threads"):
-                properties["max-threads"] = 0
-        else:
-            factory_name, properties, using_hw = select_preferred_decoder(
-                codec,
-                fallback,
-                disable_hw=disable_hw,
-                force_hw=force_hw,
-            )
+        factory_name, properties, using_hw = select_preferred_decoder(
+            codec,
+            fallback,
+            disable_hw=disable_hw,
+            force_hw=force_hw,
+        )
         parts = [factory_name]
 
         for key, value in properties.items():
@@ -2964,6 +3220,130 @@ class WebRTCClient:
         printc(f"   📶 Embedding {target_kbps} kbps cap into {context}", "07F")
         return modified
 
+    def _determine_primary_video_codec(self) -> Optional[Tuple[str, Optional[str]]]:
+        """Return the (codec, fmtp) tuple describing the local publisher's primary video codec."""
+        if getattr(self.params, "novideo", False) or getattr(self, "novideo", False):
+            return None
+
+        def _codec_tuple(name: str, fmtp: Optional[str] = None) -> Tuple[str, Optional[str]]:
+            return (name, fmtp)
+
+        if getattr(self, "vp9", False) or getattr(self.params, "vp9", False):
+            return _codec_tuple("VP9/90000")
+        if getattr(self, "vp8", False) or getattr(self.params, "vp8", False):
+            return _codec_tuple("VP8/90000")
+        if getattr(self, "av1", False) or getattr(self.params, "av1", False):
+            return _codec_tuple("AV1/90000")
+        if getattr(self.params, "h265", False) or getattr(self.params, "hevc", False):
+            return _codec_tuple("H265/90000")
+
+        # Default to H264 if nothing else is selected.
+        return _codec_tuple(
+            "H264/90000",
+            "packetization-mode=1;profile-level-id=42e01f;level-asymmetry-allowed=1",
+        )
+
+    def _ensure_primary_video_codec_in_sdp(self, sdp_text: str) -> str:
+        """Chrome rejects offers missing a base codec. Ensure H264/VP8/etc. exists alongside RED."""
+        descriptor = self._determine_primary_video_codec()
+        if not descriptor:
+            return sdp_text
+        target_codec, fmtp_params = descriptor
+        codec_label = target_codec.split("/")[0].upper()
+
+        lines = sdp_text.splitlines()
+        if not lines:
+            return sdp_text
+        ends_with_crlf = sdp_text.endswith("\r\n")
+
+        current_media = None
+        video_payloads: Set[str] = set()
+        rtpmap_entries: Dict[str, Tuple[int, str]] = {}
+        fmtp_entries: Dict[str, Tuple[int, str]] = {}
+        apt_candidates: List[str] = []
+
+        for idx, raw_line in enumerate(lines):
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("m="):
+                parts = line.split()
+                if len(parts) >= 4:
+                    current_media = parts[0][2:]
+                    if current_media == "video":
+                        video_payloads = set(parts[3:])
+                    else:
+                        video_payloads = set()
+                continue
+
+            if current_media != "video":
+                continue
+
+            if line.startswith("a=rtpmap:"):
+                try:
+                    header, codec_desc = line.split(None, 1)
+                except ValueError:
+                    continue
+                pt = header.split(":")[1]
+                rtpmap_entries[pt] = (idx, codec_desc.strip())
+                continue
+
+            if line.startswith("a=fmtp:"):
+                parts = line.split(None, 1)
+                header = parts[0]
+                params = parts[1] if len(parts) > 1 else ""
+                pt = header.split(":")[1]
+                fmtp_entries[pt] = (idx, params)
+                match = re.search(r"apt=(\d+)", params)
+                if match:
+                    apt_candidates.append(match.group(1))
+                continue
+
+        if not rtpmap_entries:
+            return sdp_text
+
+        if any(desc.upper().startswith(codec_label) for _, desc in rtpmap_entries.values()):
+            return sdp_text
+
+        primary_pt: Optional[str] = None
+        for apt in apt_candidates:
+            if apt in rtpmap_entries:
+                primary_pt = apt
+                break
+            if apt in video_payloads:
+                primary_pt = apt
+                break
+
+        if not primary_pt and video_payloads:
+            try:
+                primary_pt = sorted(video_payloads, key=lambda value: int(re.sub(r"\D", "", value) or 0))[0]
+            except Exception:
+                primary_pt = next(iter(video_payloads))
+
+        if not primary_pt or primary_pt not in rtpmap_entries:
+            return sdp_text
+
+        rtpmap_idx, _ = rtpmap_entries[primary_pt]
+        lines[rtpmap_idx] = f"a=rtpmap:{primary_pt} {target_codec}"
+
+        if fmtp_params:
+            fmtp_line = f"a=fmtp:{primary_pt} {fmtp_params}"
+            if primary_pt in fmtp_entries:
+                fmtp_idx, _ = fmtp_entries[primary_pt]
+                lines[fmtp_idx] = fmtp_line
+            else:
+                lines.insert(rtpmap_idx + 1, fmtp_line)
+        elif primary_pt in fmtp_entries:
+            # Remove stray apt-only entries that no longer apply.
+            fmtp_idx, params = fmtp_entries[primary_pt]
+            if params.strip().startswith("apt="):
+                lines.pop(fmtp_idx)
+
+        repaired = "\r\n".join(lines)
+        if ends_with_crlf and not repaired.endswith("\r\n"):
+            repaired += "\r\n"
+        return repaired
+
     def sendMessage(self, msg): # send message to wss
         if isinstance(msg, dict):
             msg = dict(msg)
@@ -3203,6 +3583,17 @@ class WebRTCClient:
         self._viewer_pending_idle = False
         if hasattr(self, "_active_hw_decoder_streams"):
             self._active_hw_decoder_streams.clear()
+        if hasattr(self, "_pipeline_bus_watch_installed"):
+            self._pipeline_bus_watch_installed = False
+        if hasattr(self, "_pipeline_bus_watch_id") and getattr(self, "_pipeline_bus_watch_id", 0):
+            try:
+                if self.pipe:
+                    bus = self.pipe.get_bus()
+                    if bus:
+                        bus.remove_watch()
+            except Exception:
+                pass
+            self._pipeline_bus_watch_id = 0
 
     def _ensure_main_pipeline(self, log: bool = True) -> bool:
         """Ensure the primary Gst.Pipeline exists. Returns True if a new pipeline was created."""
@@ -3231,6 +3622,10 @@ class WebRTCClient:
                 self._install_pipeline_bus_watch()
             except Exception:
                 pass
+            try:
+                self._install_publisher_fec_probe()
+            except Exception as exc:
+                printwarn(f"Failed to install TX FEC probe: {exc}")
         return bool(self.pipe)
 
     def _install_pipeline_bus_watch(self):
@@ -3256,9 +3651,92 @@ class WebRTCClient:
             return
         self._pipeline_bus_watch_installed = True
 
-    def _on_pipeline_warning(self, bus, message):
-        if not self._active_hw_decoder_streams:
+    def _install_publisher_fec_probe(self):
+        """Attach a pad probe that records outgoing payload types when tracing is enabled."""
+        if self._publisher_fec_probe_id or not os.environ.get("RN_TRACE_TX_FEC"):
             return
+        if not self.pipe:
+            return
+        fec_name = getattr(self.params, "_publisher_redundancy_fec_name", None)
+        queue_name = getattr(self.params, "_publisher_redundancy_queue_name", None)
+
+        pad = None
+        probe_target = None
+
+        if fec_name:
+            fec = self.pipe.get_by_name(fec_name)
+            if fec:
+                pad = fec.get_static_pad("src")
+                probe_target = fec_name
+        if not pad and queue_name:
+            queue = self.pipe.get_by_name(queue_name)
+            if queue:
+                pad = queue.get_static_pad("src")
+                probe_target = queue_name
+
+        if not pad:
+            printwarn("[publish] TX FEC probe could not find a target pad (missing RED/FEC queue)")
+            return
+
+        red_pt = clamp_int(getattr(self.params, "publisher_red_pt", 123), 0, 127)
+        fec_pt = clamp_int(getattr(self.params, "publisher_fec_pt", 125), 0, 127)
+        counts: Dict[str, int] = {"red": 0, "fec": 0, "other": 0}
+
+        def _probe(_pad, info):
+            buffer = info.get_buffer()
+            if not buffer:
+                return Gst.PadProbeReturn.OK
+            ok, rtp = GstRtp.RTPBuffer.map(buffer, Gst.MapFlags.READ)
+            if not ok:
+                return Gst.PadProbeReturn.OK
+            try:
+                payload_type = rtp.get_payload_type()
+            finally:
+                GstRtp.RTPBuffer.unmap(rtp)
+
+            if payload_type == red_pt:
+                bucket = "red"
+            elif payload_type == fec_pt:
+                bucket = "fec"
+            else:
+                bucket = "other"
+            counts[bucket] = counts.get(bucket, 0) + 1
+            if bucket == "fec" and counts[bucket] == 1:
+                printc("[publish] TX FEC probe observed first parity packet", "0AF")
+            return Gst.PadProbeReturn.OK
+
+        probe_id = pad.add_probe(Gst.PadProbeType.BUFFER, _probe)
+        if probe_id:
+            self._publisher_fec_probe_id = probe_id
+            self._publisher_fec_probe_pad = pad
+            self._publisher_fec_probe_counts = counts
+            if probe_target:
+                printc(f"[publish] TX FEC probe attached to {probe_target}", "0AF")
+            else:
+                printc("[publish] TX FEC probe attached", "0AF")
+
+    def _flush_publisher_fec_probe(self):
+        """Log and detach the publisher FEC probe if it was installed."""
+        if not self._publisher_fec_probe_id:
+            return
+        counts = self._publisher_fec_probe_counts or {}
+        red = counts.get("red", 0)
+        fec = counts.get("fec", 0)
+        other = counts.get("other", 0)
+        printc(
+            f"[publish] TX FEC stats: RED={red} packet(s), ULPFEC={fec}, other={other}",
+            "77F",
+        )
+        if self._publisher_fec_probe_pad:
+            try:
+                self._publisher_fec_probe_pad.remove_probe(self._publisher_fec_probe_id)
+            except Exception:
+                pass
+        self._publisher_fec_probe_id = 0
+        self._publisher_fec_probe_pad = None
+        self._publisher_fec_probe_counts = {}
+
+    def _on_pipeline_warning(self, bus, message):
         try:
             warning, debug = message.parse_warning()
         except Exception:
@@ -3274,12 +3752,15 @@ class WebRTCClient:
                 (str(warning) if warning else "", debug if debug else "", src_name),
             )
         ).lower()
-        if "nvv4l2decoder" in combined_text or "bug in this gstbufferpool subclass" in combined_text:
+        matches_hw = "nvv4l2decoder" in combined_text or "bug in this gstbufferpool subclass" in combined_text
+        if not self._active_hw_decoder_streams:
+            if matches_hw:
+                self._handle_hw_decoder_warning(str(warning), debug)
+            return
+        if matches_hw:
             self._handle_hw_decoder_warning(str(warning), debug)
 
     def _on_pipeline_error(self, bus, message):
-        if not self._active_hw_decoder_streams:
-            return
         try:
             err, debug = message.parse_error()
         except Exception:
@@ -3287,6 +3768,21 @@ class WebRTCClient:
         combined = " ".join(filter(None, (str(err), debug))).lower()
         if "nvv4l2decoder" in combined:
             self._handle_hw_decoder_warning(str(err), debug, force_trigger=True)
+            return
+
+        src_name = ""
+        try:
+            src_name = message.src.get_name()
+        except Exception:
+            src_name = ""
+
+        if (
+            "jetson_display_sink" in combined
+            or src_name == "jetson_display_sink"
+            or "gstomxvideosink" in combined
+        ):
+            if "insufficient resources" in combined or "component in error state" in combined:
+                self._handle_display_sink_error(str(err), debug)
 
     def _handle_hw_decoder_warning(
         self,
@@ -3298,6 +3794,19 @@ class WebRTCClient:
         if self._force_hw_decoder:
             return
         if getattr(self, "_auto_disable_hw_decoder", False):
+            return
+        if not self._active_hw_decoder_streams:
+            pending = self._pending_hw_decoder_warning or {}
+            if bool(os.environ.get("RN_DEBUG_VIEWER")):
+                print(
+                    "[viewer] Queuing hardware decoder warning "
+                    f"(force={force_trigger}, count={self._pending_hw_decoder_warning_count + 1})"
+                )
+            pending["warning"] = warning_text
+            pending["debug"] = debug_text
+            pending["force"] = bool(pending.get("force")) or bool(force_trigger)
+            self._pending_hw_decoder_warning = pending
+            self._pending_hw_decoder_warning_count += 1
             return
         now = time.monotonic()
         if not force_trigger:
@@ -3314,6 +3823,11 @@ class WebRTCClient:
         if debug_text:
             reason_parts.append(str(debug_text))
         reason = "; ".join(reason_parts).strip()
+        if bool(os.environ.get("RN_DEBUG_VIEWER")):
+            print(
+                "[viewer] Hardware decoder warning "
+                f"(force={force_trigger}, count={self._hw_decoder_warning_count}): {reason or 'n/a'}"
+            )
         self._trigger_hw_decoder_fallback(reason or "repeated hardware decoder warnings")
 
     def _trigger_hw_decoder_fallback(self, reason: str):
@@ -3345,6 +3859,24 @@ class WebRTCClient:
             GLib.idle_add(_apply_fallback)
         else:
             _apply_fallback()
+
+    def _maybe_process_pending_hw_decoder_warning(self):
+        pending = getattr(self, "_pending_hw_decoder_warning", None)
+        if not pending or not self._active_hw_decoder_streams:
+            return
+        self._pending_hw_decoder_warning = None
+        count = getattr(self, "_pending_hw_decoder_warning_count", 0)
+        self._pending_hw_decoder_warning_count = 0
+        if bool(os.environ.get("RN_DEBUG_VIEWER")):
+            print(
+                "[viewer] Processing pending hardware decoder warnings "
+                f"(count={count}, force={pending.get('force')})"
+            )
+        self._handle_hw_decoder_warning(
+            pending.get("warning"),
+            pending.get("debug"),
+            force_trigger=bool(pending.get("force")) or count >= 3,
+        )
 
     def _switch_stream_to_software(self, remote_label: str):
         source = self.display_sources.get(remote_label)
@@ -3454,7 +3986,9 @@ class WebRTCClient:
         # Clean up any cached state if we lost the pipeline
         self._reset_display_chain_state()
 
-        outsink = select_display_sink("autovideosink")
+        sink_override = getattr(self, "_display_sink_override", None)
+        outsink = sink_override or select_display_sink("autovideosink")
+        self._display_sink_last_choice = outsink
         print(f"Selected display sink pipeline: {outsink}")
 
         sink_base = outsink.split()[0]
@@ -3589,6 +4123,95 @@ class WebRTCClient:
         if not self._display_direct_mode:
             self._ensure_splash_sources()
         return self._display_chain_config
+
+    def _get_display_sink_base(self, sink_spec: Optional[str]) -> Optional[str]:
+        """Extract the element factory name from a sink pipeline snippet."""
+        if not sink_spec:
+            return None
+        sink_spec = sink_spec.strip()
+        if not sink_spec:
+            return None
+        return sink_spec.split()[0]
+
+    def _select_alternate_display_sink(self, failed_base: Optional[str]) -> Optional[str]:
+        """Choose a fallback display sink when the current one fails."""
+        failed = set(getattr(self, "_display_sink_failed_bases", set()))
+        if failed_base:
+            failed.add(failed_base)
+        self._display_sink_failed_bases = failed
+
+        env_fallback = os.environ.get("RN_DISPLAY_FALLBACK")
+        candidate_specs: List[str] = []
+        if env_fallback:
+            candidate_specs.extend([item.strip() for item in env_fallback.split(",") if item.strip()])
+
+        if is_jetson_device():
+            candidate_specs.extend(
+                [
+                    "nv3dsink sync=false",
+                    "nvdrmvideosink sync=false",
+                    "nveglglessink sync=false",
+                ]
+            )
+        candidate_specs.extend(
+            [
+                "glimagesink sync=false",
+                "autovideosink sync=false",
+                "fakesink sync=true",
+            ]
+        )
+
+        for candidate in candidate_specs:
+            base = self._get_display_sink_base(candidate)
+            if not base or (failed_base and base == failed_base) or base in failed:
+                continue
+            if base == "fakesink" or gst_element_available(base):
+                return candidate
+        return None
+
+    def _handle_display_sink_error(self, err_text: Optional[str], debug_text: Optional[str]):
+        """Attempt to recover the viewer display after sink resource failures."""
+        if getattr(self, "_display_sink_recovery_active", False):
+            return
+
+        failed_base = self._get_display_sink_base(getattr(self, "_display_sink_last_choice", None))
+        fallback = self._select_alternate_display_sink(failed_base)
+        if not fallback:
+            reason = (
+                "Display sink entered an unrecoverable error state and no fallback sink is available. "
+                "Set RN_FORCE_SINK or RN_DISPLAY_FALLBACK to a working sink to restore local preview."
+            )
+            printwarn(reason)
+            self._display_chain_unavailable = True
+            self._display_chain_unavailable_reason = reason
+            return
+
+        message_parts = ["Viewer display sink failure detected"]
+        if err_text:
+            message_parts.append(str(err_text))
+        if debug_text and debug_text not in message_parts:
+            message_parts.append(str(debug_text))
+        printwarn(f"{'; '.join(message_parts)}; rebuilding with `{fallback}`")
+
+        existing_sources: List[Tuple[Gst.Pad, str]] = []
+        for source in list(getattr(self, "display_sources", {}).values()):
+            pad = source.get("remote_pad")
+            caps_name = source.get("caps_name") or ""
+            if pad:
+                existing_sources.append((pad, caps_name))
+
+        self._display_sink_override = fallback
+        self._display_sink_recovery_active = True
+        try:
+            self._reset_display_chain_state()
+            self._ensure_display_chain()
+            for pad, caps_name in existing_sources:
+                try:
+                    self._attach_viewer_video_stream(pad, caps_name)
+                except Exception as exc:
+                    printwarn(f"Failed to relink viewer stream for pad {pad.get_name()}: {exc}")
+        finally:
+            self._display_sink_recovery_active = False
 
     def _link_bin_to_display(self, bin_obj: Gst.Bin, label: str):
         """Connect a bin's output to the display selector."""
@@ -3936,13 +4559,16 @@ class WebRTCClient:
             return
 
         now = time.monotonic()
-        short_delay = float(getattr(self, "_viewer_restart_short_delay", 30.0))
-        long_delay = float(getattr(self, "_viewer_restart_long_delay", 180.0))
+        initial_delay = float(
+            getattr(self, "_viewer_restart_initial_delay", getattr(self, "_viewer_restart_short_delay", 10.0))
+        )
+        short_delay = float(getattr(self, "_viewer_restart_short_delay", max(initial_delay, 30.0)))
+        long_delay = float(getattr(self, "_viewer_restart_long_delay", max(short_delay, 180.0)))
         attempts = int(getattr(self, "_viewer_restart_attempts", 0))
         last_request = float(getattr(self, "_viewer_last_play_request", 0.0))
 
         if attempts == 0:
-            min_gap = 0.0
+            min_gap = initial_delay
         elif attempts == 1:
             min_gap = short_delay
         else:
@@ -4018,14 +4644,232 @@ class WebRTCClient:
         self._viewer_restart_pending = True
         timer.start()
 
+    def _log_viewer_fec_stats(self, label: str, fecdec: Gst.Element) -> None:
+        """Print recovered/unrecovered counters for a viewer-side FEC decoder."""
+        try:
+            recovered = int(fecdec.get_property("recovered"))
+            unrecovered = int(fecdec.get_property("unrecovered"))
+            color = "0AF" if recovered else "FF0"
+            printc(
+                f"Viewer FEC stats ({label}): recovered {recovered} packet(s), "
+                f"unrecovered {unrecovered}",
+                color,
+            )
+        except Exception as exc:
+            if bool(os.environ.get("RN_DEBUG_VIEWER")):
+                printwarn(f"[viewer] Failed to read FEC stats for {label}: {exc}")
+        self._flush_viewer_fec_probe_counts(label)
+
+    def _viewer_fec_trace_enabled(self) -> bool:
+        return bool(os.environ.get("RN_TRACE_FEC"))
+
+    def _viewer_fec_probe_bucket(self, key: str) -> Dict[str, int]:
+        bucket = self._viewer_fec_probe_counts.get(key)
+        if bucket is None:
+            bucket = {"fec": 0, "primary": 0, "other": 0, "total": 0}
+            self._viewer_fec_probe_counts[key] = bucket
+        return bucket
+
+    def _restart_viewer_for_redundancy_change(self):
+        if not self.view:
+            return
+        base_stream = getattr(self, "streamin", None)
+        if not base_stream:
+            return
+        self._viewer_last_disconnect = time.monotonic()
+        self._request_view_stream_restart()
+
+    def _handle_viewer_fec_probe_state(self, label: str, parity_seen: bool, bucket: Dict[str, int]) -> None:
+        if not self._viewer_enable_fec:
+            return
+        if parity_seen:
+            self._viewer_fec_last_source = label
+            if self._viewer_fec_runtime_disabled:
+                self._viewer_fec_runtime_disabled = False
+                self._viewer_fec_notice_shown = False
+                printc(
+                    f"[viewer] ULPFEC parity detected from {label}; re-enabling viewer FEC on next restart.",
+                    "0AF",
+                )
+                self._restart_viewer_for_redundancy_change()
+            return
+
+        if self._viewer_fec_runtime_disabled:
+            return
+        total_packets = bucket.get("total", 0)
+        if total_packets < self._viewer_fec_no_parity_threshold:
+            return
+        if not self._viewer_fec_notice_shown:
+            printwarn(
+                f"[viewer] No ULPFEC packets observed after {total_packets} RED frames "
+                f"(source {label}); disabling viewer FEC until parity appears."
+            )
+            self._viewer_fec_notice_shown = True
+        self._viewer_fec_runtime_disabled = True
+        self._viewer_fec_last_source = label
+        self._restart_viewer_for_redundancy_change()
+
+    def _record_viewer_fec_packet(
+        self,
+        pad_key: str,
+        payload_type: int,
+        ulpfec_pt: Optional[int],
+        primary_pt: Optional[int],
+        location: str,
+        *,
+        trace: bool,
+    ) -> None:
+        alias = self._viewer_fec_probe_aliases.get(pad_key)
+        key = alias or pad_key
+        bucket = self._viewer_fec_probe_bucket(key)
+        bucket["total"] += 1
+        parity_seen = False
+        if ulpfec_pt is not None and payload_type == ulpfec_pt:
+            bucket["fec"] += 1
+            parity_seen = True
+            if trace and (bucket["fec"] <= 5 or bucket["fec"] % 100 == 0):
+                printc(
+                    f"[viewer] FEC probe ({location}) observed ULPFEC payload {payload_type} "
+                    f"(total parity frames seen: {bucket['fec']})",
+                    "0AF",
+                )
+        elif primary_pt is not None and payload_type == primary_pt:
+            bucket["primary"] += 1
+        else:
+            bucket["other"] += 1
+            if trace and ulpfec_pt is not None and bucket["other"] <= 5:
+                printc(
+                    f"[viewer] FEC probe ({location}) saw payload {payload_type} but no ULPFEC "
+                    f"(expected {ulpfec_pt})",
+                    "FF0",
+                )
+        self._handle_viewer_fec_probe_state(alias or pad_key, parity_seen, bucket)
+
+    def _install_viewer_fec_probe(
+        self,
+        element: Optional[Gst.Element],
+        pad_name: Optional[str],
+        redundancy_info: Dict[str, Any],
+        location: str,
+    ) -> None:
+        if element is None:
+            return
+        pad = element.get_static_pad("sink")
+        if pad is None:
+            return
+        pad_key = pad_name or pad.get_name() or element.get_name()
+        if pad_key is None:
+            return
+        ulpfec_pt = redundancy_info.get("ulpfec_pt")
+        primary_pt = redundancy_info.get("primary_payload")
+        if ulpfec_pt is None and primary_pt is None:
+            return
+
+        trace_enabled = self._viewer_fec_trace_enabled()
+
+        def _probe(
+            _pad,
+            info,
+            *,
+            pad_key=pad_key,
+            ulpfec_pt=ulpfec_pt,
+            primary_pt=primary_pt,
+            location=location,
+            trace_enabled=trace_enabled,
+        ):
+            buffer = info.get_buffer()
+            if buffer is None:
+                return Gst.PadProbeReturn.OK
+            ok, rtp = GstRtp.RTPBuffer.map(buffer, Gst.MapFlags.READ)
+            if not ok:
+                return Gst.PadProbeReturn.OK
+            try:
+                payload_type = rtp.get_payload_type()
+            finally:
+                GstRtp.RTPBuffer.unmap(rtp)
+            self._record_viewer_fec_packet(
+                pad_key,
+                payload_type,
+                ulpfec_pt,
+                primary_pt,
+                location,
+                trace=trace_enabled,
+            )
+            return Gst.PadProbeReturn.OK
+
+        pad.add_probe(Gst.PadProbeType.BUFFER, _probe)
+
+    def _register_viewer_fec_label(self, pad_name: Optional[str], label: Optional[str]) -> None:
+        if not pad_name or not label:
+            return
+        previous = self._viewer_fec_probe_counts.pop(label, None)
+        pad_counts = self._viewer_fec_probe_counts.pop(pad_name, None)
+        merged = None
+        if previous:
+            merged = dict(previous)
+        if pad_counts:
+            if merged is None:
+                merged = dict(pad_counts)
+            else:
+                for key, value in pad_counts.items():
+                    merged[key] = merged.get(key, 0) + int(value)
+        if merged:
+            self._viewer_fec_probe_counts[label] = merged
+        self._viewer_fec_probe_aliases[pad_name] = label
+
+    def _flush_viewer_fec_probe_counts(self, label: str, pad_name: Optional[str] = None) -> None:
+        bucket = self._viewer_fec_probe_counts.pop(label, None)
+        if not bucket and pad_name:
+            bucket = self._viewer_fec_probe_counts.pop(pad_name, None)
+        if not bucket:
+            return
+        color = "0AF" if bucket.get("fec") else "FF0"
+        printc(
+            f"[viewer] FEC packet totals ({label}): parity={bucket.get('fec', 0)}, "
+            f"primary={bucket.get('primary', 0)}, other={bucket.get('other', 0)}, "
+            f"total RTP={bucket.get('total', 0)}",
+            color,
+        )
+
+    def _on_viewer_fec_state_changed(
+        self, element: Gst.Element, old_state: Gst.State, new_state: Gst.State, pending: Gst.State
+    ) -> None:
+        """Log FEC stats when the decoder transitions to NULL during teardown."""
+        if new_state != Gst.State.NULL:
+            return
+        label = getattr(element, "_rn_remote_label", None)
+        if not label:
+            label = element.get_name() or "viewer_fec"
+        self._log_viewer_fec_stats(label, element)
+
+    def _log_fec_stats_for_pad(self, pad_name: str, label: str):
+        """Lookup a viewer FEC decoder by pad name and log its stats."""
+        if not pad_name or not self.pipe:
+            return
+        fecdec = self.pipe.get_by_name(f"viewer_rtpulpfecdec_{pad_name}")
+        if fecdec:
+            self._log_viewer_fec_stats(label, fecdec)
+
     def _release_display_source(self, label: str):
         """Detach and remove a registered display source."""
         source = self.display_sources.pop(label, None)
         if not source:
             return
+        pad_name = source.get("pad_name")
         if source.get("using_hw_decoder"):
             self._active_hw_decoder_streams.discard(label)
         print(f"[display] Releasing source '{label}'")
+
+        fecdec = source.get("fec_decoder")
+        bin_obj = source.get("bin")
+        if not fecdec and bin_obj is not None:
+            fecdec = getattr(bin_obj, "rn_fec_decoder", None)
+        if fecdec:
+            self._log_viewer_fec_stats(label, fecdec)
+        cached = self._viewer_fec_decoders.pop(label, None)
+        if cached and cached is not fecdec:
+            self._log_viewer_fec_stats(label, cached)
+        self._flush_viewer_fec_probe_counts(label, pad_name)
 
         selector_pad = source.get("selector_pad")
         if selector_pad:
@@ -4058,6 +4902,422 @@ class WebRTCClient:
             except Exception:
                 pass
 
+    def _release_all_display_sources(self, include_blank: bool = True) -> None:
+        """Release all tracked display sources, optionally skipping the idle splash."""
+        labels = list(getattr(self, "display_sources", {}).keys())
+        for label in labels:
+            if not include_blank and label == "blank":
+                continue
+            self._release_display_source(label)
+        if not self.display_sources:
+            self._viewer_fec_probe_counts.clear()
+            self._viewer_fec_probe_aliases.clear()
+
+    def _update_viewer_redundancy_from_sdp(self, sdp_text: str) -> None:
+        """Parse the remote SDP for RED/ULPFEC payload mappings."""
+        if not self.view or not sdp_text:
+            return
+
+        info: Dict[str, Any] = {
+            "red_pt": None,
+            "ulpfec_pt": None,
+            "primary_payload": None,
+            "primary_codec": None,
+            "redundant_payloads": [],
+        }
+
+        payload_codecs: Dict[str, str] = {}
+        fmtp_map: Dict[str, str] = {}
+        in_video = False
+
+        for raw_line in sdp_text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("m="):
+                in_video = line.lower().startswith("m=video")
+                continue
+            if not in_video:
+                continue
+            if line.startswith("a=rtpmap:"):
+                parts = line.split(None, 1)
+                if len(parts) < 2:
+                    continue
+                payload_id = parts[0].split(":")[1]
+                codec_name = parts[1].split("/")[0].upper()
+                payload_codecs[payload_id] = codec_name
+            elif line.startswith("a=fmtp:"):
+                parts = line.split(None, 1)
+                payload_id = parts[0].split(":")[1]
+                fmtp_map[payload_id] = parts[1] if len(parts) > 1 else ""
+
+        for payload_id, codec_name in payload_codecs.items():
+            if codec_name == "RED" and info["red_pt"] is None:
+                info["red_pt"] = int(payload_id)
+            elif codec_name in {"ULPFEC", "FLEXFEC"} and info["ulpfec_pt"] is None:
+                info["ulpfec_pt"] = int(payload_id)
+
+        red_pt_key = str(info["red_pt"]) if info["red_pt"] is not None else None
+        if red_pt_key and red_pt_key in fmtp_map:
+            fmtp_value = fmtp_map[red_pt_key]
+            payload_tokens: List[int] = []
+            for token in re.split(r"[\\s/;,]+", fmtp_value):
+                if not token:
+                    continue
+                if "=" in token:
+                    _, rhs = token.split("=", 1)
+                    token = rhs
+                if token.isdigit():
+                    payload_tokens.append(int(token))
+            info["redundant_payloads"] = payload_tokens
+            for payload in payload_tokens:
+                codec_name = payload_codecs.get(str(payload))
+                if codec_name and codec_name not in {"RTX", "RED", "ULPFEC", "FLEXFEC"}:
+                    info["primary_payload"] = payload
+                    info["primary_codec"] = codec_name
+                    break
+                if (
+                    codec_name
+                    and codec_name in {"ULPFEC", "FLEXFEC"}
+                    and info["ulpfec_pt"] is None
+                ):
+                    info["ulpfec_pt"] = payload
+
+        previous = getattr(self, "_viewer_redundancy_info", None)
+        self._viewer_redundancy_info = info if info["red_pt"] else None
+        if self._viewer_redundancy_info:
+            if previous != self._viewer_redundancy_info:
+                summary = f"Viewer SDP: RED payload {info['red_pt']}"
+                if info["primary_codec"]:
+                    summary += f" -> {info['primary_codec']} (payload {info['primary_payload']})"
+                if info["ulpfec_pt"] is not None:
+                    summary += f", ULPFEC payload {info['ulpfec_pt']}"
+                printc(summary, "0AF")
+        elif info["red_pt"] and not info["primary_codec"]:
+            printwarn(
+                "Viewer SDP includes RED/ULPFEC but no usable primary payload was detected; "
+                "fallback may disable redundancy."
+            )
+
+    def _build_viewer_redundancy_bin(
+        self,
+        pad: Gst.Pad,
+        payload_bin: Gst.Bin,
+        redundancy_info: Dict[str, Any],
+    ) -> Optional[Gst.Bin]:
+        """Wrap the payload decoding chain with RED/ULPFEC depayloaders."""
+        if not gst_element_available("rtpreddec"):
+            printwarn("RED stream received but `rtpreddec` is unavailable in this GStreamer build.")
+            return None
+
+        queue = Gst.ElementFactory.make("queue", f"viewer_red_queue_{pad.get_name()}")
+        reddec = Gst.ElementFactory.make("rtpreddec", f"viewer_rtpreddec_{pad.get_name()}")
+        if not queue or not reddec:
+            printwarn("Failed to allocate RED depayloading elements for viewer pipeline.")
+            return None
+
+        if redundancy_info.get("red_pt") is not None:
+            try:
+                reddec.set_property("pt", int(redundancy_info["red_pt"]))
+            except Exception:
+                pass
+
+        wrapper = Gst.Bin.new(f"viewer_redundancy_wrapper_{pad.get_name()}")
+        wrapper.add(queue)
+        wrapper.add(reddec)
+
+        input_caps_filter = None
+        caps_tokens = ["application/x-rtp", "media=(string)video", "encoding-name=(string)RED"]
+        if redundancy_info.get("red_pt") is not None:
+            caps_tokens.append(f"payload=(int){int(redundancy_info['red_pt'])}")
+        try:
+            red_caps = Gst.Caps.from_string(", ".join(caps_tokens))
+            input_caps_filter = Gst.ElementFactory.make(
+                "capsfilter", f"viewer_red_caps_{pad.get_name()}"
+            )
+            if input_caps_filter:
+                input_caps_filter.set_property("caps", red_caps)
+        except Exception as exc:
+            input_caps_filter = None
+            if bool(os.environ.get("RN_DEBUG_VIEWER")):
+                print(f"[viewer] Failed to construct RED caps filter: {exc}")
+
+        current_downstream: Gst.Element = queue
+
+        enable_fec = (
+            redundancy_info.get("ulpfec_pt") is not None
+            and gst_element_available("rtpulpfecdec")
+            and gst_element_available("rtpstorage")
+            and bool(getattr(self, "_viewer_enable_fec", False))
+            and not getattr(self, "_viewer_fec_runtime_disabled", False)
+        )
+
+        storage = None
+        jitter = None
+        fecdec = None
+        if enable_fec:
+            self._install_viewer_fec_probe(queue, pad.get_name(), redundancy_info, "viewer_red_queue")
+            storage = Gst.ElementFactory.make("rtpstorage", f"viewer_rtpstorage_{pad.get_name()}")
+            jitter = Gst.ElementFactory.make("rtpjitterbuffer", f"viewer_rtpjitter_{pad.get_name()}")
+            fecdec = Gst.ElementFactory.make("rtpulpfecdec", f"viewer_rtpulpfecdec_{pad.get_name()}")
+            if not storage or not jitter or not fecdec:
+                printwarn("Failed to allocate FEC recovery elements; continuing with RED only.")
+                storage = None
+                jitter = None
+                fecdec = None
+                enable_fec = False
+        if enable_fec and storage and fecdec:
+            wrapper.add(storage)
+            wrapper.add(fecdec)
+            if jitter:
+                wrapper.add(jitter)
+            try:
+                storage.set_property("size-time", int(self._viewer_redundancy_history_ns))
+            except Exception:
+                pass
+            try:
+                fecdec.set_property("pt", int(redundancy_info["ulpfec_pt"]))
+            except Exception:
+                pass
+            if jitter:
+                try:
+                    jitter.set_property("do-lost", True)
+                except Exception:
+                    pass
+                try:
+                    jitter.set_property("drop-on-late", True)
+                except Exception:
+                    pass
+                try:
+                    jitter_latency = getattr(self, "_viewer_redundancy_latency_ms", 200)
+                    jitter.set_property("latency", max(150, int(jitter_latency)))
+                except Exception:
+                    pass
+
+            if not Gst.Element.link(current_downstream, storage):
+                printwarn("Failed to insert rtpstorage ahead of FEC decoder; falling back to RED-only.")
+                wrapper.remove(storage)
+                wrapper.remove(fecdec)
+                if jitter:
+                    wrapper.remove(jitter)
+                    jitter.set_state(Gst.State.NULL)
+                storage.set_state(Gst.State.NULL)
+                fecdec.set_state(Gst.State.NULL)
+                enable_fec = False
+            elif jitter and not Gst.Element.link(storage, jitter):
+                printwarn("Failed to link rtpstorage to jitterbuffer; falling back to RED-only.")
+                wrapper.remove(storage)
+                wrapper.remove(fecdec)
+                wrapper.remove(jitter)
+                storage.set_state(Gst.State.NULL)
+                jitter.set_state(Gst.State.NULL)
+                fecdec.set_state(Gst.State.NULL)
+                enable_fec = False
+            elif jitter and not Gst.Element.link(jitter, fecdec):
+                printwarn("Failed to link jitterbuffer to rtpulpfecdec; falling back to RED-only.")
+                wrapper.remove(storage)
+                wrapper.remove(fecdec)
+                wrapper.remove(jitter)
+                storage.set_state(Gst.State.NULL)
+                jitter.set_state(Gst.State.NULL)
+                fecdec.set_state(Gst.State.NULL)
+                enable_fec = False
+            elif not jitter and not Gst.Element.link(storage, fecdec):
+                printwarn("Failed to link rtpstorage to rtpulpfecdec; falling back to RED-only.")
+                wrapper.remove(storage)
+                wrapper.remove(fecdec)
+                storage.set_state(Gst.State.NULL)
+                fecdec.set_state(Gst.State.NULL)
+                enable_fec = False
+            else:
+                current_downstream = fecdec
+                internal_storage = None
+                try:
+                    internal_storage = storage.get_property("internal-storage")
+                except Exception:
+                    internal_storage = None
+                if internal_storage is not None:
+                    try:
+                        fecdec.set_property("storage", internal_storage)
+                    except Exception:
+                        pass
+                try:
+                    pad_name = pad.get_name()
+                except Exception:
+                    pad_name = None
+                if pad_name:
+                    self._pending_viewer_fec_decoders[pad_name] = fecdec
+                    if bool(os.environ.get("RN_DEBUG_VIEWER")):
+                        print(f"[viewer] Pending FEC decoder registered for pad {pad_name}")
+                try:
+                    fecdec.connect("state-changed", self._on_viewer_fec_state_changed)
+                except Exception:
+                    pass
+                setattr(wrapper, "rn_fec_decoder", fecdec)
+
+        if not enable_fec:
+            if getattr(self, "_viewer_fec_runtime_disabled", False):
+                reason = "viewer FEC auto-disabled (no ULPFEC observed)"
+            elif redundancy_info.get("ulpfec_pt") is None:
+                reason = "no ULPFEC payload advertised"
+            elif not bool(getattr(self, "_viewer_enable_fec", False)):
+                reason = "viewer-side FEC disabled (run with --viewer-enable-fec to experiment)"
+            elif not gst_element_available("rtpulpfecdec") or not gst_element_available("rtpstorage"):
+                reason = "required gst-plugins-bad elements missing"
+            else:
+                reason = "FEC stage unavailable (allocation/link failure)"
+            printc(
+                f"Viewer: RED stream detected but ULPFEC recovery is unavailable ({reason}); "
+                "continuing with RED-only redundancy.",
+                "FF0",
+            )
+
+        if input_caps_filter:
+            wrapper.add(input_caps_filter)
+            if Gst.Element.link(current_downstream, input_caps_filter):
+                current_downstream = input_caps_filter
+            else:
+                printwarn("Failed to insert RED caps filter; continuing without it.")
+                wrapper.remove(input_caps_filter)
+                input_caps_filter = None
+
+        if not Gst.Element.link(current_downstream, reddec):
+            printwarn("Failed to link RED decoder into viewer pipeline.")
+            return None
+        current_downstream = reddec
+
+        output_capssetter = None
+        primary_codec = redundancy_info.get("primary_codec")
+        primary_payload = redundancy_info.get("primary_payload")
+        if primary_codec or primary_payload is not None:
+            output_caps_tokens = ["application/x-rtp", "media=(string)video", "clock-rate=(int)90000"]
+            if primary_payload is not None:
+                output_caps_tokens.append(f"payload=(int){int(primary_payload)}")
+            if primary_codec:
+                output_caps_tokens.append(f"encoding-name=(string){primary_codec.upper()}")
+            try:
+                output_caps = Gst.Caps.from_string(", ".join(output_caps_tokens))
+                output_capssetter = Gst.ElementFactory.make(
+                    "capssetter", f"viewer_redundancy_capssetter_{pad.get_name()}"
+                )
+                if output_capssetter:
+                    output_capssetter.set_property("caps", output_caps)
+                    output_capssetter.set_property("replace", True)
+                    output_capssetter.set_property("join", False)
+            except Exception as exc:
+                output_capssetter = None
+                if bool(os.environ.get("RN_DEBUG_VIEWER")):
+                    print(f"[viewer] Failed to construct capssetter caps: {exc}")
+
+        downstream_output: Gst.Element = current_downstream
+        if output_capssetter:
+            wrapper.add(output_capssetter)
+            if Gst.Element.link(downstream_output, output_capssetter):
+                downstream_output = output_capssetter
+            else:
+                printwarn("Failed to link capssetter after RED decoder; continuing without it.")
+                wrapper.remove(output_capssetter)
+                output_capssetter = None
+
+        wrapper.add(payload_bin)
+        payload_sink = payload_bin.get_static_pad("sink")
+        payload_src = payload_bin.get_static_pad("src")
+        if not payload_sink or not payload_src:
+            printwarn("Viewer payload chain is missing static pads inside redundancy wrapper.")
+            return None
+
+        downstream_src = downstream_output.get_static_pad("src")
+        if not downstream_src:
+            printwarn("Viewer redundancy chain element is missing a src pad.")
+            return None
+
+        if downstream_src.link(payload_sink) != Gst.PadLinkReturn.OK:
+            printwarn("Failed to link RED decoder output into viewer payload chain.")
+            return None
+
+        target_sink_pad = queue.get_static_pad("sink")
+        if not target_sink_pad:
+            printwarn("Viewer redundancy queue missing sink pad.")
+            return None
+
+        ghost_caps_tokens = ["application/x-rtp", "media=(string)video", "encoding-name=(string)RED"]
+        if redundancy_info.get("red_pt") is not None:
+            ghost_caps_tokens.append(f"payload=(int){int(redundancy_info['red_pt'])}")
+        ghost_template = None
+        try:
+            ghost_caps = Gst.Caps.from_string(", ".join(ghost_caps_tokens))
+            ghost_template = Gst.PadTemplate.new(
+                f"viewer_red_sink_template_{pad.get_name()}",
+                Gst.PadDirection.SINK,
+                Gst.PadPresence.ALWAYS,
+                ghost_caps,
+            )
+        except Exception:
+            ghost_template = None
+
+        if ghost_template:
+            ghost_sink = Gst.GhostPad.new_no_target_from_template("sink", ghost_template)
+            ghost_sink.set_target(target_sink_pad)
+        else:
+            ghost_sink = Gst.GhostPad.new("sink", target_sink_pad)
+
+        if bool(os.environ.get("RN_DEBUG_VIEWER")):
+            try:
+                caps_debug = target_sink_pad.query_caps(None)
+                if caps_debug is not None:
+                    print(f"[viewer] redundancy ghost sink caps: {caps_debug.to_string()}")
+            except Exception:
+                pass
+        wrapper.add_pad(ghost_sink)
+
+        ghost_src = Gst.GhostPad.new("src", payload_src)
+        wrapper.add_pad(ghost_src)
+
+        message = f"Viewer: enabling RED depayloading (pt {redundancy_info.get('red_pt')})"
+        if enable_fec and redundancy_info.get("ulpfec_pt") is not None:
+            message += f" with ULPFEC recovery (pt {redundancy_info.get('ulpfec_pt')})"
+        printc(message, "0AF")
+
+        return wrapper
+
+    def _maybe_disable_viewer_redundancy(self, caps_name: str) -> bool:
+        """Auto-disable RED/ULPFEC when the viewer pipeline cannot unwrap it."""
+        if not self.view:
+            return False
+
+        if not (self.force_red or not self.nored):
+            # Already running without redundancy; nothing to change.
+            return False
+
+        if getattr(self, "_viewer_redundancy_autodisable", False):
+            printwarn(
+                "Viewer still receiving RED/ULPFEC video after redundancy fallback; "
+                "display will stay blank until the publisher stops forcing RED."
+            )
+            return False
+
+        self._viewer_redundancy_autodisable = True
+        printwarn(
+            "Incoming viewer video stream uses RED/ULPFEC, but the local pipeline "
+            "cannot depayload it. Disabling redundancy and retrying without FEC."
+        )
+        self.force_red = False
+        self.force_rtx_requested = False
+        self.force_rtx = False
+        self.nored = True
+
+        webrtc = getattr(self, "webrtc", None)
+        if webrtc:
+            try:
+                webrtc.set_property("preferred-fec-type", GstWebRTC.WebRTCFECType.NONE)
+            except Exception:
+                pass
+
+        # Nudge the viewer restart logic so we request the stream again without RED.
+        self._viewer_last_disconnect = time.monotonic()
+        self._request_view_stream_restart()
+        return True
+
     def _attach_viewer_video_stream(self, pad: Gst.Pad, caps_name: str) -> Optional[str]:
         """Attach incoming video pad to the display selector."""
         display_config = self._ensure_display_chain()
@@ -4075,10 +5335,83 @@ class WebRTCClient:
         nvvidconv_has_nvbuf = display_config["nvvidconv_has_nvbuf"]
         debug_display = display_config["debug_display"]
 
-        codec_type = None
+        redundancy_info = getattr(self, "_viewer_redundancy_info", None)
+        preferred_view_codec: Optional[str] = None
+        if getattr(self, "vp8", False):
+            preferred_view_codec = "VP8"
+        elif getattr(self, "vp9", False):
+            preferred_view_codec = "VP9"
+        elif getattr(self, "av1", False):
+            preferred_view_codec = "AV1"
+        elif getattr(self, "h264", False):
+            preferred_view_codec = "H264"
+        needs_redundancy_chain = False
+        codec_type: Optional[str] = None
+
+        caps = pad.get_current_caps()
+        caps_struct = None
+        if caps and caps.get_size() > 0:
+            try:
+                caps_struct = caps.get_structure(0)
+            except Exception:
+                caps_struct = None
+
+        encoding_name: Optional[str] = None
+        if caps_struct and caps_struct.has_field("encoding-name"):
+            try:
+                encoding_name = caps_struct.get_string("encoding-name")
+            except Exception:
+                try:
+                    value = caps_struct.get_value("encoding-name")
+                except Exception:
+                    value = None
+                if isinstance(value, str):
+                    encoding_name = value
+        if not encoding_name:
+            match = re.search(r"encoding-name=\(string\)([^,]+)", caps_name, flags=re.IGNORECASE)
+            if match:
+                encoding_name = match.group(1).strip().strip('"')
+
+        encoding_upper = (encoding_name or "").upper()
+        if encoding_upper in {"RED", "ULPFEC", "FLEXFEC"}:
+            if redundancy_info:
+                needs_redundancy_chain = True
+                primary = redundancy_info.get("primary_codec")
+                if primary:
+                    codec_type = str(primary).upper()
+                elif preferred_view_codec:
+                    codec_type = preferred_view_codec
+                    printwarn(
+                        "Viewer SDP omitted primary codec details for RED stream; "
+                        f"assuming {codec_type} based on viewer preference."
+                    )
+                    if redundancy_info:
+                        redundancy_info = dict(redundancy_info)
+                        redundancy_info["primary_codec"] = codec_type
+                        self._viewer_redundancy_info = redundancy_info
+                if codec_type is None and self._maybe_disable_viewer_redundancy(caps_name):
+                    return None
+            elif self._maybe_disable_viewer_redundancy(caps_name):
+                return None
+        else:
+            if getattr(self, "_viewer_redundancy_autodisable", False):
+                self._viewer_redundancy_autodisable = False
+            if encoding_upper:
+                codec_type = encoding_upper
+
         caps_upper = caps_name.upper()
-        if "VP8" in caps_upper:
-            codec_type = "VP8"
+        if codec_type is None:
+            if "VP8" in caps_upper:
+                codec_type = "VP8"
+            elif "H264" in caps_upper:
+                codec_type = "H264"
+            elif "VP9" in caps_upper:
+                codec_type = "VP9"
+            elif "AV1" in caps_upper:
+                codec_type = "AV1"
+
+        using_hw_decoder = False
+        if codec_type == "VP8":
             fallback_decoder = "vp8dec"
             decoder_desc, using_hw_decoder = self._get_decoder_description("VP8", fallback_decoder)
             if using_hw_decoder and needs_system_memory and not nvvidconv_has_nvbuf:
@@ -4100,8 +5433,7 @@ class WebRTCClient:
                 "queue max-size-buffers=0 max-size-time=0 ! "
                 f"identity name=view_identity_{pad.get_name()}"
             )
-        elif "H264" in caps_upper:
-            codec_type = "H264"
+        elif codec_type == "H264":
             fallback_decoder = "openh264dec"
             decoder_desc, using_hw_decoder = self._get_decoder_description("H264", fallback_decoder)
             if using_hw_decoder and needs_system_memory and not nvvidconv_has_nvbuf:
@@ -4123,8 +5455,34 @@ class WebRTCClient:
                 "queue max-size-buffers=0 max-size-time=0 ! "
                 f"identity name=view_identity_{pad.get_name()}"
             )
-        elif "AV1" in caps_upper:
-            codec_type = "AV1"
+        elif codec_type == "VP9":
+            if not gst_element_available("rtpvp9depay"):
+                printwarn(
+                    "VP9 stream received but `rtpvp9depay` is unavailable. Install gst-plugins-bad 1.16+."
+                )
+                return None
+            fallback_decoder = "vp9dec"
+            decoder_desc, using_hw_decoder = self._get_decoder_description("VP9", fallback_decoder)
+            if using_hw_decoder and needs_system_memory and not nvvidconv_has_nvbuf:
+                printwarn(
+                    "Jetson hardware VP9 decoder requires nvvidconv nvbuf-memory-type support "
+                    "for desktop display sinks; falling back to software decoding."
+                )
+                decoder_desc = fallback_decoder
+                using_hw_decoder = False
+            if using_hw_decoder:
+                decoder_name = decoder_desc.split()[0]
+                printc(f"Using Jetson hardware decoder `{decoder_name}` for VP9", "0AF")
+            conversion_chain = build_conversion_chain(using_hw_decoder)
+            pipeline_desc = (
+                "queue ! rtpvp9depay ! "
+                f"{decoder_desc} ! "
+                "queue max-size-buffers=0 max-size-time=0 ! "
+                f"{conversion_chain} ! "
+                "queue max-size-buffers=0 max-size-time=0 ! "
+                f"identity name=view_identity_{pad.get_name()}"
+            )
+        elif codec_type == "AV1":
             if not gst_element_available("rtpav1depay"):
                 printwarn(
                     "AV1 stream received but `rtpav1depay` is unavailable. Install gst-plugins-bad 1.24+ or gst-plugins-rs."
@@ -4161,10 +5519,19 @@ class WebRTCClient:
             return None
 
         try:
-            out = Gst.parse_bin_from_description(pipeline_desc, True)
+            payload_bin = Gst.parse_bin_from_description(pipeline_desc, True)
         except Exception as exc:
             printwarn(f"Failed to build viewer video pipeline: {exc}")
             return None
+
+        out = payload_bin
+        if needs_redundancy_chain and redundancy_info:
+            wrapper = self._build_viewer_redundancy_bin(pad, payload_bin, redundancy_info)
+            if wrapper is None:
+                if self._maybe_disable_viewer_redundancy(caps_name):
+                    return None
+            else:
+                out = wrapper
 
         out.set_name(f"viewer_video_bin_{pad.get_name()}")
         self.pipe.add(out)
@@ -4178,14 +5545,27 @@ class WebRTCClient:
         link_result = pad.link(sink_pad)
         if link_result != Gst.PadLinkReturn.OK:
             reason = link_result.value_nick if hasattr(link_result, "value_nick") else link_result
+            src_caps = pad.get_current_caps() or pad.query_caps(None)
+            sink_caps = None
+            try:
+                sink_caps = sink_pad.get_current_caps() or sink_pad.query_caps(None)
+            except Exception:
+                sink_caps = None
+            if src_caps is not None:
+                printwarn(f"Viewer video pad caps: {src_caps.to_string()}")
+            if sink_caps is not None:
+                printwarn(f"Viewer pipeline sink caps: {sink_caps.to_string()}")
             printwarn(f"Failed to link incoming video pad to viewer pipeline: {reason}")
             self.pipe.remove(out)
             return None
 
         remote_label = f"remote_{pad.get_name()}"
+        if bool(os.environ.get("RN_DEBUG_VIEWER")):
+            print(f"[viewer] Attaching pad {pad.get_name()} -> {remote_label}")
         try:
             self._link_bin_to_display(out, remote_label)
             self.display_remote_map[pad.get_name()] = remote_label
+            self._register_viewer_fec_label(pad.get_name(), remote_label)
         except Exception as exc:
             printwarn(f"Failed to attach viewer video bin to display: {exc}")
             try:
@@ -4207,8 +5587,28 @@ class WebRTCClient:
                     "using_hw_decoder": using_hw_decoder,
                 }
             )
+        try:
+            fecdec = self._pending_viewer_fec_decoders.pop(pad.get_name(), None)
+        except Exception:
+            fecdec = None
+        else:
+            if fecdec and bool(os.environ.get("RN_DEBUG_VIEWER")):
+                print(f"[viewer] Matched pending FEC decoder for {pad.get_name()}")
+        if not fecdec:
+            fecdec = getattr(out, "rn_fec_decoder", None)
+        if fecdec:
+            if source_info is not None:
+                source_info["fec_decoder"] = fecdec
+            self._viewer_fec_decoders[remote_label] = fecdec
+            try:
+                setattr(fecdec, "_rn_remote_label", remote_label)
+            except Exception:
+                pass
+            if bool(os.environ.get("RN_DEBUG_VIEWER")):
+                print(f"[viewer] Tracking FEC decoder for {remote_label}")
         if using_hw_decoder:
             self._active_hw_decoder_streams.add(remote_label)
+            self._maybe_process_pending_hw_decoder_warning()
         else:
             self._active_hw_decoder_streams.discard(remote_label)
 
@@ -4236,6 +5636,7 @@ class WebRTCClient:
 
         label = remote_map.pop(pad_name, None)
         print(f"[display] Remote pad removed: {pad_name} -> {label}")
+        self._viewer_fec_probe_aliases.pop(pad_name, None)
         self._viewer_pending_idle = False
         if not label:
             return
@@ -5053,56 +6454,50 @@ class WebRTCClient:
             configured_transceivers.add(trans_id)
             label = f"transceiver[{index}]" if index is not None else "transceiver"
 
-            if not self.nored:
-                try:
-                    trans.set_property("fec-type", GstWebRTC.WebRTCFECType.ULP_RED)
-                    print(f"ULP_RED redundancy requested ({label})")
-                    if isinstance(client, dict):
-                        client["_local_red_requested"] = True
-                except Exception as exc:
-                    printwarn(f"Failed to request ULP_RED redundancy on {label}: {exc}")
             force_fec = self.force_red or client.get("_auto_redundancy_active")
-            if force_fec:
-                if self._set_gst_property_if_available(trans, "do-fec", True):
-                    print(f"{label}: ULPFEC parity requested")
-                    if isinstance(client, dict):
-                        client["_local_ulpfec_forced"] = True
-                elif self.force_red:
-                    if isinstance(client, dict):
-                        client["_local_ulpfec_forced"] = False
-                        remote_has_red = client.get("_remote_offered_red")
-                        remote_has_ulpfec = client.get("_remote_offered_ulpfec")
-                        if remote_has_ulpfec:
-                            printwarn(
-                                f"{label}: Local GStreamer build cannot force ULPFEC parity; relying on the publisher's advertised ULPFEC."
-                            )
-                        elif remote_has_red:
-                            printwarn(
-                                f"{label}: Remote offer provides RED wrappers but no ULPFEC parity. Duplicate payloads only; expect stutter under sustained loss."
-                            )
-                        else:
-                            printwarn(
-                                f"{label}: Remote offer lacks RED/ULPFEC support; `--force-red` cannot add redundancy without publisher cooperation."
-                            )
-                    else:
-                        printwarn(f"{label}: Unable to request ULPFEC parity (property unsupported)")
-            rtx_supported = False
-            force_rtx = self.force_rtx or client.get("_auto_redundancy_active")
-            if force_rtx:
-                rtx_supported = self._set_gst_property_if_available(trans, "do-retransmission", True)
-                if not rtx_supported and self.force_rtx and not self._rtx_support_warned:
-                    reason_suffix = " (auto-requested because --force-red)" if self._rtx_from_force_red else ""
-                    printwarn(
-                        f"{label}: RTX not supported by this GStreamer build{reason_suffix}; continuing without retransmissions. Upgrade to GStreamer 1.24+ to enable RTX."
-                    )
-                    self._rtx_support_warned = True
-                elif self.force_rtx and rtx_supported:
-                    print(f"RTX ENABLED ({label})")
-            try:
-                trans.set_property("do-nack", True)
-                print(f"SEND NACKS ENABLED ({label})")
-            except Exception as exc:
-                printwarn(f"Failed to enable NACK on {label}: {exc}")
+            force_rtx = self.force_rtx
+            self._apply_loss_controls(
+                client,
+                trans,
+                label=label,
+                force_fec=force_fec,
+                force_rtx=force_rtx,
+                announce=True,
+            )
+
+            def _hook_receiver(transceiver):
+                receiver_obj = getattr(transceiver.props, 'receiver', None)
+                if receiver_obj is None:
+                    return False
+
+                def _receiver_pad_added(recv, pad):
+                    caps = pad.get_current_caps()
+                    caps_str = caps.to_string() if caps else 'None'
+                    print(f"[webrtc] Receiver pad added ({label}): {pad.get_name()} caps={caps_str}")
+                    self.on_incoming_stream(client['webrtc'], pad)
+
+                try:
+                    receiver_obj.connect('pad-added', _receiver_pad_added)
+                    return True
+                except Exception as exc:
+                    printwarn(f"Failed to attach pad handler for {label}: {exc}")
+                    return False
+
+            if not _hook_receiver(trans):
+                handler_id = None
+
+                def _on_receiver_notify(transceiver, _pspec):
+                    nonlocal handler_id
+                    if _hook_receiver(transceiver) and handler_id is not None:
+                        try:
+                            transceiver.disconnect(handler_id)
+                        except Exception:
+                            pass
+
+                try:
+                    handler_id = trans.connect('notify::receiver', _on_receiver_notify)
+                except Exception as exc:
+                    printwarn(f"Failed to monitor receiver changes for {label}: {exc}")
 
         def configure_existing_transceivers():
             index = 0
@@ -5142,6 +6537,16 @@ class WebRTCClient:
             if self.novideo and not self.noaudio: # impacts audio and video as well, but chrome / firefox seems to handle it
                 printc("Patching SDP due to Gstreamer webRTC bug - audio-only issue", "A6F") # just chrome doesn't handle this
                 text = replace_ssrc_and_cleanup_sdp(text)
+
+            text = self._ensure_primary_video_codec_in_sdp(text)
+
+            dump_offer_path = os.environ.get("RN_DUMP_OFFER_SDP")
+            if dump_offer_path:
+                try:
+                    Path(dump_offer_path).write_text(text)
+                    printc(f"[debug] Wrote modified offer SDP to {dump_offer_path}", "0AF")
+                except Exception as exc:
+                    printwarn(f"Failed to write offer SDP to {dump_offer_path}: {exc}")
 
             if self.view:
                 text = self._apply_bitrate_constraints_to_sdp(text, context="outgoing offer")
@@ -5859,14 +7264,10 @@ class WebRTCClient:
                     rtx_delta = rtx_total
                 client["_prev_rtx_total"] = rtx_total
             if isinstance(fec_delta, int) and fec_delta > 0:
-                if client.get("_fec_active") is not True:
-                    printc("   ✅ ULPFEC parity packets recovering loss", "0F0")
                 client["_fec_active"] = True
             elif "_fec_active" not in client:
                 client["_fec_active"] = None
             if isinstance(rtx_delta, int) and rtx_delta > 0:
-                if client.get("_rtx_active") is not True:
-                    printc("   ✅ RTX retransmissions recovering loss", "0F0")
                 client["_rtx_active"] = True
             elif "_rtx_active" not in client:
                 client["_rtx_active"] = None
@@ -6085,7 +7486,7 @@ class WebRTCClient:
                         codec_label_upper = (codec_label or "").upper()
                         if codec_label_upper == "H264":
                             printwarn(
-                                "Remote sender is H264 without RED/ULPFEC redundancy. Chrome typically omits redundancy for H264, so sustained loss will still stutter unless RTX is available (requires GStreamer ≥1.24)."
+                                "Remote sender is H264 without RED/FEC. Chrome typically omits FEC for H264, so sustained loss will still stutter unless RTX is available (requires GStreamer ≥1.24)."
                             )
                             client["_fec_codec_warning_shown"] = True
                     loss_for_hint = raw_loss_pct if raw_loss_pct is not None else residual_pct
@@ -6158,9 +7559,9 @@ class WebRTCClient:
                         auto_redundancy = client.get("_auto_redundancy_active", False)
                         rtx_active = (rtx_state is True) or self.force_rtx
                         if self.nored and not self.force_red:
-                            suggestions.append("removing `--nored` to restore RED/ULPFEC redundancy")
+                            suggestions.append("removing `--nored` to restore FEC")
                         elif fec_active is False and not self.force_red and not auto_redundancy:
-                            suggestions.append("adding `--force-red` to embed RED/ULPFEC redundancy when the publisher allows it")
+                            suggestions.append("adding `--force-red` to embed redundancy when the publisher allows it")
                         elif fec_active is None and fec_seen and not self.force_red and not auto_redundancy:
                             suggestions.append("adding `--force-red` to override peers that refuse redundancy")
                         if (rtx_state is False or (rtx_seen and rtx_state is not True)) and not rtx_active and not self._rtx_support_warned:
@@ -6292,9 +7693,6 @@ class WebRTCClient:
                         detail_parts.append(f"{loss_basis} loss {quality_pct:.2f}%")
                     if bitrate_calc > 0:
                         detail_parts.append(f"bitrate {bitrate_calc} kbps")
-                    active_latency = client.get("_latency_applied")
-                    if isinstance(active_latency, (int, float)):
-                        detail_parts.append(f"buffer {int(active_latency)} ms")
                     detail_suffix = f" ({', '.join(detail_parts)})" if detail_parts else ""
                     icon_map = {
                         "unusable": "🛑",
@@ -6409,6 +7807,7 @@ class WebRTCClient:
                 pass
             self.pipe.add(client['webrtc'])
             if self.view:
+                self._install_viewer_rtpbin_overrides(client['webrtc'])
                 try:
                     self._ensure_display_chain()
                     self._set_display_mode("idle")
@@ -6418,42 +7817,60 @@ class WebRTCClient:
             if self.vp8 or self.vp9 or self.av1 or self.h264:
                 direction = GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY
                 codec_label = None
-                codec_caps = None
+                preferred_caps: List[str] = []
                 if self.vp8:
                     codec_label = "VP8"
-                    codec_caps = Gst.caps_from_string(
+                    preferred_caps.append(
                         "application/x-rtp,media=video,encoding-name=VP8,clock-rate=90000"
                     )
                 elif self.vp9:
                     codec_label = "VP9"
-                    codec_caps = Gst.caps_from_string(
-                        "application/x-rtp,media=video,encoding-name=VP9,clock-rate=90000"
+                    preferred_caps.extend(
+                        [
+                            "application/x-rtp,media=video,encoding-name=VP9,clock-rate=90000",
+                            "application/x-rtp,media=video,encoding-name=VP9X,clock-rate=90000",
+                            "application/x-rtp,media=video,encoding-name=VP9-DRAFT-IETF-01,clock-rate=90000",
+                        ]
                     )
                 elif self.av1:
-                    codec_label = "AV1X"
-                    try:
-                        codec_caps = Gst.caps_from_string(
-                            "application/x-rtp,media=video,encoding-name=AV1X,clock-rate=90000"
-                        )
-                    except Exception:
-                        codec_label = "AV1"
-                        codec_caps = Gst.caps_from_string(
-                            "application/x-rtp,media=video,encoding-name=AV1,clock-rate=90000"
-                        )
+                    codec_label = "AV1"
+                    preferred_caps.extend(
+                        [
+                            "application/x-rtp,media=video,encoding-name=AV1,clock-rate=90000",
+                            "application/x-rtp,media=video,encoding-name=AV1X,clock-rate=90000",
+                        ]
+                    )
                 elif self.h264:
                     codec_label = "H264"
-                    codec_caps = Gst.caps_from_string(
+                    preferred_caps.append(
                         "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000,packetization-mode=(string)1"
                     )
-                if codec_caps:
-                    tcvr = client['webrtc'].emit('add-transceiver', direction, codec_caps)
-                    if tcvr and Gst.version().minor > 18:
+
+                base_caps = None
+                try:
+                    base_caps = Gst.Caps.from_string("application/x-rtp,media=video")
+                except Exception as exc:
+                    printwarn(f"Failed to construct generic video caps for transceiver: {exc}")
+
+                tcvr = client['webrtc'].emit('add-transceiver', direction, base_caps)
+                if tcvr:
+                    if preferred_caps and Gst.version().minor > 18:
+                        unique_caps: List[str] = []
+                        for entry in preferred_caps:
+                            if entry not in unique_caps:
+                                unique_caps.append(entry)
+                        if "application/x-rtp,media=video" not in unique_caps:
+                            unique_caps.append("application/x-rtp,media=video")
                         try:
-                            tcvr.set_property("codec-preferences", codec_caps)  # supported on newer GStreamer builds
+                            tcvr.set_property(
+                                "codec-preferences",
+                                Gst.Caps.from_string(";".join(unique_caps)),
+                            )
                         except Exception as exc:
                             printwarn(f"Failed to set codec preference for {codec_label}: {exc}")
-                    display_label = "AV1" if codec_label in {"AV1", "AV1X"} else codec_label
-                    printc(f"   🎯 Preferring {display_label} for incoming video", "0AF")
+                    if codec_label:
+                        display_label = codec_label if codec_label not in {"AV1X"} else "AV1"
+                        printc(f"   🎯 Preferring {display_label} for incoming video (fallback enabled)", "0AF")
 
         elif not self.multiviewer:
             client['webrtc'] = self.pipe.get_by_name('sendrecv')
@@ -6473,6 +7890,8 @@ class WebRTCClient:
             except Exception as E:
                 pass
             self.pipe.add(client['webrtc'])
+            if self.view:
+                self._install_viewer_rtpbin_overrides(client['webrtc'])
 
             atee = self.pipe.get_by_name('audiotee')
             vtee = self.pipe.get_by_name('videotee')
@@ -6527,13 +7946,27 @@ class WebRTCClient:
             pass
 
         if self.streamin:
-            # For room recording, we need to be able to map webrtc back to client
-            # Use a lambda to pass the client UUID
-            client['webrtc'].connect('pad-added', lambda webrtc, pad: self.on_incoming_stream(webrtc, pad))
+            # For room recording or viewer mode, attach incoming pads to processing pipeline
+            def _on_pad_added(webrtc_element, pad):
+                print(f"[webrtc] Pad added: {pad.get_name()} caps={pad.get_current_caps().to_string() if pad.get_current_caps() else 'None'}")
+                self.on_incoming_stream(webrtc_element, pad)
+
+            client['webrtc'].connect('pad-added', _on_pad_added)
             client['webrtc'].connect('pad-removed', self.on_remote_pad_removed)
             client['webrtc'].connect('on-ice-candidate', send_ice_remote_candidate_message)
             client['webrtc'].connect('on-data-channel', on_data_channel)
             client['webrtc'].connect('on-new-transceiver', on_new_tranceiver)
+
+            def _attach_existing_src_pads():
+                for pad in client['webrtc'].pads:
+                    try:
+                        if pad.get_direction() == Gst.PadDirection.SRC:
+                            self.on_incoming_stream(client['webrtc'], pad)
+                    except Exception as exc:
+                        printwarn(f"Failed to process existing pad {pad.get_name()}: {exc}")
+                return False
+
+            GLib.idle_add(_attach_existing_src_pads)
         else:
             client['webrtc'].connect('on-ice-candidate', send_ice_local_candidate_message)
             client['webrtc'].connect('on-negotiation-needed', on_negotiation_needed)
@@ -6777,28 +8210,6 @@ class WebRTCClient:
         if 'sdp' in msg:
             assert(msg['type'] == 'offer')
             sdp = msg['sdp']
-            redundancy_features = self._analyze_remote_redundancy(sdp)
-            client["_remote_offered_red"] = redundancy_features["red"]
-            client["_remote_offered_ulpfec"] = redundancy_features["ulpfec"]
-            client["_remote_offered_rtx"] = redundancy_features["rtx"]
-            redundancy_parts: List[str] = []
-            if redundancy_features["red"]:
-                if redundancy_features["ulpfec"]:
-                    redundancy_parts.append("RED+ULPFEC")
-                else:
-                    redundancy_parts.append("RED (no ULPFEC)")
-            else:
-                redundancy_parts.append("no RED/ULPFEC")
-            if redundancy_features["rtx"]:
-                redundancy_parts.append("RTX")
-            redundancy_summary = " + ".join(redundancy_parts)
-            redundancy_color = "0AF" if (redundancy_features["red"] or redundancy_features["rtx"]) else "F70"
-            printc(f"   🛰️ Remote offer redundancy: {redundancy_summary}", redundancy_color)
-            if self.force_red:
-                if not redundancy_features["red"]:
-                    printwarn("Remote offer omitted RED; `--force-red` cannot add redundancy unless the publisher enables it.")
-                elif redundancy_features["red"] and not redundancy_features["ulpfec"]:
-                    printwarn("Remote offer provides RED wrappers without ULPFEC parity; expect duplicate payloads only.")
 
             try:
                 sdp = self._apply_bitrate_constraints_to_sdp(sdp, context="incoming offer")
@@ -6820,6 +8231,11 @@ class WebRTCClient:
 
             if preferred_codec:
                 sdp = self.prefer_codec(sdp, preferred_codec)
+            if self.view:
+                try:
+                    self._update_viewer_redundancy_from_sdp(sdp)
+                except Exception as exc:
+                    printwarn(f"Failed to parse redundancy info from remote SDP: {exc}")
             
             res, sdpmsg = GstSdp.SDPMessage.new()
             GstSdp.sdp_message_parse_buffer(bytes(sdp.encode()), sdpmsg)
@@ -6975,15 +8391,45 @@ class WebRTCClient:
             # Always remove from clients dict, even if cleanup failed
             self.clients.pop(UUID, None)
 
-            if should_restart and len(self.clients) == 0:
-                restart_display = True
+            if self.view:
                 if self.display_remote_map:
-                    for label in list(self.display_remote_map.values()):
+                    for pad_name, label in list(self.display_remote_map.items()):
+                        self._log_fec_stats_for_pad(pad_name, label or pad_name)
                         try:
                             self._release_display_source(label)
                         except Exception:
                             pass
                     self.display_remote_map.clear()
+                if self.display_sources:
+                    self._release_all_display_sources(include_blank=False)
+                if self.pipe:
+                    try:
+                        iterator = self.pipe.iterate_elements()
+                        while True:
+                            res, element = iterator.next()
+                            if res == Gst.IteratorResult.OK and element:
+                                name = element.get_name() or ""
+                                if name.startswith("viewer_rtpulpfecdec"):
+                                    self._log_viewer_fec_stats(name, element)
+                            elif res == Gst.IteratorResult.DONE:
+                                break
+                    except Exception:
+                        pass
+                if self._viewer_fec_decoders:
+                    if bool(os.environ.get("RN_DEBUG_VIEWER")):
+                        print(
+                            f"[viewer] Releasing {len(self._viewer_fec_decoders)} cached FEC decoder(s)"
+                        )
+                    for label, fecdec in list(self._viewer_fec_decoders.items()):
+                        self._log_viewer_fec_stats(label, fecdec)
+                        if bool(os.environ.get("RN_DEBUG_VIEWER")):
+                            print(f"[viewer] Flushed cached FEC stats for {label}")
+                    self._viewer_fec_decoders.clear()
+                if self._pending_viewer_fec_decoders:
+                    self._pending_viewer_fec_decoders.clear()
+
+            if should_restart and len(self.clients) == 0:
+                restart_display = True
 
         if len(self.clients)==0:
             enableLEDs(0.1)
@@ -7721,6 +9167,7 @@ class WebRTCClient:
             
             # Clean up main pipeline
             if self.pipe:
+                self._flush_publisher_fec_probe()
                 try:
                     pause_result = self.pipe.set_state(Gst.State.PAUSED)
                     if pause_result == Gst.StateChangeReturn.ASYNC:
@@ -9381,19 +10828,27 @@ async def main():
     parser.add_argument('--webserver', type=int, metavar='PORT', help='Enable web interface on specified port (e.g., --webserver 8080) for monitoring stats, logs, and controls.')
     parser.add_argument('--noqos', action='store_true', help='Do not try to automatically reduce video bitrate if packet loss gets too high. The default will reduce the bitrate if needed.')
     parser.add_argument('--nored', action='store_true', help='Disable error correction redundency for transmitted video. This may reduce the bandwidth used by half, but it will be more sensitive to packet loss')
-    parser.add_argument('--force-red', action='store_true', help='Force negotiation of RED wrappers plus ULPFEC/RTX redundancy when supported by the remote peer (H264/VP8/AV1). Increases bandwidth but improves resilience to packet loss.')
-    parser.add_argument('--force-rtx', action='store_true', help='Force-enable RTX retransmissions when supported by the local GStreamer build (requires webrtcbin from GStreamer 1.24 or newer).')
+    parser.add_argument('--force-red', action='store_true', help='Force negotiation of RED/ULPFEC/RTX redundancy when supported by the remote peer (H264/VP8/AV1). Increases bandwidth but improves resilience to packet loss.')
+    parser.add_argument('--publisher-fec-percentage', type=int, default=20, metavar='PCT', help='FEC overhead percentage to use for the built-in publisher RED/ULPFEC chain (0-100).')
+    parser.add_argument('--publisher-red-distance', type=int, default=1, metavar='DIST', help='Number of prior RTP packets to embed as RED redundancy (minimum 1).')
+    parser.add_argument('--publisher-red-pt', type=int, default=123, metavar='PT', help='Payload type ID reserved for RED when the publisher redundancy chain is enabled.')
+    parser.add_argument('--publisher-fec-pt', type=int, default=125, metavar='PT', help='Payload type ID reserved for ULPFEC packets when the publisher redundancy chain is enabled.')
+    parser.add_argument('--force-rtx', action='store_true', help='Force-enable RTX retransmissions when supported by the local GStreamer build (verified with GStreamer 1.26+).')
     parser.add_argument('--novideo', action='store_true', help='Disables video input.')
     parser.add_argument('--noaudio', action='store_true', help='Disables audio input.')
     parser.add_argument('--led', action='store_true', help='Enable GPIO pin 12 as an LED indicator light; for Raspberry Pi.')
     parser.add_argument('--pipeline', type=str, help='A full custom pipeline')
     parser.add_argument('--record',  type=str, help='Specify a stream ID to record to disk. System will not publish a stream when enabled.')
     parser.add_argument('--view',  type=str, help='Specify a stream ID to play out to the local display/audio.')
+    parser.add_argument('--no-auto-retry', action='store_true', help='Viewer mode: disable automatic reconnect attempts when the remote peer disconnects.')
+    parser.add_argument('--viewer-retry-initial', type=float, default=15.0, help='Viewer mode: seconds to wait before the first automatic reconnect attempt after a disconnect (default 15s).')
+    parser.add_argument('--viewer-retry-short', type=float, default=45.0, help='Viewer mode: seconds to wait before the second reconnect attempt (default 45s).')
+    parser.add_argument('--viewer-retry-long', type=float, default=180.0, help='Viewer mode: seconds to wait between subsequent reconnect attempts (default 180s).')
+    parser.add_argument('--viewer-enable-fec', action='store_true', help='Enable experimental viewer-side ULPFEC recovery. This currently requires manual testing and may destabilize the viewer; disabled by default.')
     parser.add_argument('--stretch-display', action='store_true', help='Scale viewer output to fill the detected framebuffer/display when possible.')
     parser.add_argument('--splashscreen-idle', type=str, default=None, help='Path to an image displayed when the viewer is idle or no stream is active.')
     parser.add_argument('--splashscreen-connecting', type=str, default=None, help='Path to an image displayed while the viewer is connecting to a stream.')
     parser.add_argument('--disable-hw-decoder', action='store_true', help='Force software decoding for incoming streams even if hardware decoders are available.')
-    parser.add_argument('--force-avdec-decoder', action='store_true', help='Viewer: prefer the multi-threaded software decoder (avdec_h264); implies software decoding.')
     parser.add_argument('--save', action='store_true', help='Save a copy of the outbound stream to disk. Publish Live + Store the video.')
     parser.add_argument('--record-room', action='store_true', help='Record all streams in a room to separate files. Requires --room parameter.')
     parser.add_argument('--record-streams', type=str, help='Comma-separated list of stream IDs to record from a room. Optional filter for --record-room.')
@@ -9492,7 +10947,16 @@ async def main():
         if gst_major > 1 or (gst_major == 1 and gst_minor >= 24):
             printc("  • RTX is available; pair `--force-red` with `--force-rtx` when the sender supports it.", "0AF")
         else:
-            printc("  • This build lacks RTX; redundancy is limited to RED/ULPFEC. `--force-red` plus a higher buffer helps with heavy loss.", "0AF")
+            printc("  • This build is FEC-only; `--force-red` plus a higher buffer helps with heavy loss.", "0AF")
+        if getattr(args, "no_auto_retry", False):
+            printc("  • Auto-retry disabled (`--no-auto-retry`); restart manually if the peer drops.", "0AF")
+        else:
+            printc(
+                f"  • Auto-retry waits {args.viewer_retry_initial:.0f}s before the first reconnect, "
+                f"{max(args.viewer_retry_short, args.viewer_retry_initial):.0f}s before the second, "
+                f"then every {max(args.viewer_retry_long, args.viewer_retry_short):.0f}s.",
+                "0AF",
+            )
         print()
     
     # Validate buffer value to prevent segfaults
@@ -10324,6 +11788,19 @@ async def main():
                 else:
                     # Keep normal queue before encoder
                     pipeline_video_input += f' ! videoconvert{timestampOverlay} ! queue max-size-buffers=10 ! vp8enc deadline=1 target-bitrate={args.bitrate}000 name="encoder" {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
+
+            redundancy_fragment, redundancy_config = build_publisher_redundancy_fragment(args)
+            if redundancy_fragment:
+                if redundancy_config and not getattr(args, "_publisher_redundancy_noted", False):
+                    args._publisher_redundancy_noted = True
+                    printc(
+                        "   ↺ Enabling publisher RED/ULPFEC "
+                        f"(pt={redundancy_config['red_pt']}/{redundancy_config['fec_pt']}, "
+                        f"distance={redundancy_config['red_distance']}, "
+                        f"FEC={redundancy_config['fec_percentage']}%)",
+                        "0AF",
+                    )
+                pipeline_video_input += redundancy_fragment
 
             if args.multiviewer:
                 pipeline_video_input += ' ! tee name=videotee '
