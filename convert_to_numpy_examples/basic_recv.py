@@ -6,7 +6,7 @@ from multiprocessing.resource_tracker import unregister
 
 def receiver_process(shm_name):
     shm = shared_memory.SharedMemory(name=shm_name)
-    frame_buffer = np.ndarray(1280*720*3+5, dtype=np.uint8, buffer=shm.buf)
+    frame_buffer = np.ndarray(shm.size, dtype=np.uint8, buffer=shm.buf)
     unregister(shm._name, 'shared_memory') # https://forums.raspberrypi.com/viewtopic.php?t=340441#p2039792
     last_frame = -1
     #lock = Lock()
