@@ -47,10 +47,10 @@ Building from scratch takes hours. You can skip optional steps (SRT/FFmpeg extra
 
 Latest pre-setup Jetson images (needs 16 GB uSD or larger and up-to-date firmware):
 
-- Download (updated this week): https://drive.google.com/file/d/1B_ywphXQ49F9we3ytcM-Zn1h7dCYOLBh/view?usp=share_link
-- Works on Jetson Nano 2GB A02; may work on Nano 4GB with current firmware.
+- Download (updated October 2025): https://drive.google.com/file/d/1B_ywphXQ49F9we3ytcM-Zn1h7dCYOLBh/view?usp=share_link
+- Works on Jetson Nano 2GB A02; should also work on Nano 4GB with current firmware.
 - Includes GStreamer 1.26.7 with libcamera, SRT, RTMP, FFmpeg, hardware encode, and AV1 support.
-- Image is shrunk to ~15.5 GB (about 7 GB zipped); 32 GB cards are recommended.
+- Image is shrunk to ~15 GB (about 7 GB zipped); 32 GB cards are recommended.
 
 After flashing, expand the root partition to use the full SD card (example for `/dev/mmcblk0`):
 
