@@ -14,8 +14,6 @@ chmod +x installer.sh toolchain_update.sh setup_autostart.sh
 ./toolchain_update.sh
 ```
 
-`toolchain_update.sh` wraps `installer.sh` with `INCLUDE_DISTRO_UPGRADE=0`, so it rebuilds Python/FFmpeg/GStreamer/libcamera and restores the NVIDIA gstnv* plugins without touching the base OS.
-
 Run `installer.sh` when you are starting from a clean official JetPack image or repairing a badly broken system:
 
 ```
@@ -49,10 +47,19 @@ Building from scratch takes hours. You can skip optional steps (SRT/FFmpeg extra
 
 Latest pre-setup Jetson images (needs 16 GB uSD or larger and up-to-date firmware):
 
-- Download (last updated April 21, 2023): https://drive.google.com/file/d/1B_ywphXQ49F9we3ytcM-Zn1h7dCYOLBh/view?usp=share_link
+- Download (updated this week): https://drive.google.com/file/d/1B_ywphXQ49F9we3ytcM-Zn1h7dCYOLBh/view?usp=share_link
 - Works on Jetson Nano 2GB A02; may work on Nano 4GB with current firmware.
-- Includes GStreamer 1.23.0 with libcamera, SRT, RTMP, FFmpeg, hardware encode, and AV1 support.
+- Includes GStreamer 1.26.7 with libcamera, SRT, RTMP, FFmpeg, hardware encode, and AV1 support.
 - Image is shrunk to ~15.5 GB (about 7 GB zipped); 32 GB cards are recommended.
+
+After flashing, expand the root partition to use the full SD card (example for `/dev/mmcblk0`):
+
+```
+sudo growpart /dev/mmcblk0 1   # grows partition 1 to fill the card
+sudo resize2fs /dev/mmcblk0p1  # expands the ext4 filesystem
+```
+
+If your device enumerates as `/dev/sda`, replace `mmcblk0` with `sda`. You can also do this via GNOME Disks (“Resize…”) if you prefer a GUI.
 
 Flash with Win32DiskImager (or balenaEtcher). Default credentials:
 
@@ -69,7 +76,7 @@ After flashing, pull the latest code and refresh dependencies:
 sudo rm -r raspberry_ninja 2>/dev/null || true
 git clone https://github.com/steveseguin/raspberry_ninja
 cd raspberry_ninja/installers/nvidia_jetson
-./toolchain_update.sh
+sudo ./installer.sh
 ```
 
 ## Missing NVIDIA GStreamer plugins?
