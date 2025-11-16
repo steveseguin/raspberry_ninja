@@ -46,7 +46,7 @@ In this folder there is a basic reciever example of how to read the frames from 
 ```
 # we assume publish.py --framebuffer is running already on the same computer
 shm = shared_memory.SharedMemory(name="psm_raspininja_streamid") # open the shared memory
-frame_buffer = np.ndarray(1280*720*3+5, dtype=np.uint8, buffer=shm.buf) # read from the shared memory
+frame_buffer = np.ndarray(shm.size, dtype=np.uint8, buffer=shm.buf) # read from the shared memory
 frame_array = np.frombuffer(frame_buffer, dtype=np.uint8) # ..
 
 meta_header = frame_array[0:5] ## the first 5-words (10-bytes) store width, height, and frame ID
@@ -54,6 +54,7 @@ width = meta_header[0]*255+meta_header[1]
 height = meta_header[2]*255+meta_header[3]
 frame_array = frame_array[5:5+width*height*3].reshape((height,width,3)) # remove meta data, crop to actual image size, and re-shape 1D -> 2.5D
 ```
+ 
 So we access the shared memory, specified with a given name set by the running publish.py script, and then we read the entire shared memory buffer. Since our current image frame might not use up the entire buffer, we include meta-header data to help us know what parts of the shared memory we want to keep or ignore. We now have our raw image data in a numpy array, ready to use however we want.
 
 ### advanced example; host numpy images as mjpeg web stream
