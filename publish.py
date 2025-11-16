@@ -3669,12 +3669,12 @@ class WebRTCClient:
                 np_frame_data = np.frombuffer(frame_data, dtype=np.uint8).reshape(height, width, 3)
                 print(np.shape(np_frame_data), np_frame_data[0,0,:])
 
-                frame_shape = (720 * 1280 * 3)
+                frame_shape = (1080 * 1920 * 3)
                 frame_buffer = np.ndarray(frame_shape+5, dtype=np.uint8, buffer=self.shared_memory.buf)
                 frame_buffer[5:5+width*height*3] = np_frame_data.flatten(order='K') # K means order as how ordered in memory
-                frame_buffer[0] = width/255
+                frame_buffer[0] = width//255
                 frame_buffer[1] = width%255
-                frame_buffer[2] = height/255
+                frame_buffer[2] = height//255
                 frame_buffer[3] = height%255
                 frame_buffer[4] = self.counter%255
                 self.counter+=1
@@ -6540,7 +6540,7 @@ class WebRTCClient:
                         GLib.timeout_add(1000, show_recording_status)
 
                 if self.framebuffer:
-                    frame_shape = (720, 1280, 3)
+                    frame_shape = (1080, 1920, 3)
                     size = np.prod(frame_shape) * 3  # Total size in bytes
                     self.shared_memory = shared_memory.SharedMemory(create=True, size=size, name='psm_raspininja_streamid')
                     self.trigger_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # we don't bind, as the reader will be binding
