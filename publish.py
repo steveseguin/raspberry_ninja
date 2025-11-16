@@ -6541,7 +6541,7 @@ class WebRTCClient:
 
                 if self.framebuffer:
                     frame_shape = (1080, 1920, 3)
-                    size = np.prod(frame_shape) * 3  # Total size in bytes
+                    size = np.prod(frame_shape) + 5  # frame bytes + 5-byte header
                     self.shared_memory = shared_memory.SharedMemory(create=True, size=size, name='psm_raspininja_streamid')
                     self.trigger_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # we don't bind, as the reader will be binding
                     print("*************")
