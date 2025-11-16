@@ -1,230 +1,58 @@
-# A version for the Nvidia Jetson
+## Jetson Nano Media Toolchain Installers
 
-This is very much like the RPI version, but uses the Nvidia Jetson (Nano/NX/AGX).  The Nvidia Jetson tends to have more power and likely will give better results; it is more expensive though.  1080p30 should be quite easy for an Nvidia Jetson to handle, which can't be said for a Raspberry Pi.
+These scripts target the NVIDIA Jetson Nano 2 GB / 4 GB (Maxwell) platform running JetPack 4.x (L4T 32.7.x) and keep the NVIDIA‐patched `tegra` kernel intact while refreshing the userland media stack in `/usr/local`.
 
-### Choose the right script
+### Script Summary
 
-Most users who download a pre-built Jetson image only need to grab the latest
-Raspberry Ninja code and dependencies. Use the new lightweight helper:
+| Script | Purpose | Typical Use |
+| --- | --- | --- |
+| `installer.sh` | End‑to‑end rebuild of Python, codec libraries, FFmpeg, GStreamer, libcamera, and supporting deps. Includes optional `INCLUDE_DISTRO_UPGRADE=1` block for legacy rootfs upgrades. | Freshly flashed Jetson Nano image or heavily drifted systems that need a clean rebuild. |
+| `toolchain_update.sh` | Thin wrapper around `installer.sh` that keeps `INCLUDE_DISTRO_UPGRADE=0` (skip distro upgrade). | Updating an existing Ubuntu 20.04‑based Jetson image—e.g., the customized system captured in this repo. |
 
-```
-cd ~/raspberry_ninja/installers/nvidia_jetson
-chmod +x quick_update.sh setup_autostart.sh   # first run only
-./quick_update.sh
-```
+Both scripts expect `sudo` access (password `ninja` in the lab environment) and will rebuild components under `/usr/local`, leaving the system packages untouched so the NVIDIA kernel and drivers continue to work.
 
-`quick_update.sh` performs a safe apt refresh, installs the small set of
-runtime packages the project currently relies on (including the new display
-tools), and leaves distro packages and JetPack components untouched.
+### Components Installed
 
-Only run `installer.sh` if you are building a brand-new image from the stock
-Nvidia JetPack release or repairing a completely broken system. It performs
-major cleanups, removes large desktop packages, and attempts a distro upgrade,
-all of which are unnecessary—and potentially disruptive—on top of the provided
-pre-built images.
+- **Python 3.11.9** with shared libs, PGO/LTO, and upgraded `pip/setuptools/wheel`. Installs Meson 1.4.1, Ninja 1.13, scikit-build, Jinja2, PyYAML, Mako, ply, websockets, pycairo.
+- **Codec libraries** rebuilt from source with multithreaded support:
+  - `fdk-aac` (master), `dav1d` 1.3.0, `kvazaar` 2.3.0 (CMake shared libs), `x264` stable, `libvpx` 1.13.1 (`--enable-multithread --runtime-cpu-detect`), `srt` 1.5.3 (CMake `ENABLE_SHARED=ON`), `libsrtp` 2.6.0 (shared).
+- **FFmpeg n7.0** linked against the refreshed codecs plus PulseAudio, OMX, OpenSSL, SRT/RTMP, and amrwb/amrnb encoders; built shared-only with pthreads.
+- **GLib 2.80.5**, **GObject-Introspection 1.80.1**, **usrsctp**, **libnice 0.1.21**, **libsrtp 2.6.0**, **libcamera v0.3.2** (GStreamer support enabled; Python bindings off).
+- **GStreamer 1.26.7** via Meson with introspection enabled so GIR/typelib outputs land under `/usr/local` for Python `gi` usage. We continue to disable `libav`, `qt5/qt6`, `rpicamsrc`, `ptp-helper`, VA/MSE plugins to dodge Jetson linker issues while still picking up the WebRTC jitterbuffer retransmission toggles required for RTX.
+- **NVIDIA gstnv* plugins** are backed up to `~/nvgst` before the rebuild and restored into `/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0/` after installation to retain hardware acceleration.
 
+### When to Use Which Flow
 
-### Disable screen blanking
+- **Fresh Jetson Nano (JetPack 4.x) images**: run `installer.sh`. Leave `INCLUDE_DISTRO_UPGRADE=0` unless you explicitly want to attempt the legacy in-place distro upgrade (not recommended for stable setups).
+- **Customized Ubuntu 20.04 Jetson image**: run `toolchain_update.sh`. This skips the distro-upgrade block and mirrors the manual rebuild that now targets Python 3.11.9, FFmpeg n7.0, and GStreamer 1.26.7 on the current system.
+- **Maintenance updates**: rerun `toolchain_update.sh` after future script tweaks; it reclones/builds everything cleanly each time, ensuring consistent `/usr/local` outputs.
 
-When you run `sudo ./setup_autostart.sh` it now asks whether to disable the Jetson
-screen blanking and DPMS timeouts (the default answer is **yes**). Accepting the
-prompt installs an X11 config that disables DPMS, enables a small systemd unit to
-keep the virtual consoles awake, and restarts the active display manager so the
-change takes effect immediately.
+### Prerequisites & Warnings
 
-If you previously skipped the prompt, simply rerun `setup_autostart.sh` and choose
-the same answers for your service — only the blanking step needs sudo so the rest
-of the configuration can stay unchanged.
+- Confirm `uname -a` shows `tegra` (NVIDIA kernel). Do **not** install generic Ubuntu kernels.
+- Ensure ≥ 40 GB free disk space and several GB of swap (the Nano’s zram helps but long builds benefit from extra swap if available).
+- Stable internet is required for git and tarball downloads.
+- `/usr/local` takes precedence in `PATH`, `PKG_CONFIG_PATH`, `LD_LIBRARY_PATH`; be mindful of future package installs that might collide.
+- GStreamer validator (`gst-validate`) and VA/MSE plugins are disabled by default. If you restore them, ensure the required dependencies (gst-devtools, newer `libva`) are present or the build will fail.
 
-### Installing from an official Nvidia Image
+### Post-Install Smoke Tests
 
-While you can probably install Raspberry_ninja onto any Linux flavour, Nvidia's Jetpack Ubuntu version contains the drivers needed to make use of the hardware encoder. I provide some pre-built images, that are setup with all the depedencies needed to run Raspberry_Ninja, but you can use the official image and DIY also.
+After a successful run:
 
-See the installer.sh for the most recent installer used by me to make the current distributable image baed on an official Nvidia image.  You'll want to run section at a time, to ensure things run smoothly, restarting or manually editing files as needed.
-
-You are more than likely going to need to make changes to the installer though, as it tries to build the newest version of Gstreamer, and that often implies other script changes are needed.
-
-Takes a few hours at least to normally get everything working when building the files from scratch.  Some steps can be skipped to speed things up, like SRT / FFMPEG support, so do what you wish. 
-
-#### Instalilng on Jetson without original Nvidia image?
-
-If you aren't using the Nvidia Jetson image, or you've messed things up, you can download the gst-files provided by Nvidia on that image here, [libgstnvidia.zip](https://github.com/steveseguin/raspberry_ninja/raw/refs/heads/main/installers/nvidia_jetson/libgstnvidia.zip ), as a zip:
-
-Assuming you bypass any related errors in the install script, you'll need to extract and copy those files to this folder, once the install script finishes:
-`/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0$`
-
-You can also try copying those files to the following folder, before running the script, and hope the script detects them correctly without errors:
-`/usr/lib/aarch64-linux-gnu/gstreamer-1.0/`
-
-I've seen an interesting git repo with details on building a Jetson image yourself here, https://github.com/pythops/jetson-nano-image, although I haven't tried it yet. You're on your own if you go this path tho.
-
-#### Steve provided completed builds
-
-The newest pre-setup images for Jetson devices requires 16-GB uSD card or larger, along with a Jetson running the newest board firmware.
-
-You can use Win32DiskImager (https://sourceforge.net/projects/win32diskimager/) to write this image to a disk.  If you need to format your SD card first, you can use the SD Card Formatter (https://www.sdcard.org/downloads/formatter/).
-
-If you have problems with Win32DiskImager, [Bletcher](https://www.balena.io/etcher/) might be an option? 
-
-##### Install Steve's newest Jetson Nano image below; last updated April 21st, 2023.
-
-[https://drive.google.com/file/d/1B_ywphXQ49F9we3ytcM-Zn1h7dCYOLBh/view?usp=share_link](https://drive.google.com/file/d/1B_ywphXQ49F9we3ytcM-Zn1h7dCYOLBh/view?usp=share_link)
-
-The above image was built on a Jetson Nano 2GB developer kit, model A02, with up-to-date firmware.  It may work with the Jetson Nano 4GB model also, assuming firmware is up to date.
-
-- It should work with Jetson Nano 4GB model also, assuming its firmware is up to date.
-- This image has GStreamer 1.23.0 comes pre-installed, with libcamera, srt, rtmp, ffmpeg, hardware-encode, and av1 support
-- It's is sized down to 15.5-GB system drive, 7-gb zipped, so it should barely fit onto a typical 16-GB uSD card.  32GB or more is recommended though.
-
-The username and password to sign in to the image is:
-```
-username: ninja
-password: vdo
-```
-(if the password doesn't work, try `vdo` for the username and `ninja` for the password, instead)
-
-If the Jetson fails to boot after installing it, try an older image, provided below, or considering updating the firmware on your Jetson to something newer.  If nothing else works, you can build Raspberry_ninja from scratch using the installer.sh file, located in the `nvidia_jetson` folder.  
-
-If the installation doesn't auto-expand to fill your uSD card on boot, you can run the following commands to have it use the available disk space:
-```
-sudo apt-get install cloud-utils -y
-sudo growpart /dev/mmcblk0 1
-sudo resize2fs /dev/mmcblk0p1
-```
-Using GParted GUI can also be used to specify partition sizes.
-
-note: Steve is available on Discord at discord.vdo.ninja if support with the image is needed
-
-##### Older image compatible with Jetson A02 with old (original) firmware
-The follow **Jetson Nano-2GB image**, build with Gstreamer 1.19.2, is out of date, but might work on older Jetson boards if problems occur with the newer ones. Requires a large 32-GB SD card or a 64-GB card.
-
-```
-https://drive.google.com/file/d/1WTsW_dWkggGhQXa8p9yOIz3E4tYcl6ee/view?usp=sharing
-```
-The username and password to sign in to the image is:
-```
-username: ninja
-password: vdo
+```bash
+python3.11 --version
+python3.11 -m pip list | head
+ffmpeg -codecs | grep -E '264|vp9|av1'
+gst-launch-1.0 --version
+gst-inspect-1.0 nvarguscamerasrc
 ```
 
-If these images don't work for your nano, you can update your firmware using another system running Ubuntu 18 /w Jetpack 4 installed I think.
+Run representative GStreamer pipelines (e.g., your `publish.py`) to verify multithreaded decode behavior and GPU plugin loading. Investigate any remaining warnings about `gst-validate`, `libgstmse.so`, or `vaCopy`—they indicate optional plugins missing runtime dependencies (typically gst-devtools or a newer VA stack).
 
-##### Older image compatible built on a Jetson Xavier NX with old firmware
+### Known Limitations
 
-This is another old image, built on the Xavier NX. Try a newer image before giving this a go.
-```
-https://drive.google.com/file/d/1gMB4CDnnbFmIhsbYMqrAjluhn7oS7a03/view?usp=sharing
-```
+- GStreamer still omits optional `gst-validate`/MSE/VA plugins; enable them only after providing the required dependencies (gst-devtools, updated libva).
+- libcamera warns about kernels < 5.0; this is expected on JetPack 4.x and can be ignored unless you migrate to a newer L4T release.
+- The scripts assume a Jetson Nano; other Jetson models may require additional acceleration plugins or kernel headers.
 
-The username and password to sign in to the image is:
-```
-username: ninja
-password: vdo
-```
-
-* These older Steve-provided builds may not come with Chromium installed
-
-### Once you have logged in
-
-Once you have logged in, at the terminal you can download the repo by running:
-
-```
-git clone https://github.com/steveseguin/raspberry_ninja/
-```
-
-If you flashed one of the pre-built images and just want the latest code, run:
-
-```
-sudo rm -r raspberry_ninja
-git clone https://github.com/steveseguin/raspberry_ninja
-cd raspberry_ninja/installers/nvidia_jetson
-./quick_update.sh
-```
-
-#### Nvidia provided builds
-
-The official Nvidia Jetson builds are running Ubuntu 18, with Gstreamer 1.14. This version is too old to run VDO.Ninja correctly, so it's recommend that at least Gstreamer 1.16 is used. You can use the provided installer.sh script to upgrade the official Nvidia images with a newer Gstreamer version.  The installer.sh script expects a FRESH image install and it may need some dependencies tweaks over time.
-
-The link to the **official Nvidia images** are here: https://developer.nvidia.com/embedded/downloads
-
-After the Jetson is running, you have connect to the Jetson and pull the raspberry_ninja code and finalize the setup.
-
-```
-git clone https://github.com/steveseguin/raspberry_ninja/
-cd raspberry_ninja
-cd nvidia_jetson
-chmod +x installer.sh
-sudo ./installer.sh
-```
-You may need to babysit the installation, and it could take a couple hours if things go smoothly. 
-
-
-#### Auto-start service on boot
-
-You can refer to Raspberry Pi service script below for a sample start-up script for the Jetson
-https://github.com/steveseguin/raspberry_ninja/blob/main/raspberry_pi/raspininja.service
-
-The setup and installation instructions for the start-up script are similar, which can be found here:
-https://github.com/steveseguin/raspberry_ninja/tree/main/raspberry_pi#setting-up-auto-boot
-
-The follow bits of the service script may need to be modified or removed if you face issues:
-```
-User=vdo
-Group=vdo
-Environment=XDG_RUNTIME_DIR=/run/user/1000
-ExecStartPre=vcgencmd get_camera
-```
-
-### Autostart helper script
-
-For the pre-built Jetson image you can configure Raspberry Ninja to launch automatically at boot with an interactive helper:
-```
-cd ~/raspberry_ninja/installers/nvidia_jetson
-sudo ./setup_autostart.sh
-```
-
-It will:
-- Prompt for the system user and the exact `publish.py` command line to run on startup.
-- Optionally export `DISPLAY`/`XAUTHORITY` for desktop sessions.
-- Let you disable the GNOME desktop so the HDMI port is free for kiosk output.
-- Create and enable a systemd service (`/etc/systemd/system/raspberry-ninja.service`).
-
-At the end it prints reminders on how to reboot, start/stop the service manually, or re-enable the GUI later (`sudo systemctl set-default graphical.target`, `sudo systemctl start gdm`, etc.).
-
-#### Details on Nvidia's Gstreamer implementation
-
-Details on the Nvidia encoder and pipeline options:
-https://docs.nvidia.com/jetson/l4t/index.html#page/Tegra%20Linux%20Driver%20Package%20Development%20Guide/accelerated_gstreamer.html#wwpID0E0A40HA
-
-![image](https://user-images.githubusercontent.com/2575698/127804472-073ce656-babc-450a-a7a5-754493ad1fd8.png)
-
-![image](https://user-images.githubusercontent.com/2575698/127804558-1560ad4d-6c2a-4791-92ca-ca50d2eacc2d.png)
-
-### PROBLEMS
-
-##### Just doens't work
-
-If you have an error or things just don't work, saying "START PIPE" but nothing happens, make sure the correct device is specified
-
-video0 or video1 or whatever should align with the location of your video device.  
-```PIPELINE_DESC = "v4l2src device=/dev/video1 io-mode=2 ! image/jpeg,framerate ...```
-
-Using ```$ gst-device-monitor-1.0``` can help you list available devices and their location
-
-![image](https://user-images.githubusercontent.com/2575698/128388731-335aaf3d-5f31-4185-b9f2-b7b8fe748d6b.png)
-
-#### other problems
-
-Make sure the camera/media device supports MJPEG output, else see the script file for examples of other options.  Things may not work if your device needs be changed up, but MJPEG is pretty common.
-
-#### nvjpegdec not found
-
-Make sure you've correctly installed the install script or that you have moved the nvidia-provided gstreamer plugins into the correct folder. The Nvidia version of Raspberry Ninja is currently for the Jetson; not desktops.
-
-### Updating firmware on Jetson Nano
-
-The Jetson Nanos 4GB 2GB version dev kits may need their firmware updated for newer images to work with them.  They are also not getting support much from Nvidia anymore, with Jetpack 4 being the last supported Nvidia software update I think
-
-Updating requires a system (or VM) running Ubuntu 18, with Nvidia Jetpack 4 installed.  The process of flashing may take a couple hours, but its worth it.
-
-2GB and 4GB images seem to be mostly compatible once firmware has been updated.
+Refer to `AGENTS.md` for an up-to-date progress log, pending tasks, and validation notes derived from the current deployment.
