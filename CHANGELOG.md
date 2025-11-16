@@ -1,5 +1,44 @@
 # Changelog
 
+# Release 6.1.0
+
+**Release Date:** 2025-11-16
+
+## ✨ Minor Release
+
+This release includes new features and improvements.
+
+### Core Changes (publish.py)
+
+The main streaming script has been updated. New features or improvements have been added.
+
+### Commits
+
+- Add files via upload (16cd312)
+- Add files via upload (0d3c61e)
+- chore(install): Remove quick update script for NVIDIA Jetson (af3403f)
+- docs(jetson): Revise installation and usage guide (4b9916a)
+- feat(video): Increase default framebuffer resolution to 1080p (9ca7c19)
+- Add files via upload (729041a)
+- chore: Remove .claude development configuration (54dfa9a)
+- feat(webrtc): Allow forcing H264 profile for WebRTC viewers (576f430)
+- chore: release v6.0.0 [release] (eb0066f)
+- Add files via upload (c46b5e9)
+- feat(jetson-install): Implement Jetson Nano media toolchain installer (a7c077d)
+- feat(publish): Add publisher-side redundancy and viewer auto-retry controls (3bd5a14)
+- feat(webrtc): Improve redundancy negotiation and status reporting (3fdd679)
+
+### Installation
+
+For installation instructions, please refer to the platform-specific guides:
+- [Raspberry Pi](./raspberry_pi/README.md)
+- [NVIDIA Jetson](./nvidia_jetson/README.md)
+- [Orange Pi](./orangepi/README.md)
+- [Ubuntu](./ubuntu/README.md)
+
+
+---
+
 # Release 6.0.0
 
 **Release Date:** 2025-11-08
