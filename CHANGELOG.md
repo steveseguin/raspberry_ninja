@@ -1,5 +1,40 @@
 # Changelog
 
+# Release 7.1.0
+
+**Release Date:** 2025-12-17
+
+## ✨ Minor Release
+
+This release includes new features and improvements.
+
+### Core Changes (publish.py)
+
+The main streaming script has been updated. New features or improvements have been added.
+
+### Commits
+
+- fix(gstreamer): Remove video-specific rtcp-fb from audio section (136358a)
+- chore: release v7.0.0 [release] (e350b95)
+- fix(gstreamer): Fix WebRTC compatibility for GStreamer 1.18 (cbfd4a6)
+- fix(gstreamer): Prevent invalid SSRC with older GStreamer versions (2eda1a2)
+- docs(nvidia_jetson): Update pre-built image details and compatibility (dee4a5b)
+- docs(nvidia-jetson): Update pre-built image info and installation steps (5aff772)
+- Delete installers/nvidia_jetson/publish.py (f6d5ea9)
+- feat(nvidia_jetson): Add initial publish.py script for NVIDIA Jetson (8240663)
+- docs(jetson): Overhaul and expand NVIDIA Jetson installation guide (ebf6a02)
+
+### Installation
+
+For installation instructions, please refer to the platform-specific guides:
+- [Raspberry Pi](./raspberry_pi/README.md)
+- [NVIDIA Jetson](./nvidia_jetson/README.md)
+- [Orange Pi](./orangepi/README.md)
+- [Ubuntu](./ubuntu/README.md)
+
+
+---
+
 # Release 7.0.0
 
 **Release Date:** 2025-12-17
