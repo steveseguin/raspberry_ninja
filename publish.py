@@ -803,6 +803,32 @@ def strip_audio_from_sdp(sdp):
 
     return '\r\n'.join(result_lines)
 
+def fix_audio_rtcp_fb_for_gstreamer(sdp):
+    """Remove video-specific RTCP feedback attributes from audio section.
+
+    GStreamer 1.18 incorrectly adds 'a=rtcp-fb:XX nack' and 'a=rtcp-fb:XX nack pli'
+    to audio sections. These are video-specific (for packet loss/keyframe requests)
+    and cause some WebRTC stacks to reject the audio description.
+    """
+    lines = sdp.split('\r\n')
+    result_lines = []
+    in_audio_section = False
+
+    for line in lines:
+        if line.startswith('m=audio'):
+            in_audio_section = True
+        elif line.startswith('m=') and not line.startswith('m=audio'):
+            in_audio_section = False
+
+        # Skip rtcp-fb nack lines in audio section (they're video-specific)
+        if in_audio_section and line.startswith('a=rtcp-fb:'):
+            if 'nack' in line.lower():
+                continue  # Skip nack and nack pli lines for audio
+
+        result_lines.append(line)
+
+    return '\r\n'.join(result_lines)
+
 def generateHash(input_str, length=None):
     input_bytes = input_str.encode('utf-8')
     sha256_hash = hashlib.sha256(input_bytes).digest()
@@ -6911,6 +6937,8 @@ class WebRTCClient:
                 if 'm=audio' in text:
                     printc("Patching audio SDP for GStreamer 1.18 SSRC compatibility", "A6F")
                     text = fix_audio_ssrc_for_ohttp_gstreamer(text)
+                    # Also remove video-specific rtcp-fb attributes from audio section
+                    text = fix_audio_rtcp_fb_for_gstreamer(text)
 
             # GStreamer 1.18 creates phantom audio section even with --noaudio
             # Strip it from the SDP to avoid confusing Chrome
