@@ -6931,20 +6931,15 @@ class WebRTCClient:
                 printc("Patching SDP due to Gstreamer webRTC bug - audio-only issue", "A6F") # just chrome doesn't handle this
                 text = replace_ssrc_and_cleanup_sdp(text)
 
-            # Fix audio SSRC issues for GStreamer < 1.20 (1.18 has known SSRC bugs)
+            # GStreamer 1.18 has multiple audio SDP bugs that Chrome rejects:
+            # - Invalid SSRCs, rtcp-fb attributes, bundle issues
+            # Strip audio from SDP entirely for GStreamer < 1.20 as a workaround
             gst_ver = Gst.version()
-            if not self.noaudio and gst_ver.major == 1 and gst_ver.minor < 20:
+            if gst_ver.major == 1 and gst_ver.minor < 20:
                 if 'm=audio' in text:
-                    printc("Patching audio SDP for GStreamer 1.18 SSRC compatibility", "A6F")
-                    text = fix_audio_ssrc_for_ohttp_gstreamer(text)
-                    # Also remove video-specific rtcp-fb attributes from audio section
-                    text = fix_audio_rtcp_fb_for_gstreamer(text)
-
-            # GStreamer 1.18 creates phantom audio section even with --noaudio
-            # Strip it from the SDP to avoid confusing Chrome
-            if self.noaudio and gst_ver.major == 1 and gst_ver.minor < 20:
-                if 'm=audio' in text:
-                    printc("Stripping phantom audio section from SDP (GStreamer 1.18 bug)", "A6F")
+                    if not self.noaudio:
+                        printc("⚠️  Stripping audio from SDP (GStreamer 1.18 audio bugs)", "FA0")
+                        printc("   └─ Upgrade to GStreamer 1.20+ for audio support", "FA0")
                     text = strip_audio_from_sdp(text)
 
             text = self._ensure_primary_video_codec_in_sdp(text)
