@@ -701,6 +701,108 @@ def replace_ssrc_and_cleanup_sdp(sdp): ## fix for audio-only gstreamer -> chrome
 
     return '\r\n'.join(lines)
 
+def fix_audio_ssrc_for_ohttp_gstreamer(sdp):
+    """Fix audio SSRC issues for GStreamer 1.18 and earlier.
+
+    GStreamer 1.18 has bugs where:
+    1. ssrc=-1 in rtpopuspay becomes 0xFFFFFFFF (4294967295) in SDP
+    2. RTX SSRCs may also have invalid values
+    3. ssrc-group:FID may have mismatched SSRCs
+
+    This function replaces all audio SSRCs with valid unique values.
+    """
+    def generate_valid_ssrc():
+        # Generate SSRC that's not 0 and not 0xFFFFFFFF (-1)
+        while True:
+            ssrc = random.randint(1, 0xFFFFFFFE)
+            return str(ssrc)
+
+    lines = sdp.split('\r\n')
+    in_audio_section = False
+    audio_ssrc_map = {}  # old_ssrc -> new_ssrc
+
+    # First pass: collect all audio SSRCs and generate replacements
+    for line in lines:
+        if line.startswith('m=audio '):
+            in_audio_section = True
+        elif line.startswith('m=') and not line.startswith('m=audio '):
+            in_audio_section = False
+
+        if in_audio_section:
+            # Find SSRCs in a=ssrc: lines
+            if line.startswith('a=ssrc:'):
+                match = re.match(r'a=ssrc:(\d+)', line)
+                if match:
+                    old_ssrc = match.group(1)
+                    if old_ssrc not in audio_ssrc_map:
+                        audio_ssrc_map[old_ssrc] = generate_valid_ssrc()
+
+            # Find SSRCs in a=ssrc-group:FID lines
+            if line.startswith('a=ssrc-group:FID'):
+                ssrcs = re.findall(r'\d+', line.split('FID')[1] if 'FID' in line else '')
+                for old_ssrc in ssrcs:
+                    if old_ssrc not in audio_ssrc_map:
+                        audio_ssrc_map[old_ssrc] = generate_valid_ssrc()
+
+    # Second pass: replace all SSRCs consistently
+    result_lines = []
+    in_audio_section = False
+
+    for line in lines:
+        if line.startswith('m=audio '):
+            in_audio_section = True
+        elif line.startswith('m=') and not line.startswith('m=audio '):
+            in_audio_section = False
+
+        if in_audio_section:
+            new_line = line
+            for old_ssrc, new_ssrc in audio_ssrc_map.items():
+                # Replace in a=ssrc: lines
+                new_line = re.sub(f'a=ssrc:{old_ssrc}\\b', f'a=ssrc:{new_ssrc}', new_line)
+                # Replace in a=ssrc-group:FID lines
+                new_line = re.sub(f'\\b{old_ssrc}\\b', new_ssrc, new_line) if 'ssrc-group' in new_line else new_line
+            result_lines.append(new_line)
+        else:
+            result_lines.append(line)
+
+    return '\r\n'.join(result_lines)
+
+def strip_audio_from_sdp(sdp):
+    """Remove the audio media section from SDP.
+
+    GStreamer 1.18 creates phantom audio transceivers even when no audio
+    pipeline is present. This can confuse Chrome which waits for audio data.
+    """
+    lines = sdp.split('\r\n')
+    result_lines = []
+    in_audio_section = False
+    bundle_line_idx = None
+
+    for i, line in enumerate(lines):
+        if line.startswith('m=audio'):
+            in_audio_section = True
+            continue
+        elif line.startswith('m=') and in_audio_section:
+            in_audio_section = False
+
+        if in_audio_section:
+            continue
+
+        # Track the BUNDLE line for later modification
+        if line.startswith('a=group:BUNDLE'):
+            bundle_line_idx = len(result_lines)
+
+        result_lines.append(line)
+
+    # Remove audio1 from BUNDLE group
+    if bundle_line_idx is not None:
+        bundle_line = result_lines[bundle_line_idx]
+        # Remove audio1 from "a=group:BUNDLE video0 audio1 application2"
+        bundle_line = re.sub(r'\s+audio\d+', '', bundle_line)
+        result_lines[bundle_line_idx] = bundle_line
+
+    return '\r\n'.join(result_lines)
+
 def generateHash(input_str, length=None):
     input_bytes = input_str.encode('utf-8')
     sha256_hash = hashlib.sha256(input_bytes).digest()
@@ -3410,12 +3512,15 @@ class WebRTCClient:
             return _codec_tuple("AV1/90000")
         if getattr(self.params, "h265", False) or getattr(self.params, "hevc", False):
             return _codec_tuple("H265/90000")
+        if getattr(self, "h264", False) or getattr(self.params, "h264", False):
+            return _codec_tuple(
+                "H264/90000",
+                "packetization-mode=1;profile-level-id=42e01f;level-asymmetry-allowed=1",
+            )
 
-        # Default to H264 if nothing else is selected.
-        return _codec_tuple(
-            "H264/90000",
-            "packetization-mode=1;profile-level-id=42e01f;level-asymmetry-allowed=1",
-        )
+        # Default to VP8 - this matches the actual pipeline default behavior
+        # (when no codec flag is specified, the pipeline uses vp8enc)
+        return _codec_tuple("VP8/90000")
 
     def _ensure_primary_video_codec_in_sdp(self, sdp_text: str) -> str:
         """Chrome rejects offers missing a base codec. Ensure H264/VP8/etc. exists alongside RED."""
@@ -6799,6 +6904,20 @@ class WebRTCClient:
             if self.novideo and not self.noaudio: # impacts audio and video as well, but chrome / firefox seems to handle it
                 printc("Patching SDP due to Gstreamer webRTC bug - audio-only issue", "A6F") # just chrome doesn't handle this
                 text = replace_ssrc_and_cleanup_sdp(text)
+
+            # Fix audio SSRC issues for GStreamer < 1.20 (1.18 has known SSRC bugs)
+            gst_ver = Gst.version()
+            if not self.noaudio and gst_ver.major == 1 and gst_ver.minor < 20:
+                if 'm=audio' in text:
+                    printc("Patching audio SDP for GStreamer 1.18 SSRC compatibility", "A6F")
+                    text = fix_audio_ssrc_for_ohttp_gstreamer(text)
+
+            # GStreamer 1.18 creates phantom audio section even with --noaudio
+            # Strip it from the SDP to avoid confusing Chrome
+            if self.noaudio and gst_ver.major == 1 and gst_ver.minor < 20:
+                if 'm=audio' in text:
+                    printc("Stripping phantom audio section from SDP (GStreamer 1.18 bug)", "A6F")
+                    text = strip_audio_from_sdp(text)
 
             text = self._ensure_primary_video_codec_in_sdp(text)
 
