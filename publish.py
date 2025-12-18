@@ -12275,7 +12275,11 @@ async def main():
 
                         if v4l2_device_name:
                             v4l2_device_name_l = v4l2_device_name.lower()
-                            is_macrosilicon = ("macrosilicon" in v4l2_device_name_l) or ("ms2109" in v4l2_device_name_l)
+                            is_macrosilicon = (
+                                ("macrosilicon" in v4l2_device_name_l)
+                                or ("ms2109" in v4l2_device_name_l)
+                                or (re.search(r"\((?:345f|534d):2109\)", v4l2_device_name_l) is not None)
+                            )
 
                             # Default to software JPEG decoding for known-problematic dongles.
                             if is_macrosilicon and (not args.raw) and (not args.soft_jpeg):
