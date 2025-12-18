@@ -7060,12 +7060,12 @@ class WebRTCClient:
                 text = text.replace("a=rtpmap:96 ulpfec/90000\r\n","a=rtpmap:97 ulpfec/90000\r\n")
                 text = text.replace("a=rtpmap:96 rtx/90000\r\na=fmtp:96 apt=96\r\n","")
 
-            if self.novideo and not self.noaudio: # impacts audio and video as well, but chrome / firefox seems to handle it
+            gst_ver = Gst.version()
+            if self.novideo and not self.noaudio and gst_ver.major == 1 and gst_ver.minor < 20: # impacts audio and video as well, but chrome / firefox seems to handle it
                 printc("Patching SDP due to Gstreamer webRTC bug - audio-only issue", "A6F") # just chrome doesn't handle this
                 text = replace_ssrc_and_cleanup_sdp(text)
 
             # Fix audio SDP issues for GStreamer < 1.20 (1.18 has known SDP bugs Chrome rejects)
-            gst_ver = Gst.version()
             if not self.noaudio and gst_ver.major == 1 and gst_ver.minor < 20:
                 if 'm=audio' in text:
                     printc("Patching audio SDP for GStreamer 1.18 compatibility", "A6F")
