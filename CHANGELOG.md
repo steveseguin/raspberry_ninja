@@ -1,5 +1,32 @@
 # Changelog
 
+# Release 9.1.0
+
+**Release Date:** 2025-12-18
+
+## ✨ Minor Release
+
+This release includes new features and improvements.
+
+### Core Changes (publish.py)
+
+The main streaming script has been updated. New features or improvements have been added.
+
+### Commits
+
+- fix(gstreamer): Gate legacy SDP patches to <1.20 (de24552)
+
+### Installation
+
+For installation instructions, please refer to the platform-specific guides:
+- [Raspberry Pi](./raspberry_pi/README.md)
+- [NVIDIA Jetson](./nvidia_jetson/README.md)
+- [Orange Pi](./orangepi/README.md)
+- [Ubuntu](./ubuntu/README.md)
+
+
+---
+
 # Release 9.0.0
 
 **Release Date:** 2025-12-18
