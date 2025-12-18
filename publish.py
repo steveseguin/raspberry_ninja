@@ -12253,6 +12253,76 @@ async def main():
                     print(f"The video input {args.v4l2} exists, but no permissions to read.")
                     error = True
                 
+                # Legacy Raspberry Pi (GStreamer < 1.20) USB/UVC capture quirks
+                #
+                # - Some MacroSilicon/MS2109 HDMI dongles produce MJPEG streams that v4l2jpegdec
+                #   fails to decode reliably, while jpegdec succeeds.
+                # - The device also supports only discrete capture sizes; requesting an unsupported
+                #   size results in "not-negotiated (-4)" from v4l2src.
+                #
+                # Prefer resiliency over acceleration for these older stacks, while keeping
+                # modern GStreamer behavior unchanged.
+                if args.rpi and not error:
+                    gst_ver = Gst.version()
+                    if gst_ver.major == 1 and gst_ver.minor < 20:
+                        v4l2_device_name = None
+                        try:
+                            video_node = os.path.basename(args.v4l2)
+                            with open(f"/sys/class/video4linux/{video_node}/name", "r", encoding="utf-8") as f:
+                                v4l2_device_name = f.read().strip()
+                        except Exception:
+                            pass
+
+                        if v4l2_device_name:
+                            v4l2_device_name_l = v4l2_device_name.lower()
+                            is_macrosilicon = ("macrosilicon" in v4l2_device_name_l) or ("ms2109" in v4l2_device_name_l)
+
+                            # Default to software JPEG decoding for known-problematic dongles.
+                            if is_macrosilicon and (not args.raw) and (not args.soft_jpeg):
+                                args.soft_jpeg = True
+                                printc("Auto-enabled --soft-jpeg for MacroSilicon/MS2109 capture device (GStreamer < 1.20)", "FA0")
+
+                            # If the requested MJPEG capture size isn't supported, choose the nearest.
+                            if is_macrosilicon and (not args.raw):
+                                try:
+                                    result = subprocess.run(
+                                        ['v4l2-ctl', '-d', args.v4l2, '--list-formats-ext'],
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE,
+                                        text=True,
+                                        timeout=2,
+                                    )
+                                except (subprocess.SubprocessError, subprocess.TimeoutExpired, FileNotFoundError):
+                                    result = None
+
+                                if result and result.returncode == 0:
+                                    current_format = None
+                                    sizes = set()
+                                    for line in result.stdout.splitlines():
+                                        m = re.match(r"\s*\[\d+\]:\s*'(\w+)'", line)
+                                        if m:
+                                            current_format = m.group(1)
+                                            continue
+                                        m = re.match(r"\s*Size:\s*Discrete\s*(\d+)x(\d+)", line)
+                                        if m and current_format == "MJPG":
+                                            sizes.add((int(m.group(1)), int(m.group(2))))
+
+                                    if sizes and (args.width, args.height) not in sizes:
+                                        target_ratio = (args.width / args.height) if args.height else 0.0
+                                        target_area = args.width * args.height
+
+                                        def _score(size):
+                                            w, h = size
+                                            ratio = (w / h) if h else 0.0
+                                            return (abs(ratio - target_ratio), abs((w * h) - target_area))
+
+                                        best_w, best_h = min(sizes, key=_score)
+                                        printc(
+                                            f"Requested {args.width}x{args.height} not supported by {args.v4l2} ({v4l2_device_name}); using {best_w}x{best_h}",
+                                            "FA0",
+                                        )
+                                        args.width, args.height = best_w, best_h
+
                 if error:
                     pipeline_video_input = f'v4l2src device={args.v4l2} io-mode={str(args.iomode)}'
                     pipeline_video_converter = ""  # Add this line
