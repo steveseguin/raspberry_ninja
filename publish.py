@@ -11452,6 +11452,8 @@ async def main():
     parser.add_argument('--config', type=str, default=None, help='Path to JSON configuration file')
 
 
+    parser.add_argument('--soft-jpeg', action='store_true', help='Force software JPEG decoding (bypass v4l2jpegdec) on Raspberry Pi')
+    
     args = parser.parse_args()
     
     # Load config file if specified
@@ -12274,12 +12276,17 @@ async def main():
                         pipeline_video_converter = f' ! videoconvert{timestampOverlay} ! video/x-raw,format={args.format or "NV12"}'
                 else:
                     # Non-raw mode (JPEG capture)
-                    pipeline_video_input = f'v4l2src device={args.v4l2} io-mode={str(args.iomode)} ! image/jpeg,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
+                    pipeline_video_input = f'v4l2src device={args.v4l2} io-mode={str(args.iomode)} ! image/jpeg,width=(int){args.width},height=(int){args.height},framerate=(fraction){args.framerate}/1'
                     pipeline_video_converter = ""  # Add this line
                     if args.nvidia:
                         pipeline_video_input += ' ! jpegparse ! nvjpegdec ! video/x-raw'
                     elif args.rpi:
-                        pipeline_video_input += ' ! jpegparse ! ' + ('v4l2jpegdec' if check_plugins('v4l2jpegdec') else 'jpegdec') + ' '
+                        if args.soft_jpeg:
+                             # Force software decoding
+                             pipeline_video_input += ' ! jpegparse ! jpegdec'
+                        else:
+                             # Try hardware first
+                             pipeline_video_input += ' ! jpegparse ! ' + ('v4l2jpegdec' if check_plugins('v4l2jpegdec') else 'jpegdec') + ' '
                     else:
                         # Add jpegparse for better error handling of corrupted JPEG frames
                         pipeline_video_input += ' ! jpegparse ! jpegdec'
