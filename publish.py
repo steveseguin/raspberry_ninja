@@ -11823,7 +11823,30 @@ async def main():
         print("")
 
     elif args.rpi and not args.v4l2 and not args.hdmi and not args.rpicam and not args.z1:
-        if check_plugins(['libcamera']):
+        gst_ver = Gst.version()
+
+        # On older GStreamer builds (notably 1.18), libcamerasrc can be unstable with some
+        # USB/UVC capture devices (eg MacroSilicon HDMI dongles). Prefer v4l2src in that case.
+        if gst_ver.major == 1 and gst_ver.minor < 20 and not args.libcamera:
+            for i in range(10):
+                candidate = f"/dev/video{i}"
+                if not os.path.exists(candidate) or not os.access(candidate, os.R_OK):
+                    continue
+                name = None
+                try:
+                    with open(f"/sys/class/video4linux/video{i}/name", "r", encoding="utf-8") as f:
+                        name = f.read().strip()
+                except Exception:
+                    pass
+                if not name:
+                    continue
+                name_l = name.lower()
+                if "uvc" in name_l or "usb vid" in name_l or "macrosilicon" in name_l or "ms2109" in name_l:
+                    args.v4l2 = candidate
+                    print(f"Auto-selected video device: {candidate} ({name})")
+                    break
+
+        if not args.v4l2 and check_plugins(['libcamera']):
             args.libcamera = True
 
         monitor = Gst.DeviceMonitor.new()
@@ -11845,11 +11868,6 @@ async def main():
 
         if len(picam):
             args.rpicam = True
-
-        usbcam = [d for d in devices if "USB Vid" in  d.get_display_name()]
-
-        if len(usbcam) and not args.v4l2:
-            args.v4l2 = "/dev/video0"
 
     elif not args.v4l2:
         args.v4l2 = '/dev/video0'
