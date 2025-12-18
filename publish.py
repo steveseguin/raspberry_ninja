@@ -829,6 +829,141 @@ def fix_audio_rtcp_fb_for_gstreamer(sdp):
 
     return '\r\n'.join(result_lines)
 
+def strip_audio_rtx_from_sdp(sdp: str) -> str:
+    """Strip RTX from the audio m= section.
+
+    Older GStreamer/webrtcbin builds may offer RTX on the audio m-line
+    (rtx/48000 + ssrc-group:FID). Chrome/WebRTC implementations can reject such
+    offers with errors like "Failed to add remote stream ssrc ... (audio)".
+    """
+    if not sdp or "m=audio" not in sdp:
+        return sdp
+
+    ends_with_crlf = sdp.endswith("\r\n")
+    lines = sdp.split("\r\n")
+    if ends_with_crlf and lines and lines[-1] == "":
+        lines = lines[:-1]
+
+    session_lines: List[str] = []
+    media_sections: List[List[str]] = []
+    current_section: Optional[List[str]] = None
+
+    for line in lines:
+        if line.startswith("m="):
+            if current_section is None:
+                current_section = [line]
+            else:
+                media_sections.append(current_section)
+                current_section = [line]
+        else:
+            if current_section is None:
+                session_lines.append(line)
+            else:
+                current_section.append(line)
+
+    if current_section is not None:
+        media_sections.append(current_section)
+
+    updated_sections: List[List[str]] = []
+    changed = False
+
+    for section in media_sections:
+        if not section:
+            updated_sections.append(section)
+            continue
+
+        m_line = section[0]
+        if not m_line.startswith("m=audio"):
+            updated_sections.append(section)
+            continue
+
+        rtx_pts: Set[str] = set()
+        rtx_ssrcs: Set[str] = set()
+
+        for entry in section[1:]:
+            if entry.startswith("a=rtpmap:") and " rtx/" in entry.lower():
+                try:
+                    pt = entry.split(":", 1)[1].split(None, 1)[0].strip()
+                except Exception:
+                    continue
+                if pt:
+                    rtx_pts.add(pt)
+            if entry.startswith("a=ssrc-group:FID"):
+                # Format: a=ssrc-group:FID <primary-ssrc> <rtx-ssrc> ...
+                parts = entry.split()
+                if len(parts) >= 3:
+                    rtx_ssrcs.update(parts[2:])
+
+        if not rtx_pts and not rtx_ssrcs:
+            updated_sections.append(section)
+            continue
+
+        m_parts = m_line.split()
+        if len(m_parts) >= 4 and rtx_pts:
+            payloads = [pt for pt in m_parts[3:] if pt not in rtx_pts]
+            if payloads != m_parts[3:]:
+                m_line = " ".join(m_parts[:3] + payloads)
+                changed = True
+
+        filtered: List[str] = [m_line]
+        for entry in section[1:]:
+            entry_stripped = entry.strip()
+
+            if rtx_pts and entry_stripped.startswith("a=rtpmap:"):
+                try:
+                    pt = entry_stripped.split(":", 1)[1].split(None, 1)[0].strip()
+                except Exception:
+                    pt = ""
+                if pt in rtx_pts:
+                    changed = True
+                    continue
+
+            if rtx_pts and entry_stripped.startswith("a=fmtp:"):
+                try:
+                    pt = entry_stripped.split(":", 1)[1].split(None, 1)[0].strip()
+                except Exception:
+                    pt = ""
+                if pt in rtx_pts:
+                    changed = True
+                    continue
+
+            if rtx_pts and entry_stripped.startswith("a=rtcp-fb:"):
+                try:
+                    pt = entry_stripped.split(":", 1)[1].split(None, 1)[0].strip()
+                except Exception:
+                    pt = ""
+                if pt in rtx_pts:
+                    changed = True
+                    continue
+
+            if entry_stripped.startswith("a=ssrc-group:FID"):
+                # Drop RTX SSRC groups from audio.
+                changed = True
+                continue
+
+            if rtx_ssrcs and entry_stripped.startswith("a=ssrc:"):
+                match = re.match(r"a=ssrc:(\d+)\b", entry_stripped)
+                if match and match.group(1) in rtx_ssrcs:
+                    changed = True
+                    continue
+
+            filtered.append(entry)
+
+        updated_sections.append(filtered)
+
+    if not changed:
+        return sdp
+
+    output_lines: List[str] = []
+    output_lines.extend(session_lines)
+    for section in updated_sections:
+        output_lines.extend(section)
+
+    out = "\r\n".join(output_lines)
+    if ends_with_crlf:
+        out += "\r\n"
+    return out
+
 def generateHash(input_str, length=None):
     input_bytes = input_str.encode('utf-8')
     sha256_hash = hashlib.sha256(input_bytes).digest()
@@ -6910,11 +7045,9 @@ class WebRTCClient:
             promise.wait()
             reply = promise.get_reply()
             offer = reply.get_value('offer')
-            promise = Gst.Promise.new()
-            client['webrtc'].emit('set-local-description', offer, promise)
-            promise.interrupt()
             printc("📤 Sending connection offer...", "77F")
-            text = offer.sdp.as_text()
+            original_text = offer.sdp.as_text()
+            text = original_text
             if ("96 96 96 96 96" in text):
                 printc("Patching SDP due to Gstreamer webRTC bug - none-unique line values","A6F")
                 text = text.replace(" 96 96 96 96 96", " 96 96 97 98 96")
@@ -6931,15 +7064,17 @@ class WebRTCClient:
                 printc("Patching SDP due to Gstreamer webRTC bug - audio-only issue", "A6F") # just chrome doesn't handle this
                 text = replace_ssrc_and_cleanup_sdp(text)
 
-            # GStreamer 1.18 has multiple audio SDP bugs that Chrome rejects:
-            # - Invalid SSRCs, rtcp-fb attributes, bundle issues
-            # Strip audio from SDP entirely for GStreamer < 1.20 as a workaround
+            # Fix audio SDP issues for GStreamer < 1.20 (1.18 has known SDP bugs Chrome rejects)
             gst_ver = Gst.version()
-            if gst_ver.major == 1 and gst_ver.minor < 20:
+            if not self.noaudio and gst_ver.major == 1 and gst_ver.minor < 20:
                 if 'm=audio' in text:
-                    if not self.noaudio:
-                        printc("⚠️  Stripping audio from SDP (GStreamer 1.18 audio bugs)", "FA0")
-                        printc("   └─ Upgrade to GStreamer 1.20+ for audio support", "FA0")
+                    printc("Patching audio SDP for GStreamer 1.18 compatibility", "A6F")
+                    text = fix_audio_ssrc_for_ohttp_gstreamer(text)
+                    text = fix_audio_rtcp_fb_for_gstreamer(text)
+                    text = strip_audio_rtx_from_sdp(text)
+            elif self.noaudio and gst_ver.major == 1 and gst_ver.minor < 20:
+                if 'm=audio' in text:
+                    printc("Stripping phantom audio section from SDP (GStreamer 1.18 bug)", "A6F")
                     text = strip_audio_from_sdp(text)
 
             text = self._ensure_primary_video_codec_in_sdp(text)
@@ -6954,6 +7089,21 @@ class WebRTCClient:
 
             if self.view:
                 text = self._apply_bitrate_constraints_to_sdp(text, context="outgoing offer")
+
+            offer_to_set = offer
+            if text != original_text:
+                try:
+                    res, sdpmsg = GstSdp.SDPMessage.new()
+                    GstSdp.sdp_message_parse_buffer(bytes(text.encode()), sdpmsg)
+                    offer_to_set = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.OFFER, sdpmsg)
+                except Exception as exc:
+                    printwarn(f"Failed to rebuild modified offer SDP: {exc}")
+                    text = original_text
+                    offer_to_set = offer
+
+            promise = Gst.Promise.new()
+            client['webrtc'].emit('set-local-description', offer_to_set, promise)
+            promise.interrupt()
 
             msg = {'description': {'type': 'offer', 'sdp': text}, 'UUID': client['UUID'], 'session': client['session'], 'streamID':self.stream_id+self.hashcode}
             self.sendMessage(msg)
