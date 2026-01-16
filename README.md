@@ -5,7 +5,7 @@ Turn your Raspberry Pi, Nvidia Jetson, Orange Pi, Windows PC, Mac, Linux box, or
 
 <img src='https://github.com/steveseguin/raspberry_ninja/assets/2575698/0b3c7140-5aed-4b21-babb-3c842e2bc010' width="400">    <img src='https://github.com/steveseguin/raspberry_ninja/assets/2575698/cf301391-0375-45c9-bb1c-d665dd0fe1bb' width="400">
 
-It also has the ability to record remote VDO.Ninja streams to disk (no transcode step), record multiple room participants simultaneously, broadcast a low-latency video stream to multiple viewers (with a built-in SFU), and because it works with VDO.Ninja, you get access to its ecosystem and related features. There are other cool things available, such as AV1 support, NDI output, OpenCV output, WHIP, HLS recording, and fdsink output.
+It also has the ability to record remote VDO.Ninja streams to disk (no transcode step), record multiple room participants simultaneously, broadcast a low-latency video stream to multiple viewers (with a built-in SFU), and because it works with VDO.Ninja, you get access to its ecosystem and related features. There are other cool things available, such as AV1 support, NDI output, OpenCV output, WHIP, HLS recording, fdsink output, and V4L2 sink output for virtual cameras.
 
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
@@ -52,6 +52,7 @@ It also has the ability to record remote VDO.Ninja streams to disk (no transcode
     - [NDI Combiner Mode (Optional)](#ndi-combiner-mode-optional)
     - [NDI Installation](#ndi-installation)
   - [OpenCV / Tensorflow / FFMPEG / FDSink / Framebuffer support](#opencv--tensorflow--ffmpeg--fdsink--framebuffer-support)
+  - [V4L2 Sink (UVC gadget/virtual camera)](#v4l2-sink-uvc-gadgetvirtual-camera)
 - [Hardware options](#hardware-options)
   - [Camera options](#camera-options)
   - [360-degree cameras](#360-degree-cameras)
@@ -294,7 +295,10 @@ usage: publish.py [-h] [--streamid STREAMID] [--room ROOM] [--rtmp RTMP] [--whip
                   [--openh264] [--vp8] [--vp9] [--aom] [--av1] [--rav1e] [--qsv] [--omx] [--vorbis] [--nvidia] [--rpi]
                   [--multiviewer] [--noqos] [--nored] [--novideo] [--noaudio] [--led] [--pipeline PIPELINE]
                   [--record RECORD] [--view VIEW] [--save] [--midi] [--filesrc FILESRC] [--filesrc2 FILESRC2]
-                  [--pipein PIPEIN] [--ndiout NDIOUT] [--fdsink FDSINK] [--framebuffer FRAMEBUFFER] [--debug]
+                  [--pipein PIPEIN] [--ndiout NDIOUT] [--fdsink FDSINK] [--framebuffer FRAMEBUFFER]
+                  [--v4l2sink V4L2SINK] [--v4l2sink-width V4L2SINK_WIDTH]
+                  [--v4l2sink-height V4L2SINK_HEIGHT] [--v4l2sink-fps V4L2SINK_FPS]
+                  [--v4l2sink-format V4L2SINK_FORMAT] [--debug]
                   [--buffer BUFFER] [--password [PASSWORD]] [--hostname HOSTNAME] [--video-pipeline VIDEO_PIPELINE]
                   [--audio-pipeline AUDIO_PIPELINE] [--timestamp] [--clockstamp]
 
@@ -380,6 +384,15 @@ options:
   --fdsink FDSINK       VDO.Ninja to the stdout pipe; common for piping data between command line processes
   --framebuffer FRAMEBUFFER
                         VDO.Ninja to local frame buffer; performant and Numpy/OpenCV friendly
+  --v4l2sink V4L2SINK   Viewer output to V4L2 device; requires --view STREAMID
+  --v4l2sink-width V4L2SINK_WIDTH
+                        V4L2 sink output width (default: 1280)
+  --v4l2sink-height V4L2SINK_HEIGHT
+                        V4L2 sink output height (default: 720)
+  --v4l2sink-fps V4L2SINK_FPS
+                        V4L2 sink output framerate (default: 30)
+  --v4l2sink-format V4L2SINK_FORMAT
+                        V4L2 sink output format (default: YUY2)
   --debug               Show added debug information from Gsteamer and other aspects of the app
   --buffer BUFFER       The jitter buffer latency in milliseconds; default is 200ms, minimum is 10ms. (gst +v1.18)
   --password [PASSWORD]
@@ -729,6 +742,27 @@ There's support for OpenCV/Framebuffer (--framebuffer STREAMIDHERE) and FDSink n
 [https://www.youtube.com/watch?v=LGaruUjb8dg](https://www.youtube.com/watch?v=LGaruUjb8dg)
 
 This should allow you to use Tensorflow, OpenCV, or whatever Python script to access the webRTC video stream as raw frames. You can also use it to turn a webRTC stream into a motion-JPEG stream, useful if needing to publish to a device that doesn't support webRTC. ie: Octoprint 3d printer server supports a MJPEG video preview link, but not a webRTC link.
+
+### V4L2 Sink (UVC gadget/virtual camera)
+
+Use V4L2 sink output to present a remote VDO.Ninja stream as a local webcam device (for example, with a Raspberry Pi USB UVC gadget). This outputs fixed-size, fixed-rate YUY2 frames to a chosen `/dev/video*` node.
+
+Example:
+```
+python3 publish.py --view STREAMIDHERE --v4l2sink 0
+```
+
+Optional overrides:
+```
+python3 publish.py --view STREAMIDHERE --v4l2sink 0 \
+  --v4l2sink-width 1920 --v4l2sink-height 1080 --v4l2sink-fps 30 --v4l2sink-format YUY2
+```
+
+Notes:
+- `--v4l2sink` accepts a numeric index (`0`) or a full path (`/dev/video2`).
+- If the specified device is not writable, the first writable `/dev/video*` is used.
+- When no remote video is available, a blue frame is output to keep the device alive.
+- This is output-only; `--v4l2` is input capture.
 
 ## Hardware options
 
