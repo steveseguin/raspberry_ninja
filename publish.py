@@ -2948,6 +2948,18 @@ class WebRTCClient:
         self.streamin = params.streamin
         self.ndiout = params.ndiout
         self.fdsink = params.fdsink
+        self.v4l2sink = params.v4l2sink
+        self.v4l2sink_width = clamp_int(getattr(params, "v4l2sink_width", 1280), 16, 7680)
+        self.v4l2sink_height = clamp_int(getattr(params, "v4l2sink_height", 720), 16, 4320)
+        self.v4l2sink_fps = clamp_int(getattr(params, "v4l2sink_fps", 30), 1, 120)
+        self.v4l2sink_format = (getattr(params, "v4l2sink_format", "YUY2") or "YUY2").upper()
+        self.v4l2sink_device = resolve_v4l2sink_device(self.v4l2sink) if self.v4l2sink else None
+        self.v4l2sink_selector = None
+        self.v4l2sink_sink_bin = None
+        self.v4l2sink_sources = {}
+        self.v4l2sink_current_pad = None
+        self.v4l2sink_state = None
+        self.v4l2sink_remote_map = {}
         self.filesink = None
         self.framebuffer = params.framebuffer
         self.midi = params.midi
@@ -4021,8 +4033,13 @@ class WebRTCClient:
         self._display_chain_unavailable = False
         self._display_chain_unavailable_reason = None
         self._viewer_pending_idle = False
+        self._v4l2sink_chain_config = None
+        self._v4l2sink_chain_unavailable = False
+        self._v4l2sink_chain_unavailable_reason = None
+        self.v4l2sink_state = None
         if hasattr(self, "_active_hw_decoder_streams"):
             self._active_hw_decoder_streams.clear()
+
         if hasattr(self, "_pipeline_bus_watch_installed"):
             self._pipeline_bus_watch_installed = False
         if hasattr(self, "_pipeline_bus_watch_id") and getattr(self, "_pipeline_bus_watch_id", 0):
@@ -4394,11 +4411,19 @@ class WebRTCClient:
             return
 
         try:
-            self._ensure_display_chain()
-            if not self.display_remote_map and self.display_state != "idle":
-                self._set_display_mode("idle")
+            if self.v4l2sink:
+                if not self.v4l2sink_device:
+                    printwarn("V4L2 sink enabled but no writable device detected.")
+                else:
+                    self._ensure_v4l2sink_chain()
+                    if not self.v4l2sink_sources and self.v4l2sink_state != "idle":
+                        self._set_v4l2sink_mode("idle")
+            else:
+                self._ensure_display_chain()
+                if not self.display_remote_map and self.display_state != "idle":
+                    self._set_display_mode("idle")
         except Exception as exc:
-            printwarn(f"Failed to prepare viewer display: {exc}")
+            printwarn(f"Failed to prepare viewer output: {exc}")
 
         try:
             state = self.pipe.get_state(0)[1]
@@ -4572,6 +4597,255 @@ class WebRTCClient:
         if not sink_spec:
             return None
         return sink_spec.split()[0]
+
+    def _ensure_v4l2sink_chain(self):
+        """Ensure viewer V4L2 sink selector and sink are ready."""
+        if not self.pipe:
+            return None
+
+        if getattr(self, "_v4l2sink_chain_unavailable", False):
+            return None
+
+        selector_name = "viewer_v4l2sink_selector"
+        if self.v4l2sink_selector and self.pipe.get_by_name(selector_name):
+            return self._v4l2sink_chain_config
+
+        self._reset_v4l2sink_chain_state()
+
+        if not self.v4l2sink_device:
+            reason = "No writable V4L2 sink device detected"
+            printwarn(reason)
+            self._v4l2sink_chain_unavailable = True
+            self._v4l2sink_chain_unavailable_reason = reason
+            return None
+
+        selector_factory_names = ("input-selector", "inputselector")
+        for selector_factory in selector_factory_names:
+            selector = Gst.ElementFactory.make(selector_factory, selector_name)
+            if selector:
+                self.v4l2sink_selector = selector
+                print(f"[v4l2sink] Using selector factory `{selector_factory}`")
+                try:
+                    if selector.find_property("cache-buffers"):
+                        selector.set_property("cache-buffers", True)
+                except Exception:
+                    pass
+                break
+
+        if not self.v4l2sink_selector:
+            reason = "Viewer V4L2 sink fallback active: GStreamer `input-selector` element is unavailable."
+            printwarn(reason)
+            self._v4l2sink_chain_unavailable = True
+            self._v4l2sink_chain_unavailable_reason = reason
+            return None
+
+        self.pipe.add(self.v4l2sink_selector)
+        print("[v4l2sink] Input selector initialized")
+
+        caps = (
+            f"video/x-raw,format={self.v4l2sink_format},width=(int){self.v4l2sink_width},"
+            f"height=(int){self.v4l2sink_height},framerate=(fraction){self.v4l2sink_fps}/1"
+        )
+        sink_desc = (
+            "queue max-size-buffers=2 leaky=downstream ! "
+            "videorate ! videoscale ! videoconvert ! "
+            f"{caps} ! "
+            f"v4l2sink name=viewer_v4l2sink device={self.v4l2sink_device} sync=false"
+        )
+        self.v4l2sink_sink_bin = Gst.parse_bin_from_description(sink_desc, True)
+        self.v4l2sink_sink_bin.set_name("viewer_v4l2sink_sink_bin")
+        self.pipe.add(self.v4l2sink_sink_bin)
+
+        if not Gst.Element.link(self.v4l2sink_selector, self.v4l2sink_sink_bin):
+            raise RuntimeError("Failed to link V4L2 sink selector to sink pipeline")
+
+        self.v4l2sink_selector.sync_state_with_parent()
+        self.v4l2sink_sink_bin.sync_state_with_parent()
+
+        self._v4l2sink_chain_config = {
+            "caps": caps,
+        }
+
+        self._v4l2sink_chain_unavailable = False
+        self._v4l2sink_chain_unavailable_reason = None
+
+        self._ensure_v4l2sink_splash_sources()
+        return self._v4l2sink_chain_config
+
+    def _ensure_v4l2sink_splash_sources(self):
+        """Create idle/blank sources for V4L2 sink output."""
+        if not self.pipe or not self.v4l2sink_selector:
+            return
+
+        caps = (
+            f"video/x-raw,format={self.v4l2sink_format},width=(int){self.v4l2sink_width},"
+            f"height=(int){self.v4l2sink_height},framerate=(fraction){self.v4l2sink_fps}/1"
+        )
+        if "blank" not in self.v4l2sink_sources:
+            try:
+                blank_desc = (
+                    "videotestsrc pattern=blue is-live=true ! videorate ! videoscale ! videoconvert ! "
+                    f"{caps} ! queue max-size-buffers=2 leaky=downstream ! "
+                    "identity name=v4l2sink_blank_identity"
+                )
+                blank_bin = Gst.parse_bin_from_description(blank_desc, True)
+                blank_bin.set_name("viewer_v4l2sink_blank")
+                self.pipe.add(blank_bin)
+                self._link_v4l2sink_bin(blank_bin, "blank")
+                print("[v4l2sink] Blank splash linked")
+            except Exception as exc:
+                printwarn(f"Failed to initialize V4L2 sink blank source: {exc}")
+
+    def _link_v4l2sink_bin(self, bin_obj: Gst.Bin, label: str):
+        """Connect a bin's output to the V4L2 sink selector."""
+        if not self.v4l2sink_selector:
+            raise RuntimeError("V4L2 sink selector is unavailable")
+
+        src_pad = bin_obj.get_static_pad("src")
+        if not src_pad:
+            last_element = None
+            try:
+                iterator = bin_obj.iterate_sorted()
+                while True:
+                    res, elem = iterator.next()
+                    if res == Gst.IteratorResult.OK:
+                        last_element = elem
+                    else:
+                        break
+            except Exception:
+                last_element = None
+            if last_element:
+                pad = last_element.get_static_pad("src")
+                if pad:
+                    ghost = Gst.GhostPad.new("src", pad)
+                    bin_obj.add_pad(ghost)
+                    src_pad = ghost
+
+        if not src_pad:
+            raise RuntimeError(f"Failed to obtain src pad for V4L2 sink source '{label}'")
+
+        pad_template = self.v4l2sink_selector.get_pad_template("sink_%u")
+        selector_pad = self.v4l2sink_selector.request_pad(pad_template, None, None)
+        if not selector_pad:
+            raise RuntimeError("Failed to request pad from V4L2 sink selector")
+
+        link_result = src_pad.link(selector_pad)
+        if link_result != Gst.PadLinkReturn.OK:
+            self.v4l2sink_selector.release_request_pad(selector_pad)
+            raise RuntimeError(f"Failed to link V4L2 sink source '{label}': {link_result}")
+
+        self.v4l2sink_sources[label] = {
+            "bin": bin_obj,
+            "selector_pad": selector_pad,
+            "src_pad": src_pad,
+        }
+        bin_obj.sync_state_with_parent()
+        return selector_pad
+
+    def _activate_v4l2sink_source(self, label: str) -> bool:
+        """Activate a registered source on the V4L2 sink selector."""
+        source = self.v4l2sink_sources.get(label)
+        if not source:
+            print(f"[v4l2sink] Requested source '{label}' not registered")
+            return False
+
+        pad = source["selector_pad"]
+        if pad == self.v4l2sink_current_pad:
+            return True
+
+        try:
+            self.v4l2sink_selector.set_property("active-pad", pad)
+            self.v4l2sink_current_pad = pad
+            print(f"[v4l2sink] Activated source '{label}'")
+            return True
+        except Exception as exc:
+            printwarn(f"Failed to activate V4L2 sink source '{label}': {exc}")
+            return False
+
+    def _set_v4l2sink_mode(self, mode: str, remote_label: Optional[str] = None):
+        """Switch to the appropriate V4L2 sink source."""
+        if mode == "remote" and remote_label:
+            if remote_label in self.v4l2sink_sources:
+                self._activate_v4l2sink_source(remote_label)
+                self.v4l2sink_state = "remote"
+                return
+            printwarn(f"V4L2 sink remote source '{remote_label}' not registered")
+        if "blank" in self.v4l2sink_sources:
+            self._activate_v4l2sink_source("blank")
+            self.v4l2sink_state = "idle"
+
+    def _release_v4l2sink_source(self, label: str):
+        """Detach and remove a registered V4L2 sink source."""
+        source = self.v4l2sink_sources.pop(label, None)
+        if not source:
+            return
+
+        self.v4l2sink_remote_map = {
+            key: value
+            for key, value in self.v4l2sink_remote_map.items()
+            if value != label
+        }
+
+        selector_pad = source.get("selector_pad")
+        if selector_pad:
+            try:
+                self.v4l2sink_selector.release_request_pad(selector_pad)
+            except Exception:
+                pass
+            if selector_pad == self.v4l2sink_current_pad:
+                self.v4l2sink_current_pad = None
+
+        bin_obj = source.get("bin")
+        if bin_obj:
+            try:
+                bin_obj.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+            try:
+                self.pipe.remove(bin_obj)
+            except Exception:
+                pass
+
+    def _release_all_v4l2sink_sources(self, include_blank: bool = True) -> None:
+        labels = list(self.v4l2sink_sources.keys())
+        for label in labels:
+            if not include_blank and label == "blank":
+                continue
+            self._release_v4l2sink_source(label)
+
+    def _reset_v4l2sink_chain_state(self):
+        """Reset cached viewer V4L2 sink elements."""
+        if getattr(self, "v4l2sink_sources", None):
+            self._release_all_v4l2sink_sources()
+
+        if getattr(self, "v4l2sink_selector", None) and self.pipe:
+            try:
+                self.v4l2sink_selector.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+            try:
+                self.pipe.remove(self.v4l2sink_selector)
+            except Exception:
+                pass
+
+        if getattr(self, "v4l2sink_sink_bin", None) and self.pipe:
+            try:
+                self.v4l2sink_sink_bin.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+            try:
+                self.pipe.remove(self.v4l2sink_sink_bin)
+            except Exception:
+                pass
+
+        self.v4l2sink_selector = None
+        self.v4l2sink_sink_bin = None
+        self.v4l2sink_sources = {}
+        self.v4l2sink_current_pad = None
+        self.v4l2sink_remote_map = {}
+        self._v4l2sink_chain_config = None
+        self._v4l2sink_chain_unavailable = False
+        self._v4l2sink_chain_unavailable_reason = None
 
     def _select_alternate_display_sink(self, failed_base: Optional[str]) -> Optional[str]:
         """Choose a fallback display sink when the current one fails."""
@@ -4759,6 +5033,9 @@ class WebRTCClient:
     def _ensure_splash_sources(self):
         """Create idle/connecting/blank splashes when needed."""
         if not self.pipe or (not self.display_selector) or self._display_direct_mode:
+            return
+
+        if self.v4l2sink:
             return
 
         conversion_chain = None
@@ -6066,6 +6343,218 @@ class WebRTCClient:
 
         return remote_label
 
+    def _attach_v4l2sink_video_stream(self, pad: Gst.Pad, caps_name: str) -> Optional[str]:
+        """Attach incoming video pad to the V4L2 sink selector."""
+        sink_config = self._ensure_v4l2sink_chain()
+        if not sink_config:
+            message = (
+                getattr(self, "_v4l2sink_chain_unavailable_reason", None)
+                or "V4L2 sink pipeline not ready; cannot attach viewer stream"
+            )
+            printwarn(message)
+            return None
+
+        self._ensure_v4l2sink_splash_sources()
+
+        redundancy_info = getattr(self, "_viewer_redundancy_info", None)
+        preferred_view_codec: Optional[str] = None
+        if getattr(self, "vp8", False):
+            preferred_view_codec = "VP8"
+        elif getattr(self, "vp9", False):
+            preferred_view_codec = "VP9"
+        elif getattr(self, "av1", False):
+            preferred_view_codec = "AV1"
+        elif getattr(self, "h264", False):
+            preferred_view_codec = "H264"
+        needs_redundancy_chain = False
+        codec_type: Optional[str] = None
+
+        caps = pad.get_current_caps()
+        caps_struct = None
+        if caps and caps.get_size() > 0:
+            try:
+                caps_struct = caps.get_structure(0)
+            except Exception:
+                caps_struct = None
+
+        encoding_name: Optional[str] = None
+        if caps_struct and caps_struct.has_field("encoding-name"):
+            try:
+                encoding_name = caps_struct.get_string("encoding-name")
+            except Exception:
+                try:
+                    value = caps_struct.get_value("encoding-name")
+                except Exception:
+                    value = None
+                if isinstance(value, str):
+                    encoding_name = value
+        if not encoding_name:
+            match = re.search(r"encoding-name=\(string\)([^,]+)", caps_name, flags=re.IGNORECASE)
+            if match:
+                encoding_name = match.group(1).strip().strip('"')
+
+        encoding_upper = (encoding_name or "").upper()
+        if encoding_upper in {"RED", "ULPFEC", "FLEXFEC"}:
+            if redundancy_info:
+                needs_redundancy_chain = True
+                primary = redundancy_info.get("primary_codec")
+                if primary:
+                    codec_type = str(primary).upper()
+                elif preferred_view_codec:
+                    codec_type = preferred_view_codec
+                    printwarn(
+                        "Viewer SDP omitted primary codec details for RED stream; "
+                        f"assuming {codec_type} based on viewer preference."
+                    )
+                    if redundancy_info:
+                        redundancy_info = dict(redundancy_info)
+                        redundancy_info["primary_codec"] = codec_type
+                        self._viewer_redundancy_info = redundancy_info
+                if codec_type is None and self._maybe_disable_viewer_redundancy(caps_name):
+                    return None
+            elif self._maybe_disable_viewer_redundancy(caps_name):
+                return None
+        else:
+            if getattr(self, "_viewer_redundancy_autodisable", False):
+                self._viewer_redundancy_autodisable = False
+            if encoding_upper:
+                codec_type = encoding_upper
+
+        caps_upper = caps_name.upper()
+        if codec_type is None:
+            if "VP8" in caps_upper:
+                codec_type = "VP8"
+            elif "H264" in caps_upper:
+                codec_type = "H264"
+            elif "VP9" in caps_upper:
+                codec_type = "VP9"
+            elif "AV1" in caps_upper:
+                codec_type = "AV1"
+
+        fallback_pipeline = (
+            "queue ! decodebin ! "
+            "videoconvert ! videoscale ! videorate ! "
+            f"video/x-raw,format={self.v4l2sink_format},width=(int){self.v4l2sink_width},"
+            f"height=(int){self.v4l2sink_height},framerate=(fraction){self.v4l2sink_fps}/1 ! "
+            f"identity name=v4l2sink_identity_{pad.get_name()}"
+        )
+
+        pipeline_desc = None
+        if codec_type == "VP8":
+            pipeline_desc = (
+                "queue ! rtpvp8depay ! vp8dec ! videoconvert ! videoscale ! videorate ! "
+                f"video/x-raw,format={self.v4l2sink_format},width=(int){self.v4l2sink_width},"
+                f"height=(int){self.v4l2sink_height},framerate=(fraction){self.v4l2sink_fps}/1 ! "
+                f"identity name=v4l2sink_identity_{pad.get_name()}"
+            )
+        elif codec_type == "H264":
+            pipeline_desc = (
+                "queue ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! videoscale ! videorate ! "
+                f"video/x-raw,format={self.v4l2sink_format},width=(int){self.v4l2sink_width},"
+                f"height=(int){self.v4l2sink_height},framerate=(fraction){self.v4l2sink_fps}/1 ! "
+                f"identity name=v4l2sink_identity_{pad.get_name()}"
+            )
+        elif codec_type == "VP9":
+            if not gst_element_available("rtpvp9depay"):
+                printwarn(
+                    "VP9 stream received but `rtpvp9depay` is unavailable. Install gst-plugins-bad 1.16+."
+                )
+                pipeline_desc = fallback_pipeline
+            else:
+                pipeline_desc = (
+                    "queue ! rtpvp9depay ! vp9dec ! videoconvert ! videoscale ! videorate ! "
+                    f"video/x-raw,format={self.v4l2sink_format},width=(int){self.v4l2sink_width},"
+                    f"height=(int){self.v4l2sink_height},framerate=(fraction){self.v4l2sink_fps}/1 ! "
+                    f"identity name=v4l2sink_identity_{pad.get_name()}"
+                )
+        elif codec_type == "AV1":
+            if not gst_element_available("rtpav1depay") or not gst_element_available("av1parse"):
+                printwarn(
+                    "AV1 stream received but AV1 depay/parse plugins are unavailable. Using decodebin fallback."
+                )
+                pipeline_desc = fallback_pipeline
+            else:
+                pipeline_desc = (
+                    "queue ! rtpav1depay ! av1parse ! av1dec ! videoconvert ! videoscale ! videorate ! "
+                    f"video/x-raw,format={self.v4l2sink_format},width=(int){self.v4l2sink_width},"
+                    f"height=(int){self.v4l2sink_height},framerate=(fraction){self.v4l2sink_fps}/1 ! "
+                    f"identity name=v4l2sink_identity_{pad.get_name()}"
+                )
+        else:
+            printc(f"Unsupported video codec for V4L2 sink: {caps_name}", "F70")
+            pipeline_desc = fallback_pipeline
+
+        try:
+            payload_bin = Gst.parse_bin_from_description(pipeline_desc, True)
+        except Exception as exc:
+            printwarn(f"Failed to build V4L2 sink video pipeline: {exc}")
+            return None
+
+        out = payload_bin
+        if needs_redundancy_chain and redundancy_info:
+            wrapper = self._build_viewer_redundancy_bin(pad, payload_bin, redundancy_info)
+            if wrapper is None:
+                if self._maybe_disable_viewer_redundancy(caps_name):
+                    return None
+            else:
+                out = wrapper
+
+        out.set_name(f"viewer_v4l2sink_bin_{pad.get_name()}")
+        self.pipe.add(out)
+
+        sink_pad = out.get_static_pad("sink")
+        if not sink_pad:
+            printwarn("V4L2 sink video bin does not expose a sink pad")
+            self.pipe.remove(out)
+            return None
+
+        link_result = pad.link(sink_pad)
+        if link_result != Gst.PadLinkReturn.OK:
+            reason = link_result.value_nick if hasattr(link_result, "value_nick") else link_result
+            src_caps = pad.get_current_caps() or pad.query_caps(None)
+            sink_caps = None
+            try:
+                sink_caps = sink_pad.get_current_caps() or sink_pad.query_caps(None)
+            except Exception:
+                sink_caps = None
+            if src_caps is not None:
+                printwarn(f"V4L2 sink video pad caps: {src_caps.to_string()}")
+            if sink_caps is not None:
+                printwarn(f"V4L2 sink pipeline sink caps: {sink_caps.to_string()}")
+            printwarn(f"Failed to link incoming video pad to V4L2 sink pipeline: {reason}")
+            self.pipe.remove(out)
+            return None
+
+        remote_label = f"remote_{pad.get_name()}"
+        try:
+            self._link_v4l2sink_bin(out, remote_label)
+            self.v4l2sink_remote_map[pad.get_name()] = remote_label
+        except Exception as exc:
+            printwarn(f"Failed to attach V4L2 sink video bin: {exc}")
+            try:
+                self.pipe.remove(out)
+            except Exception:
+                pass
+            return None
+
+        source_info = self.v4l2sink_sources.get(remote_label)
+        if source_info is not None:
+            source_info.update(
+                {
+                    "bin": out,
+                    "bin_sink_pad": sink_pad,
+                    "remote_pad": pad,
+                    "pad_name": pad.get_name(),
+                    "caps_name": caps_name,
+                    "codec": codec_type,
+                }
+            )
+
+        if codec_type:
+            self._last_viewer_codec = codec_type
+
+        return remote_label
+
     def _sink_viewer_aux_pad(self, pad: Gst.Pad, caps_name: str, label: str) -> bool:
         """Link auxiliary RTP pads (such as RTX) to a drop sink so they don't disturb the viewer display."""
         if not self.pipe:
@@ -6140,6 +6629,19 @@ class WebRTCClient:
                 except Exception:
                     pass
                 return
+        if self.v4l2sink:
+            label = self.v4l2sink_remote_map.pop(pad_name, None)
+            print(f"[v4l2sink] Remote pad removed: {pad_name} -> {label}")
+            if not label:
+                return
+            self._release_v4l2sink_source(label)
+            if self.v4l2sink_remote_map:
+                next_label = next(iter(self.v4l2sink_remote_map.values()))
+                self._set_v4l2sink_mode("remote", remote_label=next_label)
+            else:
+                self._set_v4l2sink_mode("idle")
+            return
+
         remote_map = getattr(self, "display_remote_map", None)
         if remote_map is None:
             print(f"[display] Remote pad removed but display map missing: {pad_name}")
@@ -6573,12 +7075,20 @@ class WebRTCClient:
                     
                     appsink = self.pipe.get_by_name('appsink')
                     appsink.connect("new-sample", self.on_new_socket_sample)
-                elif self.view and "video" in name.lower():
+                elif (self.view or self.v4l2sink) and "video" in name.lower():
                     if encoding_upper == "RTX":
                         if self._sink_viewer_aux_pad(pad, name, "RTX"):
                             return
                         printwarn("Failed to attach auxiliary RTX pad; stream may continue without retransmissions.")
                         return
+                    if self.v4l2sink_device:
+                        remote_label = self._attach_v4l2sink_video_stream(pad, name)
+                        if remote_label:
+                            self._set_v4l2sink_mode("remote", remote_label=remote_label)
+                        else:
+                            self._set_v4l2sink_mode("idle")
+                        return
+
                     print("DISPLAY OUTPUT MODE BEING SETUP")
                     if self.recording_enabled and "video" in name:
                         if self.setup_recording_pipeline(pad, name):
@@ -11340,6 +11850,40 @@ def optimize_pipeline_for_device(device, width, height, framerate, iomode, forma
     
     return input_pipeline, converter_pipeline, best_format
 
+
+def resolve_v4l2sink_device(device: Optional[str], default_index: int = 0) -> Optional[str]:
+    """Resolve a writable V4L2 output device for v4l2sink."""
+    candidate = None
+    if device:
+        text = str(device).strip()
+        if text.isdigit():
+            candidate = f"/dev/video{int(text)}"
+        elif text.startswith("/dev/video"):
+            candidate = text
+        elif text.startswith("video") and text[5:].isdigit():
+            candidate = f"/dev/{text}"
+        else:
+            candidate = text
+    else:
+        candidate = f"/dev/video{default_index}"
+
+    if candidate and os.path.exists(candidate) and os.access(candidate, os.W_OK):
+        return candidate
+
+    if candidate:
+        printc(
+            f"V4L2 output device {candidate} unavailable or not writable; scanning for alternatives.",
+            "F77",
+        )
+
+    for path in sorted(glob.glob("/dev/video*")):
+        if os.path.exists(path) and os.access(path, os.W_OK):
+            printc(f"Using first writable V4L2 output: {path}", "7F7")
+            return path
+
+    return None
+
+
 WSS="wss://wss.vdo.ninja:443"
 
 async def main():
@@ -11431,6 +11975,11 @@ async def main():
     parser.add_argument('--ndiout',  type=str, help='VDO.Ninja to NDI output; requires the NDI Gstreamer plugin installed')
     parser.add_argument('--fdsink',  type=str, help='VDO.Ninja to the stdout pipe; common for piping data between command line processes')
     parser.add_argument('--framebuffer', type=str, help='VDO.Ninja to local frame buffer; performant and Numpy/OpenCV friendly')
+    parser.add_argument('--v4l2sink', type=str, default=None, help='Viewer output to V4L2 device; requires --view STREAMID (accepts device index or path)')
+    parser.add_argument('--v4l2sink-width', type=int, default=1280, help='V4L2 sink output width (default: 1280)')
+    parser.add_argument('--v4l2sink-height', type=int, default=720, help='V4L2 sink output height (default: 720)')
+    parser.add_argument('--v4l2sink-fps', type=int, default=30, help='V4L2 sink output framerate (default: 30)')
+    parser.add_argument('--v4l2sink-format', type=str, default='YUY2', help='V4L2 sink output format (default: YUY2)')
     parser.add_argument('--debug', action='store_true', help='Show added debug information from Gsteamer and other aspects of the app')
     parser.add_argument('--buffer',  type=int, default=200, help='The jitter buffer latency in milliseconds; default is 200ms, minimum is 10ms. (gst +v1.18)')
     parser.add_argument('--auto-view-buffer', action='store_true', help='Viewer mode: dynamically raise jitter buffer latency when packet loss is detected (opt-in).')
@@ -11604,6 +12153,12 @@ async def main():
         sys.exit(1)
     needed = []
 
+    if args.v4l2sink and not args.view:
+        printc("Error: --v4l2sink requires --view STREAMID", "F00")
+        sys.exit(1)
+    if args.v4l2sink:
+        needed += ["video4linux2"]
+
     if args.ndiout:
         needed += ['ndi']
         if not args.record:
@@ -11612,7 +12167,7 @@ async def main():
             args.streamin = args.record
     elif args.view:
         args.streamin = args.view
-         
+
     elif args.fdsink:
         args.streamin = args.fdsink
     elif args.socketout:
