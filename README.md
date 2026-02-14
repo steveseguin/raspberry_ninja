@@ -51,6 +51,7 @@ It also has the ability to record remote VDO.Ninja streams to disk (no transcode
     - [NDI Direct Mode (Default)](#ndi-direct-mode-default)
     - [NDI Combiner Mode (Optional)](#ndi-combiner-mode-optional)
     - [NDI Installation](#ndi-installation)
+    - [Room Join Alerts (Webhook / Notify Topic / GPIO)](#room-join-alerts-webhook--notify-topic--gpio)
   - [OpenCV / Tensorflow / FFMPEG / FDSink / Framebuffer support](#opencv--tensorflow--ffmpeg--fdsink--framebuffer-support)
   - [V4L2 Sink (UVC gadget/virtual camera)](#v4l2-sink-uvc-gadgetvirtual-camera)
 - [Hardware options](#hardware-options)
