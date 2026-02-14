@@ -26,7 +26,8 @@ from typing import Dict, Any, Optional, Tuple, Set, List
 from functools import lru_cache
 try:
     import hashlib
-    from urllib.parse import urlparse
+    from urllib.parse import urlparse, urlencode
+    from urllib import request as urllib_request
 except Exception as e:
     pass
 
@@ -212,7 +213,7 @@ def enableLEDs(level=False):
         GPIO
     except Exception as e:
         return
-    global LED_Level, P_R
+    global LED_Level, p_R
     if level!=False:
         LED_Level = level
     p_R.start(0)      # Initial duty Cycle = 0(leds off)
@@ -224,10 +225,18 @@ def disableLEDs():
     except Exception as e:
         return
 
-    global pin, P_R
-    p_R.stop()
-    GPIO.output(pin, GPIO.HIGH)    # Turn off all leds
-    GPIO.cleanup()
+    global pin, p_R
+    try:
+        if 'p_R' in globals() and p_R:
+            p_R.stop()
+        if 'pin' in globals():
+            GPIO.output(pin, GPIO.HIGH)    # Turn off all leds
+    except Exception:
+        pass
+    try:
+        GPIO.cleanup()
+    except Exception:
+        pass
 
 def hex_to_ansi(hex_color):
     hex_color = hex_color.lstrip('#')
@@ -3083,11 +3092,35 @@ class WebRTCClient:
         self.room_recording = getattr(params, 'room_recording', False)
         self.record_room = getattr(params, 'record_room', False)
         self.room_ndi = getattr(params, 'room_ndi', False)
+        self.room_monitor = getattr(params, 'room_monitor', False)
         self.single_stream_recording = getattr(params, 'single_stream_recording', False)
         # NDI direct mode is now the default, use ndi_combine to opt into the problematic combiner
         self.ndi_combine = getattr(params, 'ndi_combine', False)
         self.ndi_direct = not self.ndi_combine  # Direct mode by default
         self.stream_filter = getattr(params, 'stream_filter', None)
+
+        # Room join notifications (HTTP + notify topic + GPIO pulse)
+        self.join_webhook_url = (getattr(params, 'join_webhook', None) or "").strip() or None
+        self.join_postapi_url = (getattr(params, 'join_postapi', None) or "").strip() or None
+        self.join_notify_topic = (getattr(params, 'join_notify_topic', None) or "").strip() or None
+        self.join_notify_url = (getattr(params, 'join_notify_url', "https://notify.vdo.ninja/") or "https://notify.vdo.ninja/").strip()
+        self.join_notify_timeout = max(0.2, float(getattr(params, 'join_notify_timeout', 5.0)))
+        self.join_gpio_pin = getattr(params, 'join_gpio_pin', None)
+        self.join_gpio_pulse = max(0.05, float(getattr(params, 'join_gpio_pulse', 0.4)))
+        self.join_gpio_active_low = bool(getattr(params, 'join_gpio_active_low', False))
+        self.room_join_notifications_enabled = bool(
+            self.join_webhook_url
+            or self.join_postapi_url
+            or self.join_notify_topic
+            or self.join_gpio_pin is not None
+        )
+        self._background_tasks: Set[asyncio.Task] = set()
+        self._room_join_gpio = None
+        self._room_join_gpio_ready = False
+        self._room_join_gpio_lock = threading.Lock()
+
+        if self.join_gpio_pin is not None:
+            self._setup_room_join_gpio()
         
         # HLS recording options
         self.use_hls = getattr(params, 'hls', False)
@@ -3138,6 +3171,169 @@ class WebRTCClient:
             self.setup_ice_servers(self.pipe.get_by_name('sendrecv'))
             self.pipe.set_state(Gst.State.PLAYING)
             print("RECORDING TO DISK STARTED")
+
+    def _setup_room_join_gpio(self):
+        """Initialize optional GPIO output used for room-join pulses."""
+        if self.join_gpio_pin is None:
+            return
+        try:
+            import RPi.GPIO as room_gpio
+        except Exception as exc:
+            printc(f"⚠️  Join GPIO unavailable: {exc}", "F77")
+            self.join_gpio_pin = None
+            return
+
+        try:
+            room_gpio.setwarnings(False)
+            room_gpio.setmode(room_gpio.BOARD)
+            room_gpio.setup(self.join_gpio_pin, room_gpio.OUT)
+            room_gpio.output(self.join_gpio_pin, self._join_gpio_inactive_state(room_gpio))
+            self._room_join_gpio = room_gpio
+            self._room_join_gpio_ready = True
+            pulse_mode = "active-LOW" if self.join_gpio_active_low else "active-HIGH"
+            printc(
+                f"🔔 Room-join GPIO armed on BOARD pin {self.join_gpio_pin} ({pulse_mode}, {self.join_gpio_pulse:.2f}s)",
+                "0AF",
+            )
+        except Exception as exc:
+            printc(f"⚠️  Failed to initialize join GPIO pin {self.join_gpio_pin}: {exc}", "F77")
+            self.join_gpio_pin = None
+            self._room_join_gpio = None
+            self._room_join_gpio_ready = False
+
+    def _join_gpio_inactive_state(self, room_gpio):
+        return room_gpio.HIGH if self.join_gpio_active_low else room_gpio.LOW
+
+    def _join_gpio_active_state(self, room_gpio):
+        return room_gpio.LOW if self.join_gpio_active_low else room_gpio.HIGH
+
+    def _queue_background_task(self, coro, label: str):
+        """Run a background coroutine and surface failures in logs."""
+        try:
+            task = asyncio.create_task(coro)
+        except RuntimeError:
+            return
+
+        self._background_tasks.add(task)
+
+        def _on_done(done_task):
+            self._background_tasks.discard(done_task)
+            try:
+                exc = done_task.exception()
+            except asyncio.CancelledError:
+                return
+            except Exception as check_exc:
+                printwarn(f"Background task '{label}' completion check failed: {check_exc}")
+                return
+            if exc:
+                printwarn(f"Background task '{label}' failed: {exc}")
+
+        task.add_done_callback(_on_done)
+
+    def _build_room_join_payload(self, stream_id: str, uuid: str, source: str) -> Dict[str, Any]:
+        timestamp_ms = int(time.time() * 1000)
+        return {
+            "event": "streamAdded",
+            "roomEvent": "room_join",
+            "streamID": stream_id,
+            "room": self.room_name,
+            "uuid": uuid,
+            "source": source,
+            "timestamp": timestamp_ms,
+        }
+
+    def _post_json_blocking(self, url: str, payload: Dict[str, Any]) -> int:
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib_request.Request(
+            url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "raspberry-ninja/room-join",
+            },
+            method="POST",
+        )
+        with urllib_request.urlopen(req, timeout=self.join_notify_timeout) as resp:
+            return getattr(resp, "status", 200)
+
+    def _get_url_blocking(self, url: str) -> int:
+        req = urllib_request.Request(
+            url,
+            headers={"User-Agent": "raspberry-ninja/room-join"},
+            method="GET",
+        )
+        with urllib_request.urlopen(req, timeout=self.join_notify_timeout) as resp:
+            return getattr(resp, "status", 200)
+
+    def _pulse_room_join_gpio_blocking(self):
+        room_gpio = self._room_join_gpio
+        if not room_gpio or not self._room_join_gpio_ready or self.join_gpio_pin is None:
+            return
+
+        active_state = self._join_gpio_active_state(room_gpio)
+        inactive_state = self._join_gpio_inactive_state(room_gpio)
+        with self._room_join_gpio_lock:
+            room_gpio.output(self.join_gpio_pin, active_state)
+            time.sleep(self.join_gpio_pulse)
+            room_gpio.output(self.join_gpio_pin, inactive_state)
+
+    async def _send_room_join_webhook(self, payload: Dict[str, Any]):
+        if not self.join_webhook_url:
+            return
+        try:
+            status = await asyncio.to_thread(self._post_json_blocking, self.join_webhook_url, payload)
+            printc(f"📣 Room join webhook sent ({status}) for {payload['streamID']}", "0AF")
+        except Exception as exc:
+            printc(f"⚠️  Room join webhook failed: {exc}", "F77")
+
+    async def _send_room_join_postapi(self, payload: Dict[str, Any]):
+        if not self.join_postapi_url:
+            return
+        message = {
+            "update": {
+                "streamID": payload.get("streamID"),
+                "action": "streamAdded",
+                "value": payload,
+            }
+        }
+        try:
+            status = await asyncio.to_thread(self._post_json_blocking, self.join_postapi_url, message)
+            printc(f"📨 Join postapi sent ({status}) for {payload['streamID']}", "0AF")
+        except Exception as exc:
+            printc(f"⚠️  Join postapi failed: {exc}", "F77")
+
+    async def _send_room_join_notify_topic(self, payload: Dict[str, Any]):
+        if not self.join_notify_topic:
+            return
+        room_label = self.room_name if self.room_name else "room"
+        message = f"Stream {payload['streamID']} joined {room_label}"
+        query = urlencode({"notify": self.join_notify_topic, "message": message})
+        separator = "&" if "?" in self.join_notify_url else "?"
+        notify_url = f"{self.join_notify_url}{separator}{query}"
+        try:
+            status = await asyncio.to_thread(self._get_url_blocking, notify_url)
+            printc(f"🔔 Notify topic triggered ({status}) for {payload['streamID']}", "0AF")
+        except Exception as exc:
+            printc(f"⚠️  Notify topic trigger failed: {exc}", "F77")
+
+    async def _send_room_join_gpio_pulse(self):
+        if not self._room_join_gpio_ready:
+            return
+        try:
+            await asyncio.to_thread(self._pulse_room_join_gpio_blocking)
+        except Exception as exc:
+            printc(f"⚠️  Join GPIO pulse failed: {exc}", "F77")
+
+    async def _dispatch_room_join_notifications(self, stream_id: str, uuid: str, source: str):
+        """Dispatch all configured room-join notifications."""
+        if not self.room_join_notifications_enabled:
+            return
+
+        payload = self._build_room_join_payload(stream_id, uuid, source)
+        await self._send_room_join_postapi(payload)
+        await self._send_room_join_webhook(payload)
+        await self._send_room_join_notify_topic(payload)
+        await self._send_room_join_gpio_pulse()
 
     def _create_decoder_element(self, codec: str, fallback: str, name: str) -> Tuple[Optional[Gst.Element], bool]:
         """Create a decoder element preferring Jetson hardware when available."""
@@ -10211,6 +10407,18 @@ class WebRTCClient:
                     except asyncio.CancelledError:
                         pass
                 self.ice_processor_task = None
+
+            if self._background_tasks:
+                for task in list(self._background_tasks):
+                    task.cancel()
+                for task in list(self._background_tasks):
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as exc:
+                        printwarn(f"Background task shutdown error: {exc}")
+                self._background_tasks.clear()
             
             # Stop subprocess managers if active
             if self.subprocess_managers:
@@ -10287,6 +10495,13 @@ class WebRTCClient:
                 except (asyncio.TimeoutError, Exception) as e:
                     printwarn(f"Error closing websocket: {e}")
                     self.conn = None
+
+            if self._room_join_gpio_ready and self._room_join_gpio and self.join_gpio_pin is not None:
+                try:
+                    inactive_state = self._join_gpio_inactive_state(self._room_join_gpio)
+                    self._room_join_gpio.output(self.join_gpio_pin, inactive_state)
+                except Exception:
+                    pass
 
     async def loop(self):
         assert self.conn
@@ -10497,7 +10712,7 @@ class WebRTCClient:
                             await self.start_pipeline(UUID)
                     elif msg['request'] == 'cleanup' or msg['request'] == 'bye':
                         # Handle cleanup for recording
-                        if self.room_recording and UUID in self.room_streams:
+                        if (self.room_recording or self.room_ndi or self.room_monitor) and UUID in self.room_streams:
                             await self.cleanup_room_stream(UUID)
                         elif self.single_stream_recording and UUID in self.uuid_to_stream_id:
                             # Clean up single-stream recording subprocess
@@ -10520,13 +10735,13 @@ class WebRTCClient:
                     elif msg['request'] == "videoaddedtoroom":
                         if 'streamID' in msg:
                             printc(f"📹 Video added to room: {msg['streamID']}", "0FF")
-                            if self.room_recording or self.room_ndi:
+                            if self.room_recording or self.room_ndi or self.room_monitor:
                                 # This event tells us a new stream is in the room.
                                 # Try to get the UUID from various possible fields
                                 peer_uuid = msg.get('from') or msg.get('UUID') or UUID
                                 if peer_uuid:
                                     printc(f"  UUID found: {peer_uuid}", "77F")
-                                    await self.handle_new_room_stream(msg['streamID'], peer_uuid)
+                                    await self.handle_new_room_stream(msg['streamID'], peer_uuid, source="videoaddedtoroom")
                                 else:
                                     printc(f"[{msg['streamID']}] ⚠️ videoaddedtoroom event missing peer UUID", "F70")
                                     printc(f"  Message keys: {list(msg.keys())}", "F77")
@@ -10534,11 +10749,12 @@ class WebRTCClient:
                                 printwout("play stream.")
                                 await self.sendMessageAsync({"request":"play","streamID":self.streamin+self.hashcode})
                     elif msg['request'] == 'joinroom':
-                        if self.room_recording or self.room_ndi:
-                            # Handle new member joining when we're recording the room
+                        if self.room_recording or self.room_ndi or self.room_monitor:
+                            # Handle new member joining in room-monitor/room-record/room-ndi modes
                             if 'streamID' in msg:
                                 printc(f"👤 Member joined room with stream: {msg['streamID']}", "0FF")
-                                await self.handle_new_room_stream(msg['streamID'], UUID)
+                                peer_uuid = msg.get('from') or msg.get('UUID') or UUID
+                                await self.handle_new_room_stream(msg['streamID'], peer_uuid, source="joinroom")
                         elif self.streamin and self.streamID and (self.streamin+self.hashcode == self.streamID):
                             if self.room_hashcode:
                                 printwout("play stream..")
@@ -10551,9 +10767,10 @@ class WebRTCClient:
                             await self.sendMessageAsync({"request":"seed", "streamID":self.stream_id+self.hashcode, "UUID":UUID})
                     elif msg['request'] == 'someonejoined':
                         # Handle someone joining the room
-                        if (self.room_recording or self.room_ndi) and 'streamID' in msg:
+                        if (self.room_recording or self.room_ndi or self.room_monitor) and 'streamID' in msg:
                             printc(f"🆕 Someone joined with stream: {msg['streamID']}", "0FF")
-                            await self.handle_new_room_stream(msg['streamID'], UUID)
+                            peer_uuid = msg.get('from') or msg.get('UUID') or UUID
+                            await self.handle_new_room_stream(msg['streamID'], peer_uuid, source="someonejoined")
                             
                             
             except KeyboardInterrupt:
@@ -10602,7 +10819,10 @@ class WebRTCClient:
                 printc(f"  - Member {i}: Not a dict: {type(member)}", "F00")
         
         # In room recording mode, we need to handle this differently
-        printc(f"Room recording mode: {self.room_recording}, Room NDI: {self.room_ndi}", "FF0")
+        printc(
+            f"Room recording mode: {self.room_recording}, Room NDI: {self.room_ndi}, Room monitor: {self.room_monitor}",
+            "FF0",
+        )
         if self.room_recording or self.room_ndi:
             printc("🚀 Room recording mode - will record all streams", "0F0")
             
@@ -10635,6 +10855,22 @@ class WebRTCClient:
             # Start recording each stream using subprocess architecture
             for stream_id, uuid in streams_to_record:
                 await self.create_subprocess_recorder(stream_id, uuid)
+        elif self.room_monitor:
+            printc("👀 Room monitor mode - tracking room join/leave events", "0AF")
+            tracked = 0
+            async with self.room_streams_lock:
+                for member in room_list:
+                    if 'streamID' not in member:
+                        continue
+                    stream_id = member['streamID']
+                    uuid = member.get('UUID') or f"room_member_{stream_id}"
+
+                    if stream_id in [s['streamID'] for s in self.room_streams.values()]:
+                        continue
+                    self.room_streams[uuid] = {'streamID': stream_id, 'recording': False}
+                    tracked += 1
+
+            printc(f"Room monitor primed with {tracked} currently active stream(s)", "77F")
         else:
             # Original single-stream handling
             for member in room_list:
@@ -10873,7 +11109,7 @@ class WebRTCClient:
             await manager.stop()
         self.subprocess_managers.clear()
     
-    async def handle_new_room_stream(self, stream_id, uuid):
+    async def handle_new_room_stream(self, stream_id, uuid, source="event"):
         """Handle a new stream that has joined the room by starting a recorder for it."""
         if self.stream_filter and stream_id not in self.stream_filter:
             return # Skip streams not in our filter
@@ -10883,15 +11119,21 @@ class WebRTCClient:
             printc(f"[{stream_id}] ⚠️ New stream joined but had no UUID. Cannot record.", "F70")
             return
 
-        printc(f"New peer '{uuid}' with stream '{stream_id}' joined room.", "7FF")
+        printc(f"New peer '{uuid}' with stream '{stream_id}' joined room via {source}.", "7FF")
         
         async with self.room_streams_lock:
             if stream_id in [s['streamID'] for s in self.room_streams.values()]:
                  printc(f"[{stream_id}] ⚠️ Already tracking this stream. Ignoring.", "FF0")
                  return
             self.room_streams[uuid] = {'streamID': stream_id, 'recording': False}
-        
-        if self.room_recording:
+
+        if self.room_join_notifications_enabled:
+            self._queue_background_task(
+                self._dispatch_room_join_notifications(stream_id, uuid, source),
+                f"room join notify {stream_id}",
+            )
+
+        if self.room_recording or self.room_ndi:
             await self.create_subprocess_recorder(stream_id, uuid)
     
     def on_new_stream_room(self, client, pad):
@@ -11318,34 +11560,40 @@ class WebRTCClient:
         # Clean up any recording pipelines
         if uuid in self.clients:
             client = self.clients[uuid]
-            
-            # Remove any mux elements
-            mux_name = f"mux_{uuid}"
-            mux = self.pipe.get_by_name(mux_name)
-            if mux:
-                mux.set_state(Gst.State.NULL)
-                self.pipe.remove(mux)
-                
-            # Remove any NDI elements
-            if self.room_ndi:
-                ndi_combiner_name = f"ndi_combiner_{uuid}"
-                ndi_sink_name = f"ndi_sink_{uuid}"
-                
-                ndi_combiner = self.pipe.get_by_name(ndi_combiner_name)
-                if ndi_combiner:
-                    ndi_combiner.set_state(Gst.State.NULL)
-                    self.pipe.remove(ndi_combiner)
-                    
-                ndi_sink = self.pipe.get_by_name(ndi_sink_name)
-                if ndi_sink:
-                    ndi_sink.set_state(Gst.State.NULL)
-                    self.pipe.remove(ndi_sink)
-            
-            # Close the webrtc connection
-            if 'webrtc' in client and client['webrtc']:
-                client['webrtc'].set_state(Gst.State.NULL)
-                self.pipe.remove(client['webrtc'])
-                
+
+            if self.pipe:
+                # Remove any mux elements
+                mux_name = f"mux_{uuid}"
+                mux = self.pipe.get_by_name(mux_name)
+                if mux:
+                    mux.set_state(Gst.State.NULL)
+                    self.pipe.remove(mux)
+
+                # Remove any NDI elements
+                if self.room_ndi:
+                    ndi_combiner_name = f"ndi_combiner_{uuid}"
+                    ndi_sink_name = f"ndi_sink_{uuid}"
+
+                    ndi_combiner = self.pipe.get_by_name(ndi_combiner_name)
+                    if ndi_combiner:
+                        ndi_combiner.set_state(Gst.State.NULL)
+                        self.pipe.remove(ndi_combiner)
+
+                    ndi_sink = self.pipe.get_by_name(ndi_sink_name)
+                    if ndi_sink:
+                        ndi_sink.set_state(Gst.State.NULL)
+                        self.pipe.remove(ndi_sink)
+
+                # Close the webrtc connection
+                if 'webrtc' in client and client['webrtc']:
+                    client['webrtc'].set_state(Gst.State.NULL)
+                    self.pipe.remove(client['webrtc'])
+            elif 'webrtc' in client and client['webrtc']:
+                try:
+                    client['webrtc'].set_state(Gst.State.NULL)
+                except Exception:
+                    pass
+
             # Remove from clients
             del self.clients[uuid]
 
@@ -11963,6 +12211,15 @@ async def main():
     parser.add_argument('--save', action='store_true', help='Save a copy of the outbound stream to disk. Publish Live + Store the video.')
     parser.add_argument('--record-room', action='store_true', help='Record all streams in a room to separate files. Requires --room parameter.')
     parser.add_argument('--record-streams', type=str, help='Comma-separated list of stream IDs to record from a room. Optional filter for --record-room.')
+    parser.add_argument('--room-monitor', action='store_true', help='Join a room in monitor-only mode (no play/publish). Useful for room-join alerts.')
+    parser.add_argument('--join-webhook', type=str, help='POST room-join events as JSON to this webhook URL.')
+    parser.add_argument('--join-postapi', type=str, help='POST room-join events using VDO.Ninja postapi format ({update:{...}}).')
+    parser.add_argument('--join-notify-topic', type=str, help='Trigger VDO.Ninja notify API on room joins using this notify topic.')
+    parser.add_argument('--join-notify-url', type=str, default='https://notify.vdo.ninja/', help='Base URL for notify-topic triggers (default: https://notify.vdo.ninja/).')
+    parser.add_argument('--join-notify-timeout', type=float, default=5.0, help='Timeout in seconds for join notification HTTP calls.')
+    parser.add_argument('--join-gpio-pin', type=int, help='Pulse this BOARD-mode GPIO pin when a room join event is detected (Raspberry Pi).')
+    parser.add_argument('--join-gpio-pulse', type=float, default=0.4, help='GPIO pulse duration in seconds for --join-gpio-pin (default: 0.4s).')
+    parser.add_argument('--join-gpio-active-low', action='store_true', help='Use active-low pulses for --join-gpio-pin.')
     parser.add_argument('--audio', action='store_true', help='Deprecated flag (audio recording is now enabled by default). Use --noaudio to disable audio recording.')
     parser.add_argument('--hls', action='store_true', help='Use HLS format for recording instead of WebM/MP4. Includes audio+video muxing and creates .m3u8 playlists.')
     parser.add_argument('--hls-splitmux', action='store_true', help='Use splitmuxsink for HLS recording (recommended) instead of hlssink.')
@@ -12118,7 +12375,7 @@ async def main():
     if args.led:
         try:
             import RPi.GPIO as GPIO
-            global LED_Level, P_R, pin
+            global LED_Level, p_R, pin
             GPIO.setwarnings(False)
             pin = 12  # pins is a dict
             GPIO.setmode(GPIO.BOARD)       # Numbers GPIOs by physical location
@@ -12158,6 +12415,13 @@ async def main():
         sys.exit(1)
     if args.v4l2sink:
         needed += ["video4linux2"]
+
+    join_alert_requested = bool(
+        args.join_webhook
+        or args.join_postapi
+        or args.join_notify_topic
+        or args.join_gpio_pin is not None
+    )
 
     if args.ndiout:
         needed += ['ndi']
@@ -12225,6 +12489,19 @@ async def main():
             args.stream_filter = [s.strip() for s in args.record_streams.split(',')]
         else:
             args.stream_filter = None
+    elif args.room_monitor or join_alert_requested:
+        # Room monitor mode for join notifications without recording/NDI.
+        args.room_monitor = True
+        args.streamin = "room_monitor"
+        args.room_recording = False
+
+        if not args.room:
+            printc("Error: --room-monitor and join notification options require --room", "F00")
+            sys.exit(1)
+
+        if args.puuid:
+            printc("Warning: Room monitor may not work with custom websocket servers", "F77")
+            printc("This feature requires a server that tracks room membership and sends notifications", "F77")
     elif args.record:
         # Single-stream recording mode - use subprocess like room recording
         args.streamin = "single_stream_recording"  # Special value to indicate subprocess recording
@@ -13202,13 +13479,27 @@ async def main():
                 printc(f"   ⚠️  WARNING: Combiner mode may freeze after ~1500 buffers!", "F70")
             if args.stream_filter:
                 printc(f"   Filter: {', '.join(args.stream_filter)}", "77F")
+        elif getattr(args, 'room_monitor', False):
+            printc(f"\n👀 Room Monitor Mode (Room: {args.room})", "0AF")
+            if args.join_postapi:
+                printc(f"   ├─ postapi: {args.join_postapi}", "77F")
+            if args.join_webhook:
+                printc(f"   ├─ webhook: {args.join_webhook}", "77F")
+            if args.join_notify_topic:
+                printc(f"   ├─ notify topic: {args.join_notify_topic}", "77F")
+            if args.join_gpio_pin is not None:
+                level_mode = "active-LOW" if args.join_gpio_active_low else "active-HIGH"
+                printc(f"   └─ GPIO pin {args.join_gpio_pin} ({level_mode}, {args.join_gpio_pulse:.2f}s)", "77F")
         elif not args.room:
             printc(f"\n📹 Recording Mode", "0FF")
             printc(f"   └─ Publish to: {bold_color}{watchURL}push={args.streamin}{server}", "77F")
         else:
             printc(f"\n📹 Recording Mode (Room: {args.room})", "0FF")
             printc(f"   └─ Publish to: {bold_color}{watchURL}push={args.streamin}{server}&room={args.room}", "77F")
-        print("\nAvailable options include --noaudio, --ndiout, --record and --server. See --help for more options.")
+        if getattr(args, 'room_monitor', False):
+            print("\nUse --join-webhook/--join-postapi/--join-notify-topic/--join-gpio-pin for room-join alerts.")
+        else:
+            print("\nAvailable options include --noaudio, --ndiout, --record and --server. See --help for more options.")
     else:
         print("\nAvailable options include --streamid, --bitrate, and --server. See --help for more options. Default video bitrate is 2500 (kbps)")
         if not args.nored and not args.novideo:

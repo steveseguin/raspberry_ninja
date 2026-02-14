@@ -735,6 +735,46 @@ Note: NDI support for publishing is yet to be added. H264/OPUS is tested mainly.
 
 **Important:** The `--record-room` and `--room-ndi` features require a VDO.Ninja-compatible server that tracks room membership. These features will not work with custom websocket relay servers (when using `--puuid`).
 
+#### Room Join Alerts (Webhook / Notify Topic / GPIO)
+
+If you need an alert when someone joins a room, you can run Raspberry Ninja in room monitor mode:
+
+```bash
+python3 publish.py --room myroom123 --room-monitor --join-webhook https://your.endpoint/hook
+```
+
+Additional alert outputs:
+
+- VDO.Ninja notify topic (compatible with `notify.vdo.ninja`):
+```bash
+python3 publish.py --room myroom123 --room-monitor --join-notify-topic my_topic_name
+```
+- VDO-style post API payload (`{update:{streamID,action,value}}`):
+```bash
+python3 publish.py --room myroom123 --room-monitor --join-postapi https://your.endpoint/postapi
+```
+- Raspberry Pi GPIO pulse on room join (BOARD pin numbering):
+```bash
+python3 publish.py --room myroom123 --room-monitor --join-gpio-pin 12 --join-gpio-pulse 0.4
+```
+
+Notes:
+- You can combine multiple outputs in one command.
+- The same join alert outputs also work when using `--record-room` or `--room-ndi`.
+- GPIO uses BOARD pin numbering and supports `--join-gpio-active-low`.
+
+Quick validation:
+- Unit tests:
+```bash
+python3 -m unittest discover -s tests -v
+```
+- Live E2E room-join webhook test (uses Playwright + Chromium):
+```bash
+npm install playwright --no-save
+npx playwright install chromium
+node tests/e2e/room_join_notification_e2e.js
+```
+
 ### OpenCV / Tensorflow / FFMPEG / FDSink / Framebuffer support
 
 There's support for OpenCV/Framebuffer (--framebuffer STREAMIDHERE) and FDSink now. There's a Youtube video link below demoing how to use Raspberry.Ninja to bring raw BGR video frames into Numpy. 
