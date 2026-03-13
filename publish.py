@@ -24,6 +24,7 @@ import mmap
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, Set, List
 from functools import lru_cache
+from config_loader import apply_config_overrides
 try:
     import hashlib
     from urllib.parse import urlparse, urlencode
@@ -12271,22 +12272,7 @@ async def main():
                     config = json.load(f)
                 
                 # Override args with config values (but command line args take precedence)
-                for key, value in config.items():
-                    if hasattr(args, key) and getattr(args, key) == parser.get_default(key):
-                        # Only override if the current value is the default
-                        if key == 'audio_enabled' and value is False:
-                            setattr(args, 'noaudio', True)
-                        elif key == 'video_source':
-                            if value == 'test':
-                                setattr(args, 'test', True)
-                            elif value == 'libcamera':
-                                setattr(args, 'libcamera', True)
-                            elif value == 'v4l2':
-                                setattr(args, 'v4l2', '/dev/video0')
-                            elif value == 'custom' and 'custom_video_pipeline' in config:
-                                setattr(args, 'video_pipeline', config['custom_video_pipeline'])
-                        elif key != 'platform' and key != 'auto_start' and key != 'audio_enabled' and key != 'video_source' and key != 'custom_video_pipeline':
-                            setattr(args, key, value)
+                apply_config_overrides(args, parser, config)
                 
                 print(f"Loaded configuration from: {config_path}")
             except Exception as e:
