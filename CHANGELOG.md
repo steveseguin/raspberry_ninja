@@ -1,5 +1,51 @@
 # Changelog
 
+# Release 10.0.0
+
+**Release Date:** 2026-03-14
+
+## 🚀 Major Release
+
+This release includes breaking changes or significant new features.
+
+### Core Changes (publish.py)
+
+The main streaming script has been updated. This includes significant changes that may affect compatibility.
+
+### Commits
+
+- fix(v4l2): respect video_device config and retry on missing device (c66f5ce)
+- chore: release v9.1.0 [release] (6a1a619)
+- Fix config key mapping for saved setups (f0a761a)
+- chore(docs): update TOC (63992a9)
+- Add room-join monitor alerts with tests and e2e coverage (77cd7d2)
+- zapi (76e060e)
+- update rpi install link in main README.md (b1531e8)
+- docs: document V4L2 sink support for virtual camera output (49722b5)
+- feat(viewer): add V4L2 sink output support (36efdee)
+- ci(scripts): update Gemini model to gemini-3-flash-preview (29ce989)
+- fix(rpi): Enhance MS2109 device detection via USB IDs (6c404e2)
+- fix(rpi): Resolve UVC capture quirks for legacy GStreamer (7704fe1)
+- fix(rpi): Auto-detect and prefer v4l2 for UVC on GStreamer < 1.20 (4b535bd)
+- feat(rpi): Add --soft-jpeg option for software JPEG decode (41b10b8)
+- fix(gstreamer): Gate SDP patches to GStreamer < 1.20 (a45a77a)
+
+### Installation
+
+For installation instructions, please refer to the platform-specific guides:
+- [Raspberry Pi](./raspberry_pi/README.md)
+- [NVIDIA Jetson](./nvidia_jetson/README.md)
+- [Orange Pi](./orangepi/README.md)
+- [Ubuntu](./ubuntu/README.md)
+
+### ⚠️ Upgrade Notes
+
+This is a major version upgrade. Please review the changes carefully before updating.
+It's recommended to backup your configuration before upgrading.
+
+
+---
+
 # Release 9.1.0
 
 **Release Date:** 2026-03-13
