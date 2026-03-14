@@ -13063,11 +13063,43 @@ async def main():
 
             elif args.v4l2:
                 needed += ['video4linux2']
-                
+
                 if not os.path.exists(args.v4l2):
+                    # USB devices may not be enumerated yet at boot; wait briefly.
+                    print(f"Waiting for {args.v4l2} to appear...")
+                    for _wait in range(6):
+                        time.sleep(1)
+                        if os.path.exists(args.v4l2):
+                            print(f"Found {args.v4l2}")
+                            break
+
+                if not os.path.exists(args.v4l2):
+                    # Configured device never appeared — scan for any capture device.
+                    print(f"The video input {args.v4l2} does not exist. Scanning for alternatives...")
+                    original = args.v4l2
+                    args.v4l2 = None
+                    for i in range(10):
+                        candidate = f"/dev/video{i}"
+                        if not os.path.exists(candidate) or not os.access(candidate, os.R_OK):
+                            continue
+                        try:
+                            with open(f"/sys/class/video4linux/video{i}/name", "r", encoding="utf-8") as f:
+                                dname = f.read().strip()
+                        except Exception:
+                            dname = None
+                        if dname:
+                            args.v4l2 = candidate
+                            print(f"Using {candidate} ({dname}) instead of {original}")
+                            break
+                    if not args.v4l2:
+                        args.v4l2 = original
+                        print(f"No alternative video device found.")
+                        error = True
+
+                if not error and not os.path.exists(args.v4l2):
                     print(f"The video input {args.v4l2} does not exist.")
                     error = True
-                elif not os.access(args.v4l2, os.R_OK):
+                elif not error and not os.access(args.v4l2, os.R_OK):
                     print(f"The video input {args.v4l2} exists, but no permissions to read.")
                     error = True
                 

@@ -4,7 +4,7 @@ from argparse import ArgumentParser, Namespace
 from typing import Any, Dict
 
 
-IGNORED_CONFIG_KEYS = {"platform", "auto_start", "custom_video_pipeline"}
+IGNORED_CONFIG_KEYS = {"platform", "auto_start", "custom_video_pipeline", "video_device", "video_format"}
 CONFIG_ARG_ALIASES = {"stream_id": "streamid"}
 VIDEO_SOURCE_OVERRIDE_ATTRS = (
     "test",
@@ -53,7 +53,7 @@ def _apply_video_source_override(
     elif value == "libcamera" and _arg_is_default(args, parser, "libcamera"):
         args.libcamera = True
     elif value == "v4l2" and _arg_is_default(args, parser, "v4l2"):
-        args.v4l2 = "/dev/video0"
+        args.v4l2 = config.get("video_device", "/dev/video0")
     elif value == "custom" and _arg_is_default(args, parser, "video_pipeline"):
         custom_pipeline = config.get("custom_video_pipeline")
         if custom_pipeline:

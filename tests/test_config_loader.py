@@ -80,6 +80,35 @@ class TestConfigLoader(unittest.TestCase):
         self.assertTrue(args.hdmi)
         self.assertFalse(args.test)
 
+    def test_v4l2_source_uses_video_device_from_config(self):
+        parser = build_parser()
+        args = parser.parse_args([])
+
+        apply_config_overrides(
+            args,
+            parser,
+            {
+                "video_source": "v4l2",
+                "video_device": "/dev/video2",
+            },
+        )
+
+        self.assertEqual(args.v4l2, "/dev/video2")
+
+    def test_v4l2_source_defaults_to_video0_without_video_device(self):
+        parser = build_parser()
+        args = parser.parse_args([])
+
+        apply_config_overrides(
+            args,
+            parser,
+            {
+                "video_source": "v4l2",
+            },
+        )
+
+        self.assertEqual(args.v4l2, "/dev/video0")
+
     def test_audio_enabled_false_sets_noaudio_when_not_explicitly_set(self):
         parser = build_parser()
         args = parser.parse_args([])
