@@ -100,6 +100,12 @@ Once that works, next you might try something like the following to see if any c
 ```
 python3 publish.py --libcamera --noaudio
 ```
+If you are using an official Raspberry Pi CSI camera on an older Raspberry Ninja image and motion looks choppy, try this instead:
+```
+python3 publish.py --rpicam --noaudio
+```
+That path can perform better than `--libcamera --rpi` on some older Pi images.
+
 You also may need to change the command line settings, depending on the camera / sensor / input connected.  While I try to have things auto work with just `python3 publish.py`, sometimes you need to pass specific parameters to tell the script what actually will work. A list of avialable options can be listed using the `--help` option:
 
 ```python3 publish.py --help```
@@ -122,7 +128,7 @@ If using the CSI camera, the hardware encoder often works quite well, although i
 
 **Important Note about Raspberry Pi 5**: The Raspberry Pi 5 does not have hardware video encoding support (no v4l2h264enc or omxh264enc). When using the `--rpi` parameter on a RPi5, the script will automatically detect this and fall back to software encoding (x264enc). This may impact performance compared to earlier Pi models with hardware encoders. For best results on RPi5, consider using `--x264` or `--openh264` parameters explicitly.
 
-To enable the CSI camera on older versions of Raspberry Pi OS (Raspbian), you may need to add `--rpicam` to the command-line, as the default is USB MPJEG. With newer versions of Raspberry Pi OS, you may instead need to use `--libcamera --rpi` instead (or just --libcamera).  If you don't have audio connected, you might also need to add `--noaudio`, as sometimes that can cause issues.
+To enable the CSI camera on older versions of Raspberry Pi OS (Raspbian), you may need to add `--rpicam` to the command-line, as the default is USB MPJEG. With newer versions of Raspberry Pi OS, you may instead need to use `--libcamera --rpi` instead (or just --libcamera). If you are using an official Raspberry Pi camera on an older prebuilt image and `--libcamera --rpi` reports a high FPS but the motion still looks choppy, try `--rpicam`; it can be noticeably smoother on older stacks. If you don't have audio connected, you might also need to add `--noaudio`, as sometimes that can cause issues.
 
 If using a third-party CSI-based camera, it is strongly recommended you check compatilbility ahead of time. If you need to install a "driver" to have it work, I'd advise against using it. Drivers may not be compatible with the Gstreamer version used by Raspberry Ninja, or at the very least, can make setup and debugging a real nightmare.  Most Arducam cameras now seem to be driverless, with just a small change to the boot config file needed only, but this isn't the case for all Arducams or cameras from other providers.
 

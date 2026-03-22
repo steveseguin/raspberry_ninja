@@ -327,7 +327,8 @@ options:
   --apple APPLE         Sets Apple Video Foundation media device; takes a device index value (0,1,2,3,etc)
   --v4l2 V4L2           Sets the V4L2 input device.
   --libcamera           Use libcamera as the input source
-  --rpicam              Sets the RaspberryPi CSI input device. If this fails, try --rpi --raw or just --raw instead.
+  --rpicam              Use the Raspberry Pi CSI camera via rpicamsrc. Often fastest with official Pi cameras on older
+                        Pi OS images; if unavailable, try --libcamera --rpi instead.
   --format FORMAT       The capture format type: YUYV, I420, BGR, or even JPEG/H264
   --rotate ROTATE       Rotates the camera in degrees; 0 (default), 90, 180, 270 are possible values.
   --nvidiacsi           Sets the input to the nvidia csi port.
@@ -349,7 +350,8 @@ options:
   --vorbis              Try to use the OMX driver for encoding video; not recommended
   --nvidia              Creates a pipeline optimised for nvidia hardware.
   --rpi                 Creates a pipeline optimised for raspberry pi hardware encoder. This wont work with the
-                        Raspberry Pi 5, as it has no hardware encoder..
+                        Raspberry Pi 5, as it has no hardware encoder.. With official Pi cameras on older images,
+                        --rpicam may perform better.
   --multiviewer         Allows for multiple viewers to watch a single encoded stream; will use more CPU and bandwidth.
   --noqos               Do not try to automatically reduce video bitrate if packet loss gets too high. The default
                         will reduce the bitrate if needed.
@@ -814,6 +816,8 @@ It's rather hard to install everything needed on a Raspberry Pi Zero 2 directly,
 ### Camera options
 
 There's plenty of options for the Rasbperry Pi and Nvidia Jetson when it comes to cameras and HDMI adapters. The easiest option for a Raspberry Pi is to use one of the official Raspberry Pi camera. These are normally just plug an play on both platforms and well supported. 
+
+If you are using an official Raspberry Pi CSI camera on an older Raspberry Ninja image and `--libcamera --rpi` looks choppy even though the viewer reports a healthy FPS, try `--rpicam` instead. On some older Raspberry Pi stacks that path performs noticeably better.
 
 USB cameras are options, but currently with Raspberry Pi devices these are only supported up to around 720p30. USB 3.0 devices are even less supported, as you need to ensure the Raspberry Pi you are using supports USB 3.0; for example, a Camlink will not work on a Raspberry Pi 3.
 

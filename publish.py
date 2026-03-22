@@ -12159,7 +12159,7 @@ async def main():
     parser.add_argument('--v4l2', type=str, default=None, help='Sets the V4L2 input device.')
     parser.add_argument('--iomode', type=int, default=2, help='Sets a custom V4L2 I/O Mode')
     parser.add_argument('--libcamera', action='store_true',  help='Use libcamera as the input source')
-    parser.add_argument('--rpicam', action='store_true', help='Sets the RaspberryPi CSI input device. If this fails, try --rpi --raw or just --raw instead.')
+    parser.add_argument('--rpicam', action='store_true', help='Use the Raspberry Pi CSI camera via rpicamsrc. Often fastest with official Pi cameras on older Pi OS images; if unavailable, try --libcamera --rpi instead.')
     parser.add_argument('--format', type=str, default=None, help='The capture format type: YUYV, I420, BGR, or even JPEG/H264')
     parser.add_argument('--rotate', type=int, default=0, help='Rotates the camera in degrees; 0 (default), 90, 180, 270 are possible values.')
     parser.add_argument('--nvidiacsi', action='store_true', help='Sets the input to the nvidia csi port.')
@@ -12183,7 +12183,7 @@ async def main():
     parser.add_argument('--omx', action='store_true', help='Try to use the OMX driver for encoding video; not recommended')
     parser.add_argument('--vorbis', action='store_true', help='Try to use the OMX driver for encoding video; not recommended')
     parser.add_argument('--nvidia', action='store_true', help='Creates a pipeline optimised for nvidia hardware.')
-    parser.add_argument('--rpi', action='store_true', help='Creates a pipeline optimised for raspberry pi hardware encoder. Note: RPi5 has no hardware encoder and will automatically fall back to software encoding (x264).')
+    parser.add_argument('--rpi', action='store_true', help='Creates a pipeline optimised for raspberry pi hardware encoder. Note: RPi5 has no hardware encoder and will automatically fall back to software encoding (x264). With official Pi cameras on older images, --rpicam may perform better.')
     parser.add_argument('--multiviewer', action='store_true', help='Allows for multiple viewers to watch a single encoded stream; will use more CPU and bandwidth.')
     parser.add_argument('--webserver', type=int, metavar='PORT', help='Enable web interface on specified port (e.g., --webserver 8080) for monitoring stats, logs, and controls.')
     parser.add_argument('--noqos', action='store_true', help='Do not try to automatically reduce video bitrate if packet loss gets too high. The default will reduce the bitrate if needed.')
@@ -13019,9 +13019,22 @@ async def main():
                 print("devices", videodevices)
 
                 if len(videodevices) > 0:
+                    device_names = [device.get_display_name() for device in videodevices]
                     print("\nDetected video sources:")
-                    for device in videodevices:
-                        print("Device Name:", device.get_display_name())
+                    for device_name in device_names:
+                        print("Device Name:", device_name)
+                    if args.rpi and check_plugins('rpicamsrc'):
+                        looks_like_pi_csi = any(
+                            name.startswith("/base/")
+                            or ("/i2c" in name.lower())
+                            or ("imx" in name.lower())
+                            for name in device_names
+                        )
+                        if looks_like_pi_csi:
+                            printc(
+                                "Tip: If this is an official Raspberry Pi CSI camera and motion looks choppy, try --rpicam instead of --libcamera --rpi. It can perform better on older Pi images.",
+                                "7F7",
+                            )
                     if args.format is None:
                         formats = supports_resolution_and_format(videodevices[0], args.width, args.height, args.framerate)
                         print(formats)
