@@ -3396,6 +3396,38 @@ class WebRTCClient:
             parts.append(f"{key}={value}")
 
         return " ".join(parts), using_hw
+
+    def _get_v4l2sink_decoder_description(
+        self,
+        codec: str,
+        fallbacks: Tuple[str, ...],
+        allow_hw: bool = True,
+    ) -> Tuple[str, bool]:
+        """Return a decoder fragment for viewer V4L2 output."""
+        primary_fallback = fallbacks[0]
+        disable_hw = getattr(self, "disable_hw_decoder", False) or not allow_hw
+        force_hw = getattr(self, "_force_hw_decoder", False) and allow_hw
+        factory_name, properties, using_hw = select_preferred_decoder(
+            codec,
+            primary_fallback,
+            disable_hw=disable_hw,
+            force_hw=force_hw,
+        )
+
+        if not using_hw:
+            for candidate in fallbacks:
+                if gst_element_available(candidate):
+                    factory_name = candidate
+                    properties = {}
+                    break
+
+        parts = [factory_name]
+        for key, value in properties.items():
+            if isinstance(value, bool):
+                value = "true" if value else "false"
+            parts.append(f"{key}={value}")
+
+        return " ".join(parts), using_hw
             
     def setup_ice_servers(self, webrtc):
         """Configure ICE servers including default VDO.Ninja TURN servers"""
@@ -6628,28 +6660,55 @@ class WebRTCClient:
             elif "AV1" in caps_upper:
                 codec_type = "AV1"
 
-        fallback_pipeline = (
-            "queue ! decodebin ! "
-            "videoconvert ! videoscale ! videorate ! "
-            f"video/x-raw,format={self.v4l2sink_format},width=(int){self.v4l2sink_width},"
-            f"height=(int){self.v4l2sink_height},framerate=(fraction){self.v4l2sink_fps}/1 ! "
-            f"identity name=v4l2sink_identity_{pad.get_name()}"
-        )
-
-        pipeline_desc = None
-        if codec_type == "VP8":
-            pipeline_desc = (
-                "queue ! rtpvp8depay ! vp8dec ! videoconvert ! videoscale ! videorate ! "
+        def build_v4l2sink_output_chain(using_hw_decoder: bool = False) -> str:
+            if using_hw_decoder and gst_element_available("nvvidconv"):
+                return (
+                    "nvvidconv ! video/x-raw,format=NV12 ! "
+                    "videoconvert ! videoscale ! videorate ! "
+                    f"video/x-raw,format={self.v4l2sink_format},width=(int){self.v4l2sink_width},"
+                    f"height=(int){self.v4l2sink_height},framerate=(fraction){self.v4l2sink_fps}/1 ! "
+                    f"identity name=v4l2sink_identity_{pad.get_name()}"
+                )
+            return (
+                "videoconvert ! videoscale ! videorate ! "
                 f"video/x-raw,format={self.v4l2sink_format},width=(int){self.v4l2sink_width},"
                 f"height=(int){self.v4l2sink_height},framerate=(fraction){self.v4l2sink_fps}/1 ! "
                 f"identity name=v4l2sink_identity_{pad.get_name()}"
             )
-        elif codec_type == "H264":
+
+        def get_v4l2sink_decoder(codec: str, fallbacks: Tuple[str, ...]) -> Tuple[str, bool]:
+            decoder_desc, using_hw_decoder = self._get_v4l2sink_decoder_description(codec, fallbacks)
+            if using_hw_decoder and not gst_element_available("nvvidconv"):
+                printwarn(
+                    f"V4L2 sink hardware {codec} decoder requires `nvvidconv`; "
+                    "falling back to software decoding."
+                )
+                decoder_desc, using_hw_decoder = self._get_v4l2sink_decoder_description(
+                    codec,
+                    fallbacks,
+                    allow_hw=False,
+                )
+            return decoder_desc, using_hw_decoder
+
+        fallback_pipeline = (
+            "queue ! decodebin ! "
+            f"{build_v4l2sink_output_chain()}"
+        )
+
+        pipeline_desc = None
+        if codec_type == "VP8":
+            decoder_desc, using_hw_decoder = get_v4l2sink_decoder("VP8", ("vp8dec",))
             pipeline_desc = (
-                "queue ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! videoscale ! videorate ! "
-                f"video/x-raw,format={self.v4l2sink_format},width=(int){self.v4l2sink_width},"
-                f"height=(int){self.v4l2sink_height},framerate=(fraction){self.v4l2sink_fps}/1 ! "
-                f"identity name=v4l2sink_identity_{pad.get_name()}"
+                "queue ! rtpvp8depay ! "
+                f"{decoder_desc} ! "
+                f"{build_v4l2sink_output_chain(using_hw_decoder)}"
+            )
+        elif codec_type == "H264":
+            decoder_desc, using_hw_decoder = get_v4l2sink_decoder("H264", ("openh264dec", "avdec_h264"))
+            pipeline_desc = (
+                "queue ! rtph264depay ! h264parse ! "
+                f"{decoder_desc} ! "
+                f"{build_v4l2sink_output_chain(using_hw_decoder)}"
             )
         elif codec_type == "VP9":
             if not gst_element_available("rtpvp9depay"):
@@ -6658,11 +6717,11 @@ class WebRTCClient:
                 )
                 pipeline_desc = fallback_pipeline
             else:
+                decoder_desc, using_hw_decoder = get_v4l2sink_decoder("VP9", ("vp9dec",))
                 pipeline_desc = (
-                    "queue ! rtpvp9depay ! vp9dec ! videoconvert ! videoscale ! videorate ! "
-                    f"video/x-raw,format={self.v4l2sink_format},width=(int){self.v4l2sink_width},"
-                    f"height=(int){self.v4l2sink_height},framerate=(fraction){self.v4l2sink_fps}/1 ! "
-                    f"identity name=v4l2sink_identity_{pad.get_name()}"
+                    "queue ! rtpvp9depay ! "
+                    f"{decoder_desc} ! "
+                    f"{build_v4l2sink_output_chain(using_hw_decoder)}"
                 )
         elif codec_type == "AV1":
             if not gst_element_available("rtpav1depay") or not gst_element_available("av1parse"):
@@ -6671,11 +6730,11 @@ class WebRTCClient:
                 )
                 pipeline_desc = fallback_pipeline
             else:
+                decoder_desc, using_hw_decoder = get_v4l2sink_decoder("AV1", ("av1dec",))
                 pipeline_desc = (
-                    "queue ! rtpav1depay ! av1parse ! av1dec ! videoconvert ! videoscale ! videorate ! "
-                    f"video/x-raw,format={self.v4l2sink_format},width=(int){self.v4l2sink_width},"
-                    f"height=(int){self.v4l2sink_height},framerate=(fraction){self.v4l2sink_fps}/1 ! "
-                    f"identity name=v4l2sink_identity_{pad.get_name()}"
+                    "queue ! rtpav1depay ! av1parse ! "
+                    f"{decoder_desc} ! "
+                    f"{build_v4l2sink_output_chain(using_hw_decoder)}"
                 )
         else:
             printc(f"Unsupported video codec for V4L2 sink: {caps_name}", "F70")
