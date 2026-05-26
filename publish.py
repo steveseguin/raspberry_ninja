@@ -2963,6 +2963,7 @@ class WebRTCClient:
         self.v4l2sink_height = clamp_int(getattr(params, "v4l2sink_height", 720), 16, 4320)
         self.v4l2sink_fps = clamp_int(getattr(params, "v4l2sink_fps", 30), 1, 120)
         self.v4l2sink_format = (getattr(params, "v4l2sink_format", "YUY2") or "YUY2").upper()
+        self.v4l2sink_io_mode = clamp_int(getattr(params, "v4l2sink_io_mode", 1), 0, 5)
         self.v4l2sink_device = resolve_v4l2sink_device(self.v4l2sink) if self.v4l2sink else None
         self.v4l2sink_selector = None
         self.v4l2sink_sink_bin = None
@@ -4879,7 +4880,8 @@ class WebRTCClient:
             "queue max-size-buffers=2 leaky=downstream ! "
             "videorate ! videoscale ! videoconvert ! "
             f"{caps} ! "
-            f"v4l2sink name=viewer_v4l2sink device={self.v4l2sink_device} sync=false"
+            f"v4l2sink name=viewer_v4l2sink device={self.v4l2sink_device} "
+            f"io-mode={self.v4l2sink_io_mode} sync=false"
         )
         self.v4l2sink_sink_bin = Gst.parse_bin_from_description(sink_desc, True)
         self.v4l2sink_sink_bin.set_name("viewer_v4l2sink_sink_bin")
@@ -12297,6 +12299,7 @@ async def main():
     parser.add_argument('--v4l2sink-height', type=int, default=720, help='V4L2 sink output height (default: 720)')
     parser.add_argument('--v4l2sink-fps', type=int, default=30, help='V4L2 sink output framerate (default: 30)')
     parser.add_argument('--v4l2sink-format', type=str, default='YUY2', help='V4L2 sink output format (default: YUY2)')
+    parser.add_argument('--v4l2sink-io-mode', type=int, default=1, help='V4L2 sink I/O mode (default: 1/rw; use 0 for auto)')
     parser.add_argument('--debug', action='store_true', help='Show added debug information from Gsteamer and other aspects of the app')
     parser.add_argument('--buffer',  type=int, default=200, help='The jitter buffer latency in milliseconds; default is 200ms, minimum is 10ms. (gst +v1.18)')
     parser.add_argument('--auto-view-buffer', action='store_true', help='Viewer mode: dynamically raise jitter buffer latency when packet loss is detected (opt-in).')

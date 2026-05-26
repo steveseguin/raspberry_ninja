@@ -299,7 +299,8 @@ usage: publish.py [-h] [--streamid STREAMID] [--room ROOM] [--rtmp RTMP] [--whip
                   [--pipein PIPEIN] [--ndiout NDIOUT] [--fdsink FDSINK] [--framebuffer FRAMEBUFFER]
                   [--v4l2sink V4L2SINK] [--v4l2sink-width V4L2SINK_WIDTH]
                   [--v4l2sink-height V4L2SINK_HEIGHT] [--v4l2sink-fps V4L2SINK_FPS]
-                  [--v4l2sink-format V4L2SINK_FORMAT] [--debug]
+                  [--v4l2sink-format V4L2SINK_FORMAT] [--v4l2sink-io-mode V4L2SINK_IO_MODE]
+                  [--debug]
                   [--buffer BUFFER] [--password [PASSWORD]] [--hostname HOSTNAME] [--video-pipeline VIDEO_PIPELINE]
                   [--audio-pipeline AUDIO_PIPELINE] [--timestamp] [--clockstamp]
 
@@ -396,6 +397,8 @@ options:
                         V4L2 sink output framerate (default: 30)
   --v4l2sink-format V4L2SINK_FORMAT
                         V4L2 sink output format (default: YUY2)
+  --v4l2sink-io-mode V4L2SINK_IO_MODE
+                        V4L2 sink I/O mode (default: 1/rw; use 0 for auto)
   --debug               Show added debug information from Gsteamer and other aspects of the app
   --buffer BUFFER       The jitter buffer latency in milliseconds; default is 200ms, minimum is 10ms. (gst +v1.18)
   --password [PASSWORD]
@@ -805,6 +808,7 @@ Notes:
 - `--v4l2sink` accepts a numeric index (`0`) or a full path (`/dev/video2`).
 - If the specified device is not writable, the first writable `/dev/video*` is used.
 - When no remote video is available, a blue frame is output to keep the device alive.
+- The default V4L2 sink I/O mode is read/write (`--v4l2sink-io-mode 1`) to avoid mmap buffer-pool issues with some `v4l2loopback` versions. Use `--v4l2sink-io-mode 0` to restore GStreamer's auto mode.
 - This is output-only; `--v4l2` is input capture.
 
 ## Hardware options
