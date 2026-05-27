@@ -1,5 +1,32 @@
 # Changelog
 
+# Release 13.1.0
+
+**Release Date:** 2026-05-27
+
+## ✨ Minor Release
+
+This release includes new features and improvements.
+
+### Core Changes (publish.py)
+
+The main streaming script has been updated. New features or improvements have been added.
+
+### Commits
+
+- fix(v4l2): drop allocation queries before sink (d980464)
+
+### Installation
+
+For installation instructions, please refer to the platform-specific guides:
+- [Raspberry Pi](./raspberry_pi/README.md)
+- [NVIDIA Jetson](./nvidia_jetson/README.md)
+- [Orange Pi](./orangepi/README.md)
+- [Ubuntu](./ubuntu/README.md)
+
+
+---
+
 # Release 13.0.0
 
 **Release Date:** 2026-05-26
