@@ -808,7 +808,7 @@ Notes:
 - `--v4l2sink` accepts a numeric index (`0`) or a full path (`/dev/video2`).
 - If the specified device is not writable, the first writable `/dev/video*` is used.
 - When no remote video is available, a blue frame is output to keep the device alive.
-- The default V4L2 sink I/O mode is read/write (`--v4l2sink-io-mode 1`) to avoid mmap buffer-pool issues with some `v4l2loopback` versions. Use `--v4l2sink-io-mode 0` to restore GStreamer's auto mode.
+- The V4L2 sink path drops upstream allocation queries before `v4l2sink` and defaults to read/write I/O mode (`--v4l2sink-io-mode 1`) to avoid buffer-pool issues with some `v4l2loopback` versions. Use `--v4l2sink-io-mode 0` to restore GStreamer's auto mode.
 - This is output-only; `--v4l2` is input capture.
 
 ## Hardware options

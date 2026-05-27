@@ -4880,6 +4880,7 @@ class WebRTCClient:
             "queue max-size-buffers=2 leaky=downstream ! "
             "videorate ! videoscale ! videoconvert ! "
             f"{caps} ! "
+            "identity name=viewer_v4l2sink_drop_allocation drop-allocation=true ! "
             f"v4l2sink name=viewer_v4l2sink device={self.v4l2sink_device} "
             f"io-mode={self.v4l2sink_io_mode} sync=false"
         )
