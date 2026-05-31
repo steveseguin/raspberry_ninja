@@ -4263,10 +4263,6 @@ class WebRTCClient:
         self._display_chain_unavailable = False
         self._display_chain_unavailable_reason = None
         self._viewer_pending_idle = False
-        self._v4l2sink_chain_config = None
-        self._v4l2sink_chain_unavailable = False
-        self._v4l2sink_chain_unavailable_reason = None
-        self.v4l2sink_state = None
         if hasattr(self, "_active_hw_decoder_streams"):
             self._active_hw_decoder_streams.clear()
 
@@ -9137,6 +9133,12 @@ class WebRTCClient:
                     self._set_display_mode("idle")
                 except Exception as exc:
                     printwarn(f"Display initialization failed: {exc}")
+                if self.v4l2sink_device:
+                    try:
+                        self._ensure_v4l2sink_chain()
+                        self._set_v4l2sink_mode("idle")
+                    except Exception as exc:
+                        printwarn(f"V4L2 sink initialization failed: {exc}")
            
             if self.vp8 or self.vp9 or self.av1 or self.h264:
                 direction = GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY
@@ -9631,6 +9633,8 @@ class WebRTCClient:
                 
                 # Set pipeline to NULL after cleaning up elements
                 try:
+                    self._reset_display_chain_state()
+                    self._reset_v4l2sink_chain_state()
                     self.pipe.set_state(Gst.State.NULL)
                 except Exception as e:
                     printwarn(f"Failed to set pipeline to NULL: {e}")
