@@ -2963,7 +2963,7 @@ class WebRTCClient:
         self.v4l2sink_height = clamp_int(getattr(params, "v4l2sink_height", 720), 16, 4320)
         self.v4l2sink_fps = clamp_int(getattr(params, "v4l2sink_fps", 30), 1, 120)
         self.v4l2sink_format = (getattr(params, "v4l2sink_format", "YUY2") or "YUY2").upper()
-        self.v4l2sink_io_mode = clamp_int(getattr(params, "v4l2sink_io_mode", 1), 0, 5)
+        self.v4l2sink_io_mode = clamp_int(getattr(params, "v4l2sink_io_mode", 0), 0, 5)
         self.v4l2sink_device = resolve_v4l2sink_device(self.v4l2sink) if self.v4l2sink else None
         self.v4l2sink_selector = None
         self.v4l2sink_sink_bin = None
@@ -4646,7 +4646,7 @@ class WebRTCClient:
                     printwarn("V4L2 sink enabled but no writable device detected.")
                 else:
                     self._ensure_v4l2sink_chain()
-                    if not self.v4l2sink_sources and self.v4l2sink_state != "idle":
+                    if self.v4l2sink_state != "idle":
                         self._set_v4l2sink_mode("idle")
             else:
                 self._ensure_display_chain()
@@ -4902,6 +4902,7 @@ class WebRTCClient:
         self._v4l2sink_chain_unavailable_reason = None
 
         self._ensure_v4l2sink_splash_sources()
+        self._set_v4l2sink_mode("idle")
         return self._v4l2sink_chain_config
 
     def _ensure_v4l2sink_splash_sources(self):
@@ -12300,7 +12301,7 @@ async def main():
     parser.add_argument('--v4l2sink-height', type=int, default=720, help='V4L2 sink output height (default: 720)')
     parser.add_argument('--v4l2sink-fps', type=int, default=30, help='V4L2 sink output framerate (default: 30)')
     parser.add_argument('--v4l2sink-format', type=str, default='YUY2', help='V4L2 sink output format (default: YUY2)')
-    parser.add_argument('--v4l2sink-io-mode', type=int, default=1, help='V4L2 sink I/O mode (default: 1/rw; use 0 for auto)')
+    parser.add_argument('--v4l2sink-io-mode', type=int, default=0, help='V4L2 sink I/O mode (default: 0/auto; use 1 for rw)')
     parser.add_argument('--debug', action='store_true', help='Show added debug information from Gsteamer and other aspects of the app')
     parser.add_argument('--buffer',  type=int, default=200, help='The jitter buffer latency in milliseconds; default is 200ms, minimum is 10ms. (gst +v1.18)')
     parser.add_argument('--auto-view-buffer', action='store_true', help='Viewer mode: dynamically raise jitter buffer latency when packet loss is detected (opt-in).')
