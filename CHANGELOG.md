@@ -1,5 +1,37 @@
 # Changelog
 
+# Release 14.0.0
+
+**Release Date:** 2026-05-31
+
+## 🚀 Major Release
+
+This release includes breaking changes or significant new features.
+
+### Core Changes (publish.py)
+
+The main streaming script has been updated. This includes significant changes that may affect compatibility.
+
+### Commits
+
+- fix(v4l2): activate idle sink source on startup (cdceba4)
+
+### Installation
+
+For installation instructions, please refer to the platform-specific guides:
+- [Raspberry Pi](./raspberry_pi/README.md)
+- [NVIDIA Jetson](./nvidia_jetson/README.md)
+- [Orange Pi](./orangepi/README.md)
+- [Ubuntu](./ubuntu/README.md)
+
+### ⚠️ Upgrade Notes
+
+This is a major version upgrade. Please review the changes carefully before updating.
+It's recommended to backup your configuration before upgrading.
+
+
+---
+
 # Release 13.1.0
 
 **Release Date:** 2026-05-27
