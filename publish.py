@@ -5015,6 +5015,13 @@ class WebRTCClient:
             if value != label
         }
 
+        bin_obj = source.get("bin")
+        if bin_obj:
+            try:
+                bin_obj.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+
         selector_pad = source.get("selector_pad")
         if selector_pad:
             try:
@@ -5024,12 +5031,7 @@ class WebRTCClient:
             if selector_pad == self.v4l2sink_current_pad:
                 self.v4l2sink_current_pad = None
 
-        bin_obj = source.get("bin")
         if bin_obj:
-            try:
-                bin_obj.set_state(Gst.State.NULL)
-            except Exception:
-                pass
             try:
                 self.pipe.remove(bin_obj)
             except Exception:
@@ -5045,23 +5047,36 @@ class WebRTCClient:
     def _reset_v4l2sink_chain_state(self):
         """Reset cached viewer V4L2 sink elements."""
         if getattr(self, "v4l2sink_sources", None):
-            self._release_all_v4l2sink_sources()
+            for source in list(self.v4l2sink_sources.values()):
+                bin_obj = source.get("bin")
+                if bin_obj:
+                    try:
+                        bin_obj.set_state(Gst.State.NULL)
+                    except Exception:
+                        pass
 
-        if getattr(self, "v4l2sink_selector", None) and self.pipe:
+        if getattr(self, "v4l2sink_selector", None):
             try:
                 self.v4l2sink_selector.set_state(Gst.State.NULL)
             except Exception:
                 pass
+
+        if getattr(self, "v4l2sink_sink_bin", None):
+            try:
+                self.v4l2sink_sink_bin.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+
+        if getattr(self, "v4l2sink_sources", None):
+            self._release_all_v4l2sink_sources()
+
+        if getattr(self, "v4l2sink_selector", None) and self.pipe:
             try:
                 self.pipe.remove(self.v4l2sink_selector)
             except Exception:
                 pass
 
         if getattr(self, "v4l2sink_sink_bin", None) and self.pipe:
-            try:
-                self.v4l2sink_sink_bin.set_state(Gst.State.NULL)
-            except Exception:
-                pass
             try:
                 self.pipe.remove(self.v4l2sink_sink_bin)
             except Exception:
