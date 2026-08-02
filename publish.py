@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, Set, List
 from functools import lru_cache
 from config_loader import apply_config_overrides
+from signaling_utils import handshake_server_requires_puuid
+from v4l2_devices import resolve_v4l2_input_device, resolve_v4l2_output_device
 try:
     import hashlib
     from urllib.parse import urlparse, urlencode
@@ -12184,35 +12186,11 @@ def optimize_pipeline_for_device(device, width, height, framerate, iomode, forma
 
 def resolve_v4l2sink_device(device: Optional[str], default_index: int = 0) -> Optional[str]:
     """Resolve a writable V4L2 output device for v4l2sink."""
-    candidate = None
-    if device:
-        text = str(device).strip()
-        if text.isdigit():
-            candidate = f"/dev/video{int(text)}"
-        elif text.startswith("/dev/video"):
-            candidate = text
-        elif text.startswith("video") and text[5:].isdigit():
-            candidate = f"/dev/{text}"
-        else:
-            candidate = text
-    else:
-        candidate = f"/dev/video{default_index}"
-
-    if candidate and os.path.exists(candidate) and os.access(candidate, os.W_OK):
-        return candidate
-
-    if candidate:
-        printc(
-            f"V4L2 output device {candidate} unavailable or not writable; scanning for alternatives.",
-            "F77",
-        )
-
-    for path in sorted(glob.glob("/dev/video*")):
-        if os.path.exists(path) and os.access(path, os.W_OK):
-            printc(f"Using first writable V4L2 output: {path}", "7F7")
-            return path
-
-    return None
+    return resolve_v4l2_output_device(
+        device,
+        default_index,
+        log=lambda message: printc(message, "7F7"),
+    )
 
 
 WSS="wss://wss.vdo.ninja:443"
@@ -12355,7 +12333,7 @@ async def main():
                     config = json.load(f)
                 
                 # Override args with config values (but command line args take precedence)
-                apply_config_overrides(args, parser, config)
+                apply_config_overrides(args, parser, config, sys.argv[1:])
                 
                 print(f"Loaded configuration from: {config_path}")
             except Exception as e:
@@ -13159,45 +13137,7 @@ async def main():
 
             elif args.v4l2:
                 needed += ['video4linux2']
-
-                if not os.path.exists(args.v4l2):
-                    # USB devices may not be enumerated yet at boot; wait briefly.
-                    print(f"Waiting for {args.v4l2} to appear...")
-                    for _wait in range(6):
-                        time.sleep(1)
-                        if os.path.exists(args.v4l2):
-                            print(f"Found {args.v4l2}")
-                            break
-
-                if not os.path.exists(args.v4l2):
-                    # Configured device never appeared — scan for any capture device.
-                    print(f"The video input {args.v4l2} does not exist. Scanning for alternatives...")
-                    original = args.v4l2
-                    args.v4l2 = None
-                    for i in range(10):
-                        candidate = f"/dev/video{i}"
-                        if not os.path.exists(candidate) or not os.access(candidate, os.R_OK):
-                            continue
-                        try:
-                            with open(f"/sys/class/video4linux/video{i}/name", "r", encoding="utf-8") as f:
-                                dname = f.read().strip()
-                        except Exception:
-                            dname = None
-                        if dname:
-                            args.v4l2 = candidate
-                            print(f"Using {candidate} ({dname}) instead of {original}")
-                            break
-                    if not args.v4l2:
-                        args.v4l2 = original
-                        print(f"No alternative video device found.")
-                        error = True
-
-                if not error and not os.path.exists(args.v4l2):
-                    print(f"The video input {args.v4l2} does not exist.")
-                    error = True
-                elif not error and not os.access(args.v4l2, os.R_OK):
-                    print(f"The video input {args.v4l2} exists, but no permissions to read.")
-                    error = True
+                args.v4l2, error = resolve_v4l2_input_device(args.v4l2)
                 
                 # Legacy Raspberry Pi (GStreamer < 1.20) USB/UVC capture quirks
                 #
@@ -13557,7 +13497,8 @@ async def main():
     if args.server:
         server = "&wss="+args.server.split("wss://")[-1]
         args.server = "wss://"+args.server.split("wss://")[-1]
-        args.puuid = str(random.randint(10000000,99999999999))
+        if args.puuid is None and handshake_server_requires_puuid(args.server):
+            args.puuid = str(random.randint(10000000,99999999999))
     else:
         args.server = WSS
         server = ""

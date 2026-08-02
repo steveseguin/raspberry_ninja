@@ -123,6 +123,20 @@ class TestConfigLoader(unittest.TestCase):
 
         self.assertTrue(args.noaudio)
 
+    def test_config_does_not_override_explicit_cli_value_equal_to_default(self):
+        parser = build_parser()
+        cli_argv = ["--bitrate", "2500"]
+        args = parser.parse_args(cli_argv)
+
+        apply_config_overrides(
+            args,
+            parser,
+            {"bitrate": 1800},
+            cli_argv,
+        )
+
+        self.assertEqual(args.bitrate, 2500)
+
 
 if __name__ == "__main__":
     unittest.main()
