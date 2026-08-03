@@ -1,5 +1,38 @@
 # Changelog
 
+# Release 17.0.0
+
+**Release Date:** 2026-08-03
+
+## 🚀 Major Release
+
+This release includes breaking changes or significant new features.
+
+### Core Changes (publish.py)
+
+The main streaming script has been updated. This includes significant changes that may affect compatibility.
+
+### Commits
+
+- fix: harden legacy Pi media pipelines (b9fc257)
+- fix: record H264 streams as MPEG-TS (8154b5e)
+
+### Installation
+
+For installation instructions, please refer to the platform-specific guides:
+- [Raspberry Pi](./raspberry_pi/README.md)
+- [NVIDIA Jetson](./nvidia_jetson/README.md)
+- [Orange Pi](./orangepi/README.md)
+- [Ubuntu](./ubuntu/README.md)
+
+### ⚠️ Upgrade Notes
+
+This is a major version upgrade. Please review the changes carefully before updating.
+It's recommended to backup your configuration before upgrading.
+
+
+---
+
 # Release 16.3.0
 
 **Release Date:** 2026-08-03
