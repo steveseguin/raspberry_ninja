@@ -16,7 +16,7 @@ This procedure was tested on August 2, 2026 with:
 - Linux `6.18.39+rpt-rpi-v7`
 - GStreamer 1.26.2
 - Python 3.13.5
-- a 8 GB microSD card
+- an 8 GB microSD card
 - 424 MiB usable RAM and 423 MiB swap
 
 Both directions were tested over VDO.Ninja:
@@ -27,6 +27,15 @@ Both directions were tested over VDO.Ninja:
 The test Pi's HDMI connector was disconnected, so receiver negotiation and decoding were validated with `fakesink`. Repeat the final receiver test with the TV attached to validate the physical HDMI and audio path.
 
 ## 1. Image the card
+
+Download the official Raspberry Pi Imager:
+
+- [Raspberry Pi Imager download page](https://www.raspberrypi.com/software/)
+- [Windows installer](https://downloads.raspberrypi.com/imager/imager_latest.exe)
+- [macOS installer](https://downloads.raspberrypi.com/imager/imager_latest.dmg)
+- [Linux x86_64 AppImage](https://downloads.raspberrypi.com/imager/imager_latest_amd64.AppImage)
+- [Official OS imaging instructions](https://www.raspberrypi.com/documentation/computers/getting-started.html)
+- [Raspberry Pi OS image/download information](https://www.raspberrypi.com/software/operating-systems/)
 
 In Raspberry Pi Imager:
 
