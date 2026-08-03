@@ -35,6 +35,15 @@ except ImportError:
 Gst.init(None)
 
 
+def filename_for_container(filename, extension):
+    """Return a filename whose suffix matches the selected media container."""
+    expected_suffix = f".{extension.lower()}"
+    root, suffix = os.path.splitext(filename)
+    if suffix.lower() == expected_suffix:
+        return filename
+    return f"{root or filename}{expected_suffix}"
+
+
 # Decryption helper functions (if crypto is available)
 if HAS_CRYPTO:
     def to_byte_array(hex_str):
@@ -2463,7 +2472,7 @@ class GLibWebRTCHandler:
             # Recording mode
             # Set output filename
             if self.record_file:
-                filename = self.record_file
+                filename = filename_for_container(self.record_file, extension)
             else:
                 import datetime
                 timestamp = int(datetime.datetime.now().timestamp())
@@ -2560,6 +2569,7 @@ class GLibWebRTCHandler:
             # Store recording info only for file recording
             self.recording_video = True
             self.video_filename = filename
+            self.recording_video_queue = queue
         
     def on_pad_probe(self, pad, info, user_data):
         """Monitor data flow through pad"""
@@ -2974,6 +2984,7 @@ class GLibWebRTCHandler:
             # Store recording info
             self.recording_audio = True
             self.audio_filename = filename
+            self.recording_audio_queue = queue
         
     def on_new_transceiver(self, element, transceiver):
         """Handle new transceiver creation"""
@@ -3037,6 +3048,8 @@ class GLibWebRTCHandler:
     def shutdown(self):
         """Shutdown the handler"""
         self.log("Shutting down...")
+
+        self.finalize_recordings()
         
         # Log recording status
         if hasattr(self, 'recording_video') and self.recording_video:
@@ -3056,6 +3069,47 @@ class GLibWebRTCHandler:
             self.pipe.set_state(Gst.State.NULL)
             
         self.main_loop.quit()
+
+    def finalize_recordings(self, timeout_seconds=3):
+        """Send EOS to file branches and wait briefly for their muxers."""
+        if not self.pipe or not (self.recording_video or self.recording_audio):
+            return
+
+        queues = []
+        for attr in ("recording_video_queue", "recording_audio_queue"):
+            queue = getattr(self, attr, None)
+            if queue is not None and queue not in queues:
+                queues.append(queue)
+
+        if not queues:
+            return
+
+        self.log("Finalizing recording container(s)...")
+        eos_sent = False
+        for queue in queues:
+            try:
+                src_pad = queue.get_static_pad("src")
+                if src_pad and src_pad.push_event(Gst.Event.new_eos()):
+                    eos_sent = True
+            except Exception as exc:
+                self.log(f"Could not send EOS to recording branch: {exc}", "warning")
+
+        if not eos_sent:
+            self.log("No recording branch accepted EOS; forcing pipeline shutdown", "warning")
+            return
+
+        bus = self.pipe.get_bus()
+        message = bus.timed_pop_filtered(
+            int(max(timeout_seconds, 0) * Gst.SECOND),
+            Gst.MessageType.EOS | Gst.MessageType.ERROR,
+        )
+        if message and message.type == Gst.MessageType.EOS:
+            self.log("Recording container finalization complete")
+        elif message and message.type == Gst.MessageType.ERROR:
+            error, debug = message.parse_error()
+            self.log(f"Recording finalization error: {error} ({debug})", "warning")
+        else:
+            self.log("Recording finalization timed out; continuing shutdown", "warning")
         
     def run(self):
         """Run the main loop"""

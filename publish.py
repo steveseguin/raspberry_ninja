@@ -2743,12 +2743,25 @@ class WebRTCSubprocessManager:
         
     async def stop(self):
         """Stop the subprocess"""
+        # Give the child a bounded opportunity to send EOS through its muxers
+        # before escalating to terminate/kill. MP4 indexes are written during
+        # this finalization step.
+        if self.process and self.process.returncode is None:
+            await self.send_message({"type": "stop"})
+            try:
+                await asyncio.wait_for(self.process.wait(), timeout=6.0)
+            except asyncio.TimeoutError:
+                self.process.terminate()
+                try:
+                    await asyncio.wait_for(self.process.wait(), timeout=3.0)
+                except asyncio.TimeoutError:
+                    self.process.kill()
+                    await self.process.wait()
+
         self.running = False
-        
-        # Send stop message
-        await self.send_message({"type": "stop"})
-        
-        # Cancel reader tasks
+
+        # Keep readers alive until the child exits so finalization diagnostics
+        # are not discarded.
         if self.reader_task:
             self.reader_task.cancel()
             try:
@@ -2762,16 +2775,7 @@ class WebRTCSubprocessManager:
                 await self.stderr_task
             except asyncio.CancelledError:
                 pass
-                
-        # Terminate process
-        if self.process and self.process.returncode is None:
-            self.process.terminate()
-            try:
-                await asyncio.wait_for(self.process.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                self.process.kill()
-                await self.process.wait()
-                
+
         printc(f"[{self.stream_id}] Subprocess stopped", "77F")
 
 

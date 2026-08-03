@@ -3,9 +3,20 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import publish
+import webrtc_subprocess_glib
 
 
 class SingleStreamRecordingTests(unittest.TestCase):
+    def test_recording_filename_matches_selected_container(self):
+        self.assertEqual(
+            webrtc_subprocess_glib.filename_for_container("capture.webm", "mp4"),
+            "capture.mp4",
+        )
+        self.assertEqual(
+            webrtc_subprocess_glib.filename_for_container("capture.WEBM", "webm"),
+            "capture.WEBM",
+        )
+
     def test_requested_stream_id_is_preserved_for_subprocess_recording(self):
         args = SimpleNamespace(
             record="camera-stream",
