@@ -1,5 +1,7 @@
 # HLS Segment Event Fix
 
+Historical engineering note. For current operator commands and validated backend guidance, use [`docs/recording-guide.md`](../docs/recording-guide.md). This file describes an earlier implementation investigation and may not match the current release.
+
 ## Problem
 When running HLS recording mode on Nvidia Jetson, GStreamer was showing warnings:
 ```

@@ -79,6 +79,33 @@ def env_flag(name: str) -> bool:
         return False
     return value.strip().lower() not in ("0", "false", "no", "off", "")
 
+
+def build_signaling_connection_attempts(server_url: str, allow_insecure: bool = False):
+    """Build signaling attempts without weakening TLS unless explicitly requested."""
+    parsed = urlparse(server_url)
+    scheme = parsed.scheme.lower()
+
+    if scheme == "ws":
+        return [("plaintext WebSocket (explicit URL)", server_url, None)]
+    if scheme != "wss":
+        raise ValueError(
+            f"Unsupported signaling URL scheme {parsed.scheme!r}; use wss:// or ws://"
+        )
+
+    attempts = [("verified TLS", server_url, ssl.create_default_context())]
+    if allow_insecure:
+        insecure_context = ssl.create_default_context()
+        insecure_context.check_hostname = False
+        insecure_context.verify_mode = ssl.CERT_NONE
+        plaintext_url = "ws://" + server_url[len("wss://") :]
+        attempts.extend(
+            [
+                ("unverified TLS", server_url, insecure_context),
+                ("plaintext WebSocket fallback", plaintext_url, None),
+            ]
+        )
+    return attempts
+
 RN_DISABLE_HW_DECODER = env_flag("RN_DISABLE_HW_DECODER")
 RN_FORCE_HW_DECODER = env_flag("RN_FORCE_HW_DECODER")
 RN_DISABLE_V4L2_ENCODER = env_flag("RN_DISABLE_V4L2_ENCODER")
@@ -3072,6 +3099,7 @@ class WebRTCClient:
         self.bitrate = params.bitrate
         self.max_bitrate = params.bitrate
         self.server = params.server
+        self.insecure_signaling = bool(getattr(params, 'insecure_signaling', False))
         self.stream_id = params.streamid
         self.view = params.view
         self.auto_view_buffer = getattr(params, 'auto_view_buffer', False)
@@ -3692,23 +3720,21 @@ class WebRTCClient:
             server_url = "wss://wss.vdo.ninja:443"
             printc("Using default server: wss://wss.vdo.ninja:443", "FF0")
         
-        # Convert wss:// to ws:// for no-SSL attempt
-        ws_server = server_url.replace('wss://', 'ws://') if server_url.startswith('wss://') else server_url
-        
-        connection_attempts = [
-            (lambda: ssl.create_default_context(), "standard SSL", server_url),
-            (lambda: ssl._create_unverified_context(), "unverified SSL", server_url),
-            (lambda: None, "no SSL", ws_server)  # Use ws:// URL for no-SSL
-        ]
+        connection_attempts = build_signaling_connection_attempts(
+            server_url,
+            allow_insecure=self.insecure_signaling,
+        )
+        if self.insecure_signaling:
+            printc(
+                "   WARNING: insecure signaling fallback is enabled; "
+                "certificate validation or transport encryption may be bypassed.",
+                "F70",
+            )
         
         last_exception = None
-        for create_ssl_context, context_type, connect_url in connection_attempts:
+        for context_type, connect_url, ssl_context in connection_attempts:
             try:
                 printc(f"   ├─ Trying {context_type} to {connect_url}", "FFF")
-                ssl_context = create_ssl_context()
-                if ssl_context:
-                    ssl_context.check_hostname = False
-                    ssl_context.verify_mode = ssl.CERT_NONE
                 
                 self.conn = await websockets.connect(
                     connect_url,
@@ -4260,7 +4286,7 @@ class WebRTCClient:
                 await self.conn.send(msgJSON)
                 printwout("a message was sent via websockets 1: "+msgJSON[:60])
             except Exception as e:
-                printwarn(get_exception_info(E))
+                printwarn(get_exception_info(e))
 
     def setup_socket(self):
         import socket
@@ -7863,8 +7889,207 @@ class WebRTCClient:
 
             traceback.print_exc()
 
+    def _remove_pipeline_element_by_name(self, name, upstream=None, downstream=None):
+        """Remove a named dynamic element, including elements lost from client tracking."""
+        if not self.pipe:
+            return False
 
-            
+        try:
+            element = self.pipe.get_by_name(name)
+        except Exception as exc:
+            printwarn(f"Failed to look up pipeline element {name}: {exc}")
+            return False
+        if element is None:
+            return False
+
+        if upstream is not None:
+            try:
+                upstream.unlink(element)
+            except Exception:
+                pass
+        if downstream is not None:
+            try:
+                element.unlink(downstream)
+            except Exception:
+                pass
+
+        try:
+            element.set_state(Gst.State.NULL)
+        except Exception as exc:
+            printwarn(f"Failed to set pipeline element {name} to NULL: {exc}")
+
+        try:
+            removed = self.pipe.remove(element)
+        except Exception as exc:
+            printwarn(f"Failed to remove pipeline element {name}: {exc}")
+            return False
+        if not removed:
+            printwarn(f"Failed to remove pipeline element {name}")
+        return bool(removed)
+
+    def _link_multiviewer_tee_branch(self, client, key, tee, queue, description):
+        """Link a tee branch while retaining its request pad for safe removal."""
+        try:
+            tee.set_property('allow-not-linked', True)
+        except Exception:
+            pass
+
+        request_pad = None
+        try:
+            request_pad_simple = getattr(tee, 'request_pad_simple', None)
+            if callable(request_pad_simple):
+                request_pad = request_pad_simple('src_%u')
+            else:
+                request_pad = tee.get_request_pad('src_%u')
+        except Exception as exc:
+            printwarn(f"Failed to request tee pad for {description}: {exc}")
+            return False
+
+        if request_pad is None:
+            printwarn(f"Failed to request tee pad for {description}")
+            return False
+
+        client[key] = request_pad
+        sink_pad = queue.get_static_pad('sink')
+        if sink_pad is None:
+            printwarn(f"Failed to get queue sink pad for {description}")
+            try:
+                tee.release_request_pad(request_pad)
+            except Exception:
+                pass
+            client[key] = None
+            return False
+
+        try:
+            result = request_pad.link(sink_pad)
+        except Exception as exc:
+            printwarn(f"Failed to link tee pad for {description}: {exc}")
+            result = None
+        if result != Gst.PadLinkReturn.OK:
+            printwarn(f"Failed to link tee pad for {description}: {result}")
+            try:
+                tee.release_request_pad(request_pad)
+            except Exception:
+                pass
+            client[key] = None
+            return False
+        return True
+
+    def _release_multiviewer_tee_branch(self, client, key, tee, queue):
+        """Unlink and release a dynamic tee request pad across GStreamer versions."""
+        request_pad = client.get(key)
+        sink_pad = None
+        if queue is not None:
+            try:
+                sink_pad = queue.get_static_pad('sink')
+            except Exception:
+                sink_pad = None
+
+        if request_pad is None and sink_pad is not None:
+            try:
+                request_pad = sink_pad.get_peer()
+            except Exception:
+                request_pad = None
+
+        if request_pad is not None:
+            if sink_pad is not None:
+                try:
+                    request_pad.unlink(sink_pad)
+                except Exception:
+                    pass
+            if tee is not None:
+                try:
+                    tee.release_request_pad(request_pad)
+                except Exception as exc:
+                    printwarn(f"Failed to release tee request pad: {exc}")
+        client[key] = None
+
+    def _cleanup_multiviewer_client_elements(self, client):
+        """Remove all UUID-named elements for a multiviewer client."""
+        if not self.pipe or not client:
+            return
+
+        uuid = client.get('UUID')
+        if not uuid:
+            return
+
+        atee = self.pipe.get_by_name('audiotee')
+        vtee = self.pipe.get_by_name('videotee')
+        stale_webrtc = self.pipe.get_by_name(uuid)
+        stale_qa = self.pipe.get_by_name(f"qa-{uuid}")
+        stale_qv = self.pipe.get_by_name(f"qv-{uuid}")
+        self._release_multiviewer_tee_branch(
+            client, 'qa_tee_pad', atee, stale_qa
+        )
+        self._release_multiviewer_tee_branch(
+            client, 'qv_tee_pad', vtee, stale_qv
+        )
+        self._remove_pipeline_element_by_name(
+            f"qa-{uuid}", downstream=stale_webrtc
+        )
+        self._remove_pipeline_element_by_name(
+            f"qv-{uuid}", downstream=stale_webrtc
+        )
+        self._remove_pipeline_element_by_name(uuid)
+        client['qa'] = None
+        client['qv'] = None
+        client['qa_tee_pad'] = None
+        client['qv_tee_pad'] = None
+        client['webrtc'] = None
+
+    def _add_multiviewer_element(self, client, key, element, description):
+        """Add and immediately track a dynamic element so failures remain recoverable."""
+        if element is None:
+            printwarn(f"Failed to create {description}")
+            return False
+        if not self.pipe.add(element):
+            printwarn(f"Failed to add {description} to pipeline")
+            try:
+                element.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+            return False
+        client[key] = element
+        return True
+
+    def _client_is_current(self, client):
+        """Return whether callbacks still belong to the active UUID generation."""
+        if not client:
+            return False
+        uuid = client.get('UUID')
+        return bool(uuid) and self.clients.get(uuid) is client
+
+    def _replace_multiviewer_client_record(self, UUID):
+        """Start a fresh callback generation when a viewer UUID reconnects."""
+        with self.pipeline_lock:
+            previous = self.clients.get(UUID)
+            session = previous.get('session') if previous else None
+            original_uuid = previous.get('original_uuid') if previous else None
+
+            if previous:
+                timer = previous.get('timer')
+                if timer is not None:
+                    try:
+                        timer.cancel()
+                    except Exception as exc:
+                        printwarn(f"Failed to cancel previous viewer timer: {exc}")
+                    previous['timer'] = None
+                self._cleanup_multiviewer_client_elements(previous)
+
+            client = {
+                "UUID": UUID,
+                "session": session,
+                "send_channel": None,
+                "timer": None,
+                "ping": 0,
+                "webrtc": None,
+                "direction": "receive" if self.view else "send",
+            }
+            if original_uuid is not None:
+                client['original_uuid'] = original_uuid
+            self.clients[UUID] = client
+            return client
+
     async def createPeer(self, UUID):
 
         if UUID in self.clients:
@@ -7951,6 +8176,8 @@ class WebRTCClient:
 
         def on_offer_created(promise, _, __):
             # Offer created, sending to peer
+            if not self._client_is_current(client):
+                return
             promise.wait()
             reply = promise.get_reply()
             offer = reply.get_value('offer')
@@ -8023,16 +8250,22 @@ class WebRTCClient:
 
         def on_negotiation_needed(element):
             # Negotiation needed, creating offer
+            if not self._client_is_current(client):
+                return
             promise = Gst.Promise.new_with_change_func(on_offer_created, element, None)
             element.emit('create-offer', None, promise)
 
         def send_ice_local_candidate_message(_, mlineindex, candidate):
+            if not self._client_is_current(client):
+                return
             if " TCP " in candidate: ##  I Can revisit another time, but for now, this isn't needed: TODO: optimize
                 return
             icemsg = {'candidates': [{'candidate': candidate, 'sdpMLineIndex': mlineindex}], 'session':client['session'], 'type':'local', 'UUID':client['UUID']}
             self.sendMessage(icemsg)
 
         def send_ice_remote_candidate_message(_, mlineindex, candidate):
+            if not self._client_is_current(client):
+                return
             icemsg = {'candidates': [{'candidate': candidate, 'sdpMLineIndex': mlineindex}], 'session':client['session'], 'type':'remote', 'UUID':client['UUID']}
             self.sendMessage(icemsg)
 
@@ -8052,6 +8285,8 @@ class WebRTCClient:
                 printc("❌ ICE: Connection failed", "F44")
 
         def on_connection_state(p1, p2):
+            if not self._client_is_current(client):
+                return
             state = client['webrtc'].get_property(p2.name)
             
             if state == 2: # connected
@@ -8074,7 +8309,6 @@ class WebRTCClient:
                     client['ping'] = 0
                     client['timer'] = threading.Timer(3, pingTimer)
                     client['timer'].start()
-                    self.clients[client["UUID"]] = client
 
             elif state >= 4: # closed/failed
                 printc("\n🚫 Peer disconnected", "F77")
@@ -8083,7 +8317,7 @@ class WebRTCClient:
                         self._set_display_mode("idle")
                     except Exception as exc:
                         printwarn(f"Failed to update display state: {exc}")
-                self.stop_pipeline(client['UUID'])
+                self.stop_pipeline(client['UUID'], expected_client=client)
             elif state == 1:
                 printc("🔄 Connecting to peer...", "77F")
                 if self.view:
@@ -8095,9 +8329,8 @@ class WebRTCClient:
             print("trans:  {}".format(client['webrtc'].get_property(p2.name)))
 
         def pingTimer():
-            # Check if client still exists before proceeding
-            if client["UUID"] not in self.clients:
-                print(f"Client {client['UUID']} no longer exists, stopping pingTimer")
+            if not self._client_is_current(client):
+                print(f"Client {client['UUID']} was replaced, stopping pingTimer")
                 return
 
             if not client['send_channel']:
@@ -8111,9 +8344,6 @@ class WebRTCClient:
 
             if client['ping'] < 10:
                 client['ping'] += 1
-                # Only update if client still exists
-                if client["UUID"] in self.clients:
-                    self.clients[client["UUID"]] = client
                 try:
                     client['send_channel'].emit('send-string', '{"ping":"'+str(time.time())+'"}')
                     if client.get('_last_ping_logged', 0) < time.time() - 30:
@@ -8134,10 +8364,10 @@ class WebRTCClient:
                 if self.view:
                     print("Viewer heartbeat timeout; restarting peer connection")
                     client['ping'] = 0
-                    self.stop_pipeline(client['UUID'])
+                    self.stop_pipeline(client['UUID'], expected_client=client)
                     return
                 else:
-                    self.stop_pipeline(client['UUID'])
+                    self.stop_pipeline(client['UUID'], expected_client=client)
 
         def on_data_channel(webrtc, channel):
             printc("   📡 Data channel event", "FFF")
@@ -8155,9 +8385,10 @@ class WebRTCClient:
             printc('❌ Data channel error', "F44")
 
         def on_data_channel_open(channel):
+            if not self._client_is_current(client):
+                return
             # Don't print, already shown in connection message
             client['send_channel'] = channel
-            self.clients[client["UUID"]] = client
             if self.streamin:
                 if self.noaudio:
                     msg = {"audio":False, "video":True, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
@@ -8199,6 +8430,8 @@ class WebRTCClient:
             printc('🔌 Data channel closed', "F77")
 
         def on_data_channel_message(channel, msg_raw): 
+            if not self._client_is_current(client):
+                return
             try:
                 msg = json.loads(msg_raw)
             except:
@@ -8232,14 +8465,13 @@ class WebRTCClient:
             elif 'pong' in msg: # Supported in v19 of VDO.Ninja
                 # Don't print individual pongs, handled by periodic health message
                 client['ping'] = 0
-                self.clients[client["UUID"]] = client
             elif 'bye' in msg: ## v19 of VDO.Ninja
                 printc("👋 Peer disconnected gracefully", "77F")
                 if self.view:
                     self._set_display_mode("idle")
                     uuid = client.get("UUID")
                     if uuid and uuid in self.clients:
-                        self.stop_pipeline(uuid)
+                        self.stop_pipeline(uuid, expected_client=client)
             elif self.view and ('video' in msg or 'videoMuted' in msg):
                 debug_display = bool(os.environ.get("RN_DEBUG_DISPLAY"))
                 if 'video' in msg:
@@ -8379,6 +8611,8 @@ class WebRTCClient:
                     time.sleep(4)
 
         def on_stats(promise, abin, data):
+            if not self._client_is_current(client):
+                return
             promise.wait()
             stats_reply = promise.get_reply()
             stats_text = stats_reply.to_string()
@@ -9346,44 +9580,62 @@ class WebRTCClient:
             self.setup_ice_servers(client['webrtc'])
             pass
         else:
-            client['webrtc'] = Gst.ElementFactory.make("webrtcbin", client['UUID'])
-            client['webrtc'].set_property('bundle-policy', 'max-bundle')
-            self.setup_ice_servers(client['webrtc'])
+            uuid = client['UUID']
+            self._cleanup_multiviewer_client_elements(client)
+
+            webrtc = Gst.ElementFactory.make("webrtcbin", uuid)
+            if not self._add_multiviewer_element(client, 'webrtc', webrtc, f"webrtcbin {uuid}"):
+                return
+            webrtc.set_property('bundle-policy', 'max-bundle')
+            self.setup_ice_servers(webrtc)
             
             try:
                 # Ensure minimum latency to prevent crashes
                 buffer_ms = max(self.buffer, 10)
-                client['webrtc'].set_property('latency', buffer_ms)
-                client['webrtc'].set_property('async-handling', True)
+                webrtc.set_property('latency', buffer_ms)
+                webrtc.set_property('async-handling', True)
                 client["_latency_applied"] = buffer_ms
             except Exception as E:
                 pass
-            self.pipe.add(client['webrtc'])
             if self.view:
-                self._install_viewer_rtpbin_overrides(client['webrtc'])
+                self._install_viewer_rtpbin_overrides(webrtc)
 
             atee = self.pipe.get_by_name('audiotee')
             vtee = self.pipe.get_by_name('videotee')
 
             if vtee is not None:
-                qv = Gst.ElementFactory.make('queue', f"qv-{client['UUID']}")
-                self.pipe.add(qv)
-                if not Gst.Element.link(vtee, qv):
+                qv_name = f"qv-{uuid}"
+                qv = Gst.ElementFactory.make('queue', qv_name)
+                if not self._add_multiviewer_element(client, 'qv', qv, f"video queue {qv_name}"):
+                    self._cleanup_multiviewer_client_elements(client)
                     return
-                if not Gst.Element.link(qv, client['webrtc']):
+                if not self._link_multiviewer_tee_branch(
+                    client, 'qv_tee_pad', vtee, qv, qv_name
+                ):
+                    printwarn(f"Failed to link videotee to {qv_name}")
+                    self._cleanup_multiviewer_client_elements(client)
                     return
-                if qv is not None: qv.sync_state_with_parent()
-                client['qv'] = qv
+                if not Gst.Element.link(qv, webrtc):
+                    printwarn(f"Failed to link {qv_name} to webrtcbin {uuid}")
+                    self._cleanup_multiviewer_client_elements(client)
+                    return
 
             if atee is not None:
-                qa = Gst.ElementFactory.make('queue', f"qa-{client['UUID']}")
-                self.pipe.add(qa)
-                if not Gst.Element.link(atee, qa):
+                qa_name = f"qa-{uuid}"
+                qa = Gst.ElementFactory.make('queue', qa_name)
+                if not self._add_multiviewer_element(client, 'qa', qa, f"audio queue {qa_name}"):
+                    self._cleanup_multiviewer_client_elements(client)
                     return
-                if not Gst.Element.link(qa, client['webrtc']):
+                if not self._link_multiviewer_tee_branch(
+                    client, 'qa_tee_pad', atee, qa, qa_name
+                ):
+                    printwarn(f"Failed to link audiotee to {qa_name}")
+                    self._cleanup_multiviewer_client_elements(client)
                     return
-                if qa is not None: qa.sync_state_with_parent()
-                client['qa'] = qa
+                if not Gst.Element.link(qa, webrtc):
+                    printwarn(f"Failed to link {qa_name} to webrtcbin {uuid}")
+                    self._cleanup_multiviewer_client_elements(client)
+                    return
 
             if self.midi and (self.midi_thread == None):
                 self.midi_thread = threading.Thread(target=midi2vdo, args=(self.midi,), daemon=True)
@@ -9410,7 +9662,7 @@ class WebRTCClient:
             client['webrtc'].connect('notify::signaling-state', on_signaling_state)
 
         except Exception as e:
-            printwarn(get_exception_info(E))
+            printwarn(get_exception_info(e))
 
             pass
 
@@ -9450,14 +9702,17 @@ class WebRTCClient:
             self.pipe.set_state(Gst.State.PLAYING)
             
         client['webrtc'].sync_state_with_parent()
+        for queue_key in ('qv', 'qa'):
+            queue = client.get(queue_key)
+            if queue is not None:
+                queue.sync_state_with_parent()
 
         if not self.streamin and not client['send_channel']:
             channel = client['webrtc'].emit('create-data-channel', 'sendChannel', None)
             on_data_channel(client['webrtc'], channel)
             
-        self.clients[client["UUID"]] = client
-        
-    
+
+
     def setup_recording_pipeline(self, pad, name):
         """Set up proper recording pipeline for incoming stream"""
         print("RECORDING MODE ACTIVATED")
@@ -9732,6 +9987,7 @@ class WebRTCClient:
         printc("\n🎬 Starting video pipeline...", "0FF")
         enableLEDs(100)
         if self.multiviewer:
+            self._replace_multiviewer_client_record(UUID)
             await self.createPeer(UUID)
         else:
             for uid in self.clients:
@@ -9785,13 +10041,17 @@ class WebRTCClient:
 
             await self.createPeer(UUID)
 
-    def stop_pipeline(self, UUID, wait=False):
+    def stop_pipeline(self, UUID, wait=False, expected_client=None):
         if wait:
-            self._stop_pipeline_internal(UUID)
+            self._stop_pipeline_internal(UUID, expected_client=expected_client)
         else:
-            threading.Thread(target=self._stop_pipeline_internal, args=(UUID,), daemon=True).start()
+            threading.Thread(
+                target=self._stop_pipeline_internal,
+                args=(UUID, expected_client),
+                daemon=True,
+            ).start()
 
-    def _stop_pipeline_internal(self, UUID):
+    def _stop_pipeline_internal(self, UUID, expected_client=None):
         printc("🛑 Stopping pipeline for viewer", "F77")
         if getattr(self, "_shutdown_requested", False):
             self._viewer_restart_enabled = False
@@ -9805,6 +10065,9 @@ class WebRTCClient:
             client = self.clients.get(UUID)
             if not client:
                 print(f"Client {UUID} not found in clients list")
+                return
+            if expected_client is not None and client is not expected_client:
+                print(f"Client {UUID} was replaced; ignoring stale cleanup")
                 return
             should_restart = (
                 bool(self.view)
@@ -9822,53 +10085,35 @@ class WebRTCClient:
                 client['timer'] = None
                 
             if self.multiviewer:
-                # In multiviewer mode, unlink from tees
-                atee = self.pipe.get_by_name('audiotee') if self.pipe else None
-                vtee = self.pipe.get_by_name('videotee') if self.pipe else None
+                self._cleanup_multiviewer_client_elements(client)
+            else:
+                # Set dynamic elements to NULL before removing them from the pipeline.
+                try:
+                    webrtc = client.get('webrtc')
+                    if webrtc is not None:
+                        webrtc.set_state(Gst.State.NULL)
+                        if self.pipe:
+                            self.pipe.remove(webrtc)
+                except Exception as e:
+                    printwarn(f"Failed to cleanup webrtc element: {e}")
 
-                # Unlink elements before cleanup to prevent dangling references
                 try:
                     qa = client.get('qa')
-                    if atee is not None and qa is not None:
-                        atee.unlink(qa)
+                    if qa is not None:
+                        qa.set_state(Gst.State.NULL)
+                        if self.pipe:
+                            self.pipe.remove(qa)
                 except Exception as e:
-                    printwarn(f"Failed to unlink audio queue: {e}")
-                    
+                    printwarn(f"Failed to cleanup audio queue: {e}")
+
                 try:
                     qv = client.get('qv')
-                    if vtee is not None and qv is not None:
-                        vtee.unlink(qv)
+                    if qv is not None:
+                        qv.set_state(Gst.State.NULL)
+                        if self.pipe:
+                            self.pipe.remove(qv)
                 except Exception as e:
-                    printwarn(f"Failed to unlink video queue: {e}")
-
-            # CRITICAL: Set elements to NULL state BEFORE removing from pipeline
-            # This prevents segfaults during cleanup
-            try:
-                webrtc = client.get('webrtc')
-                if webrtc is not None:
-                    webrtc.set_state(Gst.State.NULL)
-                    if self.pipe:
-                        self.pipe.remove(webrtc)
-            except Exception as e:
-                printwarn(f"Failed to cleanup webrtc element: {e}")
-                
-            try:
-                qa = client.get('qa')
-                if qa is not None:
-                    qa.set_state(Gst.State.NULL)
-                    if self.pipe:
-                        self.pipe.remove(qa)
-            except Exception as e:
-                printwarn(f"Failed to cleanup audio queue: {e}")
-                
-            try:
-                qv = client.get('qv')
-                if qv is not None:
-                    qv.set_state(Gst.State.NULL)
-                    if self.pipe:
-                        self.pipe.remove(qv)
-            except Exception as e:
-                printwarn(f"Failed to cleanup video queue: {e}")
+                    printwarn(f"Failed to cleanup video queue: {e}")
                 
             # Always remove from clients dict, even if cleanup failed
             self.clients.pop(UUID, None)
@@ -12416,6 +12661,7 @@ async def main():
     parser.add_argument('--height', type=int, default=1080, help='Sets the video height. Make sure that your input supports it.')
     parser.add_argument('--framerate', type=int, default=30, help='Sets the video framerate. Make sure that your input supports it.')
     parser.add_argument('--server', type=str, default=None, help='Handshake server to use, eg: "wss://wss.vdo.ninja:443"')
+    parser.add_argument('--insecure-signaling', action='store_true', help='Allow unverified TLS and plaintext ws:// fallback for legacy/custom signaling servers. Unsafe; disabled by default.')
     parser.add_argument('--puuid',  type=str, default=None, help='Specify a custom publisher UUID value; not required')
     parser.add_argument('--test', action='store_true', help='Use test sources.')
     parser.add_argument('--hdmi', action='store_true', help='Try to setup a HDMI dongle')

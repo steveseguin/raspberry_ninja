@@ -161,7 +161,7 @@ See below for platform-specific install options if you prefer manual installatio
 
 See the `raspberry_pi` sub-folder for instructions on installing and setting up a Raspberry Pi. [Jump there now](installers/raspberry_pi/README.md)
 
-A Raspberry Pi works fairly well with a CSI-connected camera, but USB-based cameras currently struggle a bit with older Raspberry Pi models. As a result, consider buying an Nvidia Jetson Nano 2GB instead of a Raspberry Pi if looking to jump into this all. Also, the RPI Zero W 1 and RPi 3 both don't have the greatest WiFi built-in, while the Raspberry Pi Zero 2 seems to work rather well. Without good connectivity, you may find yourself facing frame-drops and stutter.  HDMI to CSI adapters do work, but they may be limited to 25-fps and can be finicky still with some camera sources; audio over HDMI is also a bit tricky to setup currently.
+Raspberry Pi performance depends on the board, OS, camera stack, GStreamer build, and media device. Pi 3/4 hardware encoding, Pi 5 software encoding, USB capture, and CSI camera paths are not interchangeable. Start with the [platform compatibility guide](docs/platform-compatibility.md), then test the actual source and encoder at conservative settings before increasing resolution or frame rate.
 
 ![image](https://user-images.githubusercontent.com/2575698/146033910-3c54ba8c-1d3e-4073-bc59-e190decaca63.png)
 
@@ -188,7 +188,7 @@ Nvidia Jetsons work well with USB-connected cameras and have a selection of comp
 
 ### Setup for Linux Desktops
 
-You can deploy Raspberry.Ninja to a desktop pretty quickly in most cases, without compiling anything.  I have an installer for recent versions of Ubuntu if interested. [Jump there now](ubuntu/)
+You can deploy Raspberry.Ninja to a desktop pretty quickly in most cases, without compiling anything. An installer is available for recent Ubuntu releases. [Jump there now](installers/ubuntu/README.md)
 
 For other distros, see below for requirements
 
@@ -204,7 +204,7 @@ You can actually run Raspberry Ninja on a Windows PC via the WSL virtual machine
 
 Still, it might be useful if you want to pull a stream from a remote Raspberry.Ninja system, recording the stream to disk or using it for local machine learning.
 
-See the WSL install script here: [Jump there now](installers/wsl/)
+See the WSL install guide here: [Jump there now](installers/wsl/README.md)
 
 It is possible to install Gstreamer for Windows natively, but due to the difficultly in that all, I'm not supporting it officially at present. The main challenge is `cairo` fails to compile, so that needs to be fixed first.
 
@@ -212,7 +212,7 @@ It is possible to install Gstreamer for Windows natively, but due to the difficu
 
 Raspberry.Ninja can even run on a Mac! Although it's not as streamlined a  process as it could be, I'd say the difficulty is 4/10.
 
-See the Mac OS X install script here: [Jump there now](installers/mac/)
+See the macOS install notes here: [Jump there now](installers/mac/readme.md)
 
 ### Generic quick-install method
 
@@ -290,7 +290,7 @@ Sample help output: ( what's shown below may not be up-to-date)
 ```
 usage: publish.py [-h] [--streamid STREAMID] [--room ROOM] [--rtmp RTMP] [--whip WHIP] [--bitrate BITRATE]
                   [--audiobitrate AUDIOBITRATE] [--width WIDTH] [--height HEIGHT] [--framerate FRAMERATE]
-                  [--server SERVER] [--puuid PUUID] [--test] [--hdmi] [--camlink] [--z1] [--z1passthru]
+                  [--server SERVER] [--insecure-signaling] [--puuid PUUID] [--test] [--hdmi] [--camlink] [--z1] [--z1passthru]
                   [--apple APPLE] [--v4l2 V4L2] [--libcamera] [--rpicam] [--format FORMAT] [--rotate ROTATE]
                   [--nvidiacsi] [--alsa ALSA] [--pulse PULSE] [--zerolatency] [--raw] [--bt601] [--h264] [--x264]
                   [--openh264] [--vp8] [--vp9] [--aom] [--av1] [--rav1e] [--qsv] [--omx] [--vorbis] [--nvidia] [--rpi]
@@ -319,6 +319,8 @@ options:
   --framerate FRAMERATE
                         Sets the video framerate. Make sure that your input supports it.
   --server SERVER       Handshake server to use, eg: "wss://wss.vdo.ninja:443"
+  --insecure-signaling  Allow unverified TLS and plaintext ws:// fallback for legacy/custom signaling servers. Unsafe;
+                        disabled by default.
   --puuid PUUID         Specify a custom publisher UUID value; not required
   --test                Use test sources.
   --hdmi                Try to setup a HDMI dongle
@@ -350,9 +352,8 @@ options:
   --omx                 Try to use the OMX driver for encoding video; not recommended
   --vorbis              Try to use the OMX driver for encoding video; not recommended
   --nvidia              Creates a pipeline optimised for nvidia hardware.
-  --rpi                 Creates a pipeline optimised for raspberry pi hardware encoder. This wont work with the
-                        Raspberry Pi 5, as it has no hardware encoder.. With official Pi cameras on older images,
-                        --rpicam may perform better.
+  --rpi                 Creates a Raspberry Pi-optimized pipeline. Pi 5 automatically uses a software encoder.
+                        With official Pi cameras on older images, --rpicam may perform better.
   --multiviewer         Allows for multiple viewers to watch a single encoded stream; will use more CPU and bandwidth.
   --noqos               Do not try to automatically reduce video bitrate if packet loss gets too high. The default
                         will reduce the bitrate if needed.
@@ -374,7 +375,8 @@ options:
   --record-streams RECORD_STREAMS
                         Comma-separated list of stream IDs to record from a room. Optional filter for --record-room.
   --room-ndi            Relay all room streams to NDI as separate sources. Requires --room parameter.
-  ---hls             Enable HLS (HTTP Live Streaming) recording with H.264 transcoding.
+  --hls                Enable HLS recording with H.264/AAC output.
+  --hls-splitmux       Use the recommended splitmux HLS backend.
   --webserver PORT      Start built-in web server on specified port for serving HLS files.
   --midi                Transparent MIDI bridge mode; no video or audio.
   --filesrc FILESRC     Provide a media file (local file location) as a source instead of physical device; it can be a
@@ -451,11 +453,13 @@ Pulse audio and ALSA audio command-line arguments can be passed to setup audio, 
 
 ## Documentation
 
-- [Quick Start Guide](QUICK_START.md) - Common commands and examples
-- [Room Recording Feature](ROOM_RECORDING.md) - Record multiple participants in a room
-- [Combine Recordings Tool](COMBINE_RECORDINGS.md) - Combine separate audio/video files with sync
-- [Recording Usage Guide](RECORDING_USAGE_GUIDE.md) - Detailed recording options and examples
-- [Troubleshooting Guide](TROUBLESHOOTING.md) - Common issues and solutions
+- [Documentation index](docs/README.md) - Choose a guide by task or platform
+- [Quick start](QUICK_START.md) - Install and publish a synthetic first stream
+- [Pi Zero 2 W unattended sender/receiver](docs/pi-zero-2-w-unattended-webrtc.md) - Fresh image through boot service
+- [Operations guide](docs/operations-guide.md) - Publishers, receivers, systemd, monitoring, and soak tests
+- [Recording guide](docs/recording-guide.md) - Single-stream, room, HLS, validation, and combining
+- [Troubleshooting](docs/troubleshooting.md) - Environment collection and common failure modes
+- [Platform compatibility](docs/platform-compatibility.md) - Pi, Jetson, Orange Pi, camera-stack, and GStreamer differences
 - [Discord Support](https://discord.vdo.ninja) - Get help from the community
 
 ## How to Run:
@@ -492,8 +496,8 @@ python3 publish.py --room myroom123 --record-room --password false
 This will:
 - Connect to room "myroom123" as a viewer (not as a publisher)
 - Automatically record each participant's stream to separate files
-- Name files using the pattern: `{room}_{streamID}_{timestamp}.webm`
-- Record both video and audio by default (audio saved as separate .wav files)
+- Use codec-appropriate containers: H.264 video as MPEG-TS, VP8/VP9 as WebM, and Opus audio as a separate WebM file
+- Record both video and audio by default
 - **Does NOT publish any local camera/audio to the room**
 
 #### Single Stream Recording
@@ -542,7 +546,7 @@ Raspberry Ninja now supports HLS (HTTP Live Streaming) recording, which creates 
 
 To record using HLS format:
 ```bash
-python3 publish.py --record streamID --hls
+python3 publish.py --record streamID --hls --hls-splitmux
 ```
 
 This will:
@@ -555,7 +559,7 @@ This will:
 Raspberry Ninja includes a built-in web server for serving HLS files. Simply add `--webserver 8080` to your command:
 
 ```bash
-python3 publish.py --record streamID --hls --webserver 8080
+python3 publish.py --record streamID --hls --hls-splitmux --webserver 8080
 ```
 
 This enables:
@@ -563,7 +567,7 @@ This enables:
 - **Delayed playback**: Start watching at any time during recording
 - **Scrubbing/seeking**: Jump to any point in the recorded stream
 - **Progressive download**: Only download segments as needed
-- **Browser compatibility**: Works in any modern browser with HTML5 video
+- **Browser playback**: Native HLS support varies; use an HLS-capable player when the browser does not play M3U8 directly
 
 Access your HLS stream at:
 ```
@@ -574,16 +578,14 @@ The built-in web server automatically serves all HLS files in the current direct
 
 #### HLS Implementation Notes
 
-By default, HLS recording uses `splitmuxsink` which creates only TS segment files without an M3U8 playlist. This is simpler and more reliable.
-
-If you need M3U8 playlist generation, you can configure the subprocess to use `hlssink2` instead by modifying the `use_splitmuxsink` configuration in the code.
+The recommended `--hls-splitmux` backend creates both MPEG-TS segments and an M3U8 playlist. It handles GStreamer API and muxer-property differences across tested old and new releases. The older backend remains available with `--hls` alone for compatibility, but it produced empty segments on a tested GStreamer 1.18 system.
 
 ### Combining Audio and Video Recordings
 
-Since audio and video are recorded to separate files (`.webm` for video, `.wav` for audio), you can use the included `combine_recordings.py` script to merge them:
+Normal recordings save video and Opus audio separately. H.264 video uses MPEG-TS (`.ts`), VP8/VP9 video uses WebM (`.webm`), and Opus audio uses a separate WebM file (`_audio.webm`). Use the included combining tool to merge a pair:
 
 ```bash
-python3 combine_recordings.py
+python3 tools/combine_recordings.py
 ```
 
 This script will:
@@ -599,12 +601,12 @@ The script uses intelligent timestamp matching to ensure proper synchronization 
 - **Single Stream Recording**: Record any VDO.Ninja stream to disk
 - **Room Recording**: Automatically record all participants in a room
 - **Selective Recording**: Filter which room participants to record
-- **Audio Support**: Audio recorded to separate WAV files for maximum compatibility
+- **Audio Support**: Opus audio recorded to separate WebM files by default
 - **HLS Support**: Generate HLS-compatible streams with H.264 transcoding for web playback
 - **NDI Output**: Relay room streams as NDI sources for professional workflows
 - **No Transcoding**: VP8/VP9 streams are recorded directly without quality loss (except HLS)
 - **Automatic Naming**: Files are named with room, stream ID, and timestamp
-- **Audio/Video Combining**: Use `combine_recordings.py` to merge separate audio/video files
+- **Audio/Video Combining**: Use `tools/combine_recordings.py` to merge separate audio/video files
 
 ### RTMP output
 
@@ -813,7 +815,7 @@ Notes:
 
 ## Hardware options
 
-Of the Raspberry Pi devices, the Raspberry Pi 4 or the Raspberry Pi Zero 2 are so far the best options on this front, depending on your needs. Any of the Nvidia Jetson devices should work fine, but only the Jetson Nano 2GB, 4GB, and NX have been tested and validated. If you wish to use other Jetson devices, you'll need to setup and install Gstreamer 1.19 yourself on those systems, as no pre-built image will be provided at this time. (Unless someone wishes to donate the hardware that is)  Any other Linux system or SBC embedded system is on the user to setup and install at this point, but they should closely follow the same steps that the Nvidia Jetson uses.
+Choose hardware based on the required source, codec, resolution, power budget, and software image. Pi Zero 2 W, Pi 3, Pi 4, Pi 5, Jetson, and Rockchip boards use different encoder and buffer paths. A plugin being installed does not guarantee that its driver accepts frames. The [platform compatibility guide](docs/platform-compatibility.md) explains detection, fallbacks, and how to record a meaningful test result.
 
 For a fresh Raspberry Pi Zero 2 W, use the low-memory installer path and conservative first-stream settings in [the unattended sender/receiver guide](docs/pi-zero-2-w-unattended-webrtc.md). The `--runtime-only --skip-system-upgrade` installer flags avoid development headers and an unrelated full OS upgrade during deployment.
 
@@ -1088,11 +1090,11 @@ curl -X POST -F "record=meeting_2024_01_22" -F "process_pid=12345" -F "language=
 
 ### TODO:
 
-- Fix VP8/VP9 recordings and add muxing to the H264 recordings (moderate)
+- Continue regression testing recording and HLS across codecs, GStreamer releases, and hardware backends
 
 - Offer a Docker version
 
-- Have an option to "playback" an incoming stream full-screened on a pi or jetson, to use as an input to an ATEM mixer.
+- Continue improving unattended full-screen receiver setup and display/audio compatibility
 
 - Add support for passwords and group rooms (steve - partially added)
 
@@ -1110,8 +1112,8 @@ curl -X POST -F "record=meeting_2024_01_22" -F "process_pid=12345" -F "language=
 - **NDI Direct Mode Now Default**: Changed `--room-ndi` to use direct mode by default, creating separate audio/video NDI streams to avoid combiner freezing issues. Added `--ndi-combine` flag for users who need the problematic combiner mode.
 - **Fixed NDI Freezing Issue**: Implemented workaround for ndisinkcombiner freezing after ~1500 buffers by defaulting to direct NDI mode with separate streams.
 - **HLS Recording Support**: Added HLS (HTTP Live Streaming) recording with automatic VP8 to H.264 transcoding. Creates segmented TS files and M3U8 playlists for easy HTTP streaming.
-- **Audio Recording Now Enabled by Default**: Audio recording is now enabled by default when recording streams. Use `--noaudio` to disable audio recording. The system saves video (.webm) and audio (.wav) to separate files for maximum compatibility.
-- **Added Combine Recordings Tool**: New `combine_recordings.py` utility that intelligently synchronizes and combines separate audio/video files. Features timestamp-based sync to handle WebRTC negotiation delays (typically 400-600ms).
+- **Audio Recording Now Enabled by Default**: Audio recording is enabled by default when recording streams. Use `--noaudio` to disable it. Opus audio is saved as a separate WebM file in normal recording mode.
+- **Added Combine Recordings Tool**: The `tools/combine_recordings.py` utility synchronizes and combines separate audio/video files using their media timestamps.
 - **Fixed TURN Server URL Parsing**: Corrected string slicing logic that was causing malformed TURN URLs and preventing ICE connections.
 - **Fixed Subprocess Selection Bug**: Disabled broken MKV subprocess that was causing recording to hang when audio was enabled.
 - **Improved Test Infrastructure**: Enhanced test_basic_functionality.py with comprehensive tests for HLS, room recording, and NDI features.

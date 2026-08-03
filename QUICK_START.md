@@ -1,40 +1,58 @@
-# 🚀 Raspberry Ninja Quick Start
+# Raspberry Ninja quick start
 
-## 1. Install (30 seconds)
+## 1. Install
+
+The basic non-interactive installer installs dependencies and clones the repository when needed:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/install.sh | bash
+cd ~/raspberry_ninja
 ```
 
-Choose option 1 for basic installation.
-
-## 2. Test (10 seconds)
+For configuration prompts and optional auto-start, download and run the installer interactively instead:
 
 ```bash
-python3 publish.py --test
+wget https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/install.sh
+chmod +x install.sh
+./install.sh
 ```
 
-You should see a test pattern with bouncing ball.
+On a Pi Zero 2 W, use the [low-memory installation guide](docs/pi-zero-2-w-unattended-webrtc.md#3-install-the-low-memory-runtime).
 
-## 3. Stream (5 seconds)
+## 2. Publish a test stream
+
+Start with a small synthetic stream so camera and audio drivers cannot hide a signaling problem:
 
 ```bash
-python3 publish.py
+python3 -u publish.py \
+  --test --h264 --noaudio \
+  --width 640 --height 360 --framerate 15 --bitrate 500 \
+  --streamid rn-test \
+  --password false
 ```
 
-Note the stream ID shown (like `7654321`).
+## 3. View it
 
-## 4. View
+Open:
 
-Open in any browser:
+```text
+https://vdo.ninja/?view=rn-test&password=false
 ```
-https://vdo.ninja/?view=7654321
+
+The terminal should report ICE connected and a non-zero bitrate. Stop with Ctrl+C.
+
+`--password false` is only for a controlled first test. It disables VDO.Ninja's additional application-level encryption. For deployment, use the same strong password in the publisher, receiver, and browser URL.
+
+## 4. Add real hardware
+
+List cameras and audio devices before choosing them:
+
+```bash
+v4l2-ctl --list-devices
+v4l2-ctl -d /dev/video0 --list-formats-ext
+arecord -l
 ```
 
-(Replace `7654321` with your stream ID)
+Then replace `--test` with the verified input, for example `--v4l2 /dev/video0`. Keep the low settings until remote playback is stable.
 
----
-
-**That's it!** You're streaming.
-
-For more options: `python3 publish.py --help`
+Next: [documentation index](docs/README.md), [operations](docs/operations-guide.md), [troubleshooting](docs/troubleshooting.md), or `python3 publish.py --help`.

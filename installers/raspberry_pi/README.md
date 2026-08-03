@@ -3,6 +3,8 @@
 
 ## Installation on a Raspberry Pi
 
+For a current Raspberry Pi OS Lite installation, start with the repository's [quick start](../../QUICK_START.md). Pi Zero 2 W users should use the [tested low-memory unattended guide](../../docs/pi-zero-2-w-unattended-webrtc.md). The pre-built image below is a dated compatibility image; prefer a fresh official image unless that older stack is specifically required.
+
 It is recommended to use the provided Raspberry Pi image, as the install process is otherwise quite challenging.  If using an image, you will want to update the code afterwards to ensure you're running the newest version. You can also try a simple install script or a complex build script, depending on whether you want old or new functionality available.
 
 ### Simple install script:
@@ -11,7 +13,7 @@ The simple installer will work on existing RPI OS systems, without needing to co
 
 Gstreamer v1.18 is likely to be what Raspberry Pi OS will come with when using the simple installer, which is OK, but does miss out on some advanced features found in Gstreamer 1.22. I'd avoid older versions of Gstreamer if at all posssible though, found on legacy versions of Raspberry Pi OS / Raspbian. 
 
-The simple installer [can be found here.](https://github.com/steveseguin/raspberry_ninja/blob/main/raspberry_pi/simpleinstall.md)
+The older simple-install notes [can be found here.](simpleinstall.md)
 
 ### Installing from the provided image
 

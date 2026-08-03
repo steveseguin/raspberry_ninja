@@ -1,5 +1,7 @@
 # Raspberry Pi Zero 2 W unattended VDO.Ninja sender/receiver
 
+See the [documentation index](README.md) for recording, cross-platform compatibility, and general troubleshooting guides.
+
 This guide sets up a Raspberry Pi Zero 2 W as either:
 
 - an unattended HDMI receiver that waits for a fixed VDO.Ninja stream ID; or
@@ -25,6 +27,8 @@ Both directions were tested over VDO.Ninja:
 - Chrome camera to Pi headless receiver: baseline H.264 received and decoded
 
 The test Pi's HDMI connector was disconnected, so receiver negotiation and decoding were validated with `fakesink`. Repeat the final receiver test with the TV attached to validate the physical HDMI and audio path.
+
+The broader v17 test bench also validated three-minute H.264/Opus operation on this Zero 2 W, direct H.264 and VP8 recordings, automatic receiver recovery, and clean decoding on a second Raspberry Pi. Those results apply to the exact baseline above; they do not prove every Raspberry Pi OS or GStreamer combination.
 
 ## 1. Image the card
 
@@ -381,3 +385,5 @@ Important differences include:
 - NVIDIA Jetson `nvv4l2*` elements and NVMM memory.
 
 Use detected elements and tested fallbacks. Do not replace working legacy or non-Pi paths with settings verified on only this Zero 2 W.
+
+For a shareable diagnostic checklist, continue with [Troubleshooting](troubleshooting.md). For longer validation and soak-test criteria, see the [Operations guide](operations-guide.md#stability-checks).

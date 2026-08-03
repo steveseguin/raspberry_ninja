@@ -1,5 +1,7 @@
 # Jetson Nano HLS Recording Fix Summary
 
+Historical engineering note. For current operator commands and validated backend guidance, use [`docs/recording-guide.md`](../docs/recording-guide.md). This file describes an earlier implementation investigation and may not match the current release.
+
 ## Problem
 On Jetson Nano 2GB running GStreamer 1.23.0 (development version), HLS recording was showing "Got data flow before segment event" warnings from mpegtsmux. This didn't occur on x86/WSL systems.
 

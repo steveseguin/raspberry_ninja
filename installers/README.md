@@ -1,64 +1,37 @@
-# Platform-Specific Installers
+# Platform-specific installers
 
-This directory contains platform-specific installation guides and scripts for advanced users who need hardware-specific optimizations.
-
-## 🚀 Most Users Should Use the Universal Installer
+Most users should start with the universal installer from the repository root:
 
 ```bash
-# From the repository root:
 ./install.sh
 ```
 
-Or use the one-liner:
+For a basic non-interactive install:
+
 ```bash
 curl -sSL https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/install.sh | bash
 ```
 
-The universal installer automatically detects your platform and handles everything for you.
+The platform directories contain additional notes and scripts for hardware-specific or manually managed installations:
 
-## 📁 Platform-Specific Guides
+| Platform | Guide | Important distinction |
+| --- | --- | --- |
+| Raspberry Pi | [raspberry_pi](raspberry_pi/README.md) | Pi generation, OS camera stack, and hardware encoder differ |
+| NVIDIA Jetson | [nvidia_jetson](nvidia_jetson/README.md) | JetPack/L4T controls NVIDIA plugins and NVMM behavior |
+| Orange Pi | [orangepi](orangepi/README.md) | Rockchip MPP availability depends on image and kernel |
+| Ubuntu/Debian | [ubuntu](ubuntu/README.md) | Desktop packages and generic software paths |
+| Windows Subsystem for Linux | [wsl](wsl/README.md) | Camera, audio, display, and USB access are constrained by WSL |
+| macOS | [mac](mac/readme.md) | Homebrew-based experimental setup |
 
-These guides are for users who need:
-- Hardware-specific optimizations
-- Custom configurations
-- Manual control over the installation process
+Do not assume a platform guide's dated package versions apply to a newer image. Inventory the actual environment and use capability-based fallbacks described in the [platform compatibility guide](../docs/platform-compatibility.md).
 
-### Available Platforms:
+After installation, prove the signaling and software codec path before adding hardware:
 
-- **[raspberry_pi/](./raspberry_pi/)** - Raspberry Pi specific optimizations
-  - CSI camera support
-  - GPIO features
-  - Hardware encoding on Pi 4
+```bash
+python3 -u publish.py \
+  --test --h264 --noaudio \
+  --width 640 --height 360 --framerate 15 --bitrate 500 \
+  --streamid rn-test --password false
+```
 
-- **[nvidia_jetson/](./nvidia_jetson/)** - Nvidia Jetson optimizations
-  - NVENC hardware encoding
-  - DeepStream integration
-  - CSI camera support
-
-- **[ubuntu/](./ubuntu/)** - Desktop Ubuntu/Debian
-  - Full desktop integration
-  - Multiple camera support
-
-- **[orangepi/](./orangepi/)** - Orange Pi boards
-  - Board-specific fixes
-  - Hardware encoding where available
-
-- **[mac/](./mac/)** - macOS installation
-  - Homebrew-based setup
-  - macOS-specific adaptations
-
-- **[wsl/](./wsl/)** - Windows Subsystem for Linux
-  - WSL2 configuration
-  - Windows integration tips
-
-## 📋 Manual Installation Steps
-
-If you prefer complete manual control:
-
-1. **Install GStreamer** (1.16 or newer)
-2. **Install Python 3** and pip
-3. **Install Python packages**: `websockets`, `cryptography`, `aiohttp`
-4. **Clone this repository**
-5. **Run**: `python3 publish.py --test`
-
-See each platform's README for specific package names and commands.
+Continue with the [quick start](../QUICK_START.md), [operations guide](../docs/operations-guide.md), or [Pi Zero 2 W low-memory guide](../docs/pi-zero-2-w-unattended-webrtc.md).

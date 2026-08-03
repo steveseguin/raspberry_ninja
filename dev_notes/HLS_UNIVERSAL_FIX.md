@@ -1,5 +1,7 @@
 # Universal HLS Fix for Jetson and x86
 
+Historical engineering note. For current operator commands and validated backend guidance, use [`docs/recording-guide.md`](../docs/recording-guide.md). This file describes an earlier implementation investigation and may not match the current release.
+
 ## Summary
 This fix addresses HLS recording issues on both Nvidia Jetson (with GStreamer 1.23.0) and x86 platforms. The solution ensures proper audio/video muxing without transcoding H264.
 
