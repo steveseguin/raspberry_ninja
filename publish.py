@@ -12259,6 +12259,14 @@ def resolve_v4l2sink_device(device: Optional[str], default_index: int = 0) -> Op
 
 WSS="wss://wss.vdo.ninja:443"
 
+
+def configure_single_stream_recording(args):
+    """Configure subprocess recording without losing the requested stream ID."""
+    args.streamin = args.record
+    args.single_stream_recording = True
+    args.room_recording = False
+    args.auto_turn = True
+
 async def main():
 
     error = False
@@ -12615,10 +12623,7 @@ async def main():
             printc("This feature requires a server that tracks room membership and sends notifications", "F77")
     elif args.record:
         # Single-stream recording mode - use subprocess like room recording
-        args.streamin = "single_stream_recording"  # Special value to indicate subprocess recording
-        args.single_stream_recording = True
-        args.room_recording = False  # Not room recording, but use subprocess
-        args.auto_turn = True  # Automatically use default TURN servers for recording
+        configure_single_stream_recording(args)
         printc(f"📹 Recording mode: {args.record} (using subprocess)", "0FF")
     else:
         args.streamin = False
