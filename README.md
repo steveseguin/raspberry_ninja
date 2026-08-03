@@ -815,7 +815,7 @@ Notes:
 
 Of the Raspberry Pi devices, the Raspberry Pi 4 or the Raspberry Pi Zero 2 are so far the best options on this front, depending on your needs. Any of the Nvidia Jetson devices should work fine, but only the Jetson Nano 2GB, 4GB, and NX have been tested and validated. If you wish to use other Jetson devices, you'll need to setup and install Gstreamer 1.19 yourself on those systems, as no pre-built image will be provided at this time. (Unless someone wishes to donate the hardware that is)  Any other Linux system or SBC embedded system is on the user to setup and install at this point, but they should closely follow the same steps that the Nvidia Jetson uses.
 
-It's rather hard to install everything needed on a Raspberry Pi Zero 2 directly, due to the limited memory, so I do recommend that if installing from scratch that you use a Raspberry Pi 4 with 4GB or greater.
+For a fresh Raspberry Pi Zero 2 W, use the low-memory installer path and conservative first-stream settings in [the unattended sender/receiver guide](docs/pi-zero-2-w-unattended-webrtc.md). The `--runtime-only --skip-system-upgrade` installer flags avoid development headers and an unrelated full OS upgrade during deployment.
 
 ### Camera options
 

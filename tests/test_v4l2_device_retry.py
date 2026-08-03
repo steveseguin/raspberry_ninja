@@ -82,6 +82,26 @@ class TestV4l2DeviceRetry(unittest.TestCase):
             capabilities = v4l2_devices.query_v4l2_capabilities("/dev/video10")
         self.assertEqual(capabilities, v4l2_devices.V4L2_CAP_VIDEO_OUTPUT)
 
+    def test_pi_isp_capture_pad_is_not_a_camera(self):
+        with (
+            patch(
+                "v4l2_devices.query_v4l2_capabilities",
+                return_value=v4l2_devices.V4L2_CAP_VIDEO_CAPTURE,
+            ),
+            patch("v4l2_devices.get_v4l2_device_name", return_value="bcm2835-isp"),
+        ):
+            self.assertFalse(v4l2_devices.is_v4l2_capture_device("/dev/video14"))
+
+    def test_usb_capture_device_remains_available(self):
+        with (
+            patch(
+                "v4l2_devices.query_v4l2_capabilities",
+                return_value=v4l2_devices.V4L2_CAP_VIDEO_CAPTURE,
+            ),
+            patch("v4l2_devices.get_v4l2_device_name", return_value="USB Camera"),
+        ):
+            self.assertTrue(v4l2_devices.is_v4l2_capture_device("/dev/video0"))
+
 
 if __name__ == "__main__":
     unittest.main()

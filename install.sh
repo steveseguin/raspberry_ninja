@@ -36,6 +36,8 @@ SERVICE_NAME="raspberry-ninja"
 SETUP_AUTOSTART=false
 install_type=""
 NON_INTERACTIVE=false
+RUNTIME_ONLY=false
+SKIP_SYSTEM_UPGRADE=false
 
 # Check for command line arguments
 for arg in "$@"; do
@@ -43,12 +45,20 @@ for arg in "$@"; do
         --non-interactive|-y|--yes)
             NON_INTERACTIVE=true
             ;;
+        --runtime-only)
+            RUNTIME_ONLY=true
+            ;;
+        --skip-system-upgrade)
+            SKIP_SYSTEM_UPGRADE=true
+            ;;
         --help|-h)
             echo "Raspberry Ninja Installer"
             echo "Usage: $0 [options]"
             echo ""
             echo "Options:"
             echo "  --non-interactive, -y  Run in non-interactive mode"
+            echo "  --runtime-only         Install runtime packages without development headers"
+            echo "  --skip-system-upgrade  Refresh package indexes without upgrading the OS"
             echo "  --help, -h            Show this help message"
             exit 0
             ;;
@@ -346,7 +356,11 @@ update_system() {
     
     if command -v apt-get &> /dev/null; then
         sudo apt-get update
-        sudo apt-get upgrade -y
+        if [ "$SKIP_SYSTEM_UPGRADE" = false ]; then
+            sudo apt-get upgrade -y
+        else
+            print_color "$YELLOW" "Skipping the full OS upgrade as requested."
+        fi
     elif command -v dnf &> /dev/null; then
         sudo dnf update -y
     elif command -v yum &> /dev/null; then
@@ -494,43 +508,77 @@ install_dependencies() {
             PIP_FLAGS=""
         fi
         
-        # Core dependencies
-        sudo apt-get install -y \
+        # Runtime dependencies. Keep this list free of development headers so
+        # small devices such as the 512-MB Pi Zero 2 W can be deployed without
+        # pulling in a full multimedia build environment.
+        runtime_packages=(
             python3-pip \
+            python3-websockets \
+            python3-cryptography \
+            python3-aiohttp \
             git \
             wget \
             curl \
-            libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev \
-            libgstreamer-plugins-bad1.0-dev \
+            v4l-utils \
             gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad \
             gstreamer1.0-plugins-ugly \
             gstreamer1.0-libav \
             gstreamer1.0-tools \
-            gstreamer1.0-x \
             gstreamer1.0-alsa \
             gstreamer1.0-gl \
-            gstreamer1.0-gtk3 \
-            gstreamer1.0-pulseaudio \
             gstreamer1.0-nice \
-            libcairo2-dev \
-            libgirepository1.0-dev \
             python3-gi \
             python3-gi-cairo \
             gir1.2-gstreamer-1.0 \
-            gir1.2-gst-plugins-base-1.0
+            gir1.2-gst-plugins-base-1.0 \
+            gir1.2-gst-plugins-bad-1.0
+        )
+
+        development_packages=(
+            libgstreamer1.0-dev
+            libgstreamer-plugins-base1.0-dev
+            libgstreamer-plugins-bad1.0-dev
+            libcairo2-dev
+            libgirepository1.0-dev
+        )
+
+        desktop_runtime_packages=(
+            gstreamer1.0-x
+            gstreamer1.0-gtk3
+            gstreamer1.0-pulseaudio
+        )
+
+        sudo apt-get install -y "${runtime_packages[@]}"
+        if [ "$RUNTIME_ONLY" = false ]; then
+            sudo apt-get install -y "${desktop_runtime_packages[@]}"
+            sudo apt-get install -y "${development_packages[@]}"
+        fi
 
         ensure_display_utilities
         
         # Platform-specific packages
         if [ "$IS_RASPBERRY_PI" = true ]; then
             print_color "$YELLOW" "Installing Raspberry Pi specific packages..."
-            sudo apt-get install -y \
-                libraspberrypi-bin \
-                libraspberrypi-dev \
-                rpicam-apps-lite || true  # rpicam-apps might not be available on older systems
+            pi_packages=()
+            if apt-cache show raspi-utils-core &> /dev/null; then
+                # Raspberry Pi OS Trixie and newer.
+                pi_packages+=(raspi-utils-core)
+                apt-cache show raspi-utils-dt &> /dev/null && pi_packages+=(raspi-utils-dt)
+            else
+                # Raspberry Pi OS Bookworm/Bullseye and older.
+                apt-cache show libraspberrypi-bin &> /dev/null && pi_packages+=(libraspberrypi-bin)
+                if [ "$RUNTIME_ONLY" = false ] && apt-cache show libraspberrypi-dev &> /dev/null; then
+                    pi_packages+=(libraspberrypi-dev)
+                fi
+            fi
+            apt-cache show rpicam-apps-lite &> /dev/null && pi_packages+=(rpicam-apps-lite)
+            if [ ${#pi_packages[@]} -gt 0 ]; then
+                sudo apt-get install -y "${pi_packages[@]}"
+            else
+                print_color "$YELLOW" "⚠ No Raspberry Pi utility package candidates found; continuing with detected system tools."
+            fi
             
             # Add user to video group
             sudo usermod -a -G video $USER
@@ -546,12 +594,23 @@ install_dependencies() {
         # Python packages
         print_color "$YELLOW" "Installing Python packages..."
         
-        # Try the normal installation first
-        if pip3 install $PIP_FLAGS websockets cryptography aiohttp PyGObject 2>/dev/null; then
-            print_color "$GREEN" "✓ Python packages installed successfully"
+        missing_python_packages=()
+        python3 -c 'import websockets' 2>/dev/null || missing_python_packages+=(websockets)
+        python3 -c 'import cryptography' 2>/dev/null || missing_python_packages+=(cryptography)
+        python3 -c 'import aiohttp' 2>/dev/null || missing_python_packages+=(aiohttp)
+
+        if ! python3 -c 'import gi' 2>/dev/null; then
+            print_color "$RED" "✗ Python GObject bindings are unavailable after installing python3-gi."
+            print_color "$YELLOW" "  Check that python3 and python3-gi come from the same OS package repository."
+            return 1
+        fi
+
+        if [ ${#missing_python_packages[@]} -eq 0 ]; then
+            print_color "$GREEN" "✓ Python packages installed successfully from the OS repository"
         else
+            print_color "$YELLOW" "Missing Python packages: ${missing_python_packages[*]}"
             # Fallback: Fix broken pip installations
-            print_color "$YELLOW" "Standard pip installation failed. Attempting to fix..."
+            print_color "$YELLOW" "Attempting a pip fallback..."
             
             # Remove broken pip symlinks if they exist
             if [ -L /usr/local/bin/pip3 ] && [ ! -e /usr/local/bin/pip3 ]; then
@@ -603,7 +662,7 @@ install_dependencies() {
             
             # Install Python packages with the fixed pip
             print_color "$YELLOW" "Installing Python packages..."
-            $PIP_CMD install $PIP_FLAGS websockets cryptography aiohttp PyGObject
+            $PIP_CMD install $PIP_FLAGS "${missing_python_packages[@]}"
         fi
         
     else
@@ -624,14 +683,20 @@ detect_cameras() {
     if [ -d /dev ]; then
         for device in /dev/video*; do
             if [ -e "$device" ]; then
-                # Try to get device name
                 if command -v v4l2-ctl &> /dev/null; then
-                    name=$(v4l2-ctl -d "$device" --info 2>/dev/null | grep "Card type" | cut -d: -f2 | xargs)
-                    if [ -n "$name" ]; then
-                        CAMERAS+=("$device - $name")
-                    else
-                        CAMERAS+=("$device")
+                    info=$(v4l2-ctl -d "$device" --all 2>/dev/null || sudo -n v4l2-ctl -d "$device" --all 2>/dev/null || true)
+                    # Memory-to-memory codec and ISP nodes also appear as
+                    # /dev/video*. Only list devices with a standalone capture
+                    # capability as cameras.
+                    if ! grep -Eq '^[[:space:]]*Video Capture( Multiplanar)?[[:space:]]*$' <<< "$info"; then
+                        continue
                     fi
+                    driver=$(grep "Driver name" <<< "$info" | head -n 1 | cut -d: -f2- | xargs)
+                    if [ "$IS_RASPBERRY_PI" = true ] && [[ "$driver" == "bcm2835-isp" || "$driver" == "bcm2835-codec" ]]; then
+                        continue
+                    fi
+                    name=$(grep "Card type" <<< "$info" | head -n 1 | cut -d: -f2- | xargs)
+                    CAMERAS+=("$device${name:+ - $name}")
                 else
                     CAMERAS+=("$device")
                 fi
@@ -641,8 +706,14 @@ detect_cameras() {
     
     # Check for Raspberry Pi camera
     if [ "$IS_RASPBERRY_PI" = true ]; then
-        if command -v libcamera-hello &> /dev/null; then
-            if libcamera-hello --list-cameras &> /dev/null; then
+        if command -v rpicam-hello &> /dev/null; then
+            camera_list=$(rpicam-hello --list-cameras 2>&1 || true)
+            if grep -Eq '^[[:space:]]*[0-9]+[[:space:]]*:' <<< "$camera_list"; then
+                CAMERAS+=("rpicam - Raspberry Pi Camera Module")
+            fi
+        elif command -v libcamera-hello &> /dev/null; then
+            camera_list=$(libcamera-hello --list-cameras 2>&1 || true)
+            if grep -Eq '^[[:space:]]*[0-9]+[[:space:]]*:' <<< "$camera_list"; then
                 CAMERAS+=("libcamera - Raspberry Pi Camera Module")
             fi
         elif command -v raspistill &> /dev/null; then

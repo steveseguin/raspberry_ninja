@@ -19,6 +19,20 @@ V4L2_CAP_VIDEO_CAPTURE_MPLANE = 0x00001000
 V4L2_CAP_VIDEO_OUTPUT_MPLANE = 0x00002000
 V4L2_CAP_DEVICE_CAPS = 0x80000000
 
+# These Raspberry Pi nodes are transform/codec helpers in a media-controller
+# graph, not standalone camera inputs. Some ISP capture pads advertise
+# V4L2_CAP_VIDEO_CAPTURE, so capability flags alone are insufficient.
+_NON_CAMERA_DEVICE_NAME_PREFIXES = ("bcm2835-isp", "bcm2835-codec")
+
+
+def get_v4l2_device_name(path: str) -> Optional[str]:
+    name_path = f"/sys/class/video4linux/{os.path.basename(path)}/name"
+    try:
+        with open(name_path, "r", encoding="utf-8") as name_file:
+            return name_file.read().strip()
+    except OSError:
+        return None
+
 
 def query_v4l2_capabilities(path: str) -> Optional[int]:
     """Return effective V4L2 capability flags, or None when they cannot be queried."""
@@ -53,7 +67,10 @@ def is_v4l2_capture_device(path: str) -> bool:
     if capabilities is None:
         return False
     capture_flags = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_VIDEO_CAPTURE_MPLANE
-    return bool(capabilities & capture_flags)
+    if not capabilities & capture_flags:
+        return False
+    name = get_v4l2_device_name(path)
+    return not (name and name.lower().startswith(_NON_CAMERA_DEVICE_NAME_PREFIXES))
 
 
 def is_v4l2_output_device(path: str) -> bool:
@@ -99,12 +116,7 @@ def resolve_v4l2_input_device(
             continue
         if not is_v4l2_capture_device(candidate):
             continue
-        name_path = f"/sys/class/video4linux/{os.path.basename(candidate)}/name"
-        try:
-            with open(name_path, "r", encoding="utf-8") as name_file:
-                device_name = name_file.read().strip()
-        except OSError:
-            device_name = "V4L2 capture device"
+        device_name = get_v4l2_device_name(candidate) or "V4L2 capture device"
         log(f"Using {candidate} ({device_name}) instead of {original}")
         return candidate, False
 

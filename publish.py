@@ -81,6 +81,8 @@ def env_flag(name: str) -> bool:
 
 RN_DISABLE_HW_DECODER = env_flag("RN_DISABLE_HW_DECODER")
 RN_FORCE_HW_DECODER = env_flag("RN_FORCE_HW_DECODER")
+RN_DISABLE_V4L2_ENCODER = env_flag("RN_DISABLE_V4L2_ENCODER")
+RN_FORCE_V4L2_ENCODER = env_flag("RN_FORCE_V4L2_ENCODER")
 
 H264_PROFILE_ALIASES = {
     "baseline": "42001f",
@@ -522,6 +524,66 @@ def gst_element_supports_property(element_name: str, property_name: str) -> bool
             del element
     except Exception:
         return False
+
+
+def _run_v4l2_h264_encoder_probe() -> Tuple[bool, str]:
+    """Exercise a few small system-memory frames through v4l2h264enc."""
+    probe = (
+        "videotestsrc num-buffers=3 ! "
+        "video/x-raw,width=320,height=240,format=I420,framerate=5/1 ! "
+        "v4l2h264enc ! fakesink sync=false"
+    )
+    pipeline = None
+    try:
+        pipeline = Gst.parse_launch(probe)
+        if pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+            return False, "pipeline refused the PLAYING state"
+
+        message = pipeline.get_bus().timed_pop_filtered(
+            3 * Gst.SECOND,
+            Gst.MessageType.ERROR | Gst.MessageType.EOS,
+        )
+        if message is None:
+            return False, "probe timed out before EOS"
+        if message.type == Gst.MessageType.ERROR:
+            error, debug = message.parse_error()
+            detail = str(error)
+            if debug:
+                detail = f"{detail} ({debug})"
+            return False, detail
+        return True, "ok"
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        if pipeline is not None:
+            try:
+                pipeline.set_state(Gst.State.NULL)
+                pipeline.get_state(Gst.SECOND)
+            except Exception:
+                pass
+
+
+@lru_cache(maxsize=1)
+def v4l2_h264_encoder_usable() -> bool:
+    """Return whether v4l2h264enc is present and can process real frames."""
+    if RN_DISABLE_V4L2_ENCODER:
+        printwarn("V4L2 H.264 encoder disabled via RN_DISABLE_V4L2_ENCODER")
+        return False
+    if not gst_element_available("v4l2h264enc"):
+        return False
+    if RN_FORCE_V4L2_ENCODER:
+        printwarn("V4L2 H.264 encoder probe bypassed via RN_FORCE_V4L2_ENCODER")
+        return True
+
+    usable, reason = _run_v4l2_h264_encoder_probe()
+    if usable:
+        return True
+
+    printwarn("V4L2 H.264 encoder is installed but failed a frame probe; using a software fallback.")
+    print(f"  Reason: {reason}")
+    print(f"  Environment: kernel={platform.release()}, {Gst.version_string()}")
+    print("  Set RN_FORCE_V4L2_ENCODER=1 to bypass this probe for a known-good zero-copy pipeline.")
+    return False
 
 
 @lru_cache(maxsize=1)
@@ -11712,6 +11774,8 @@ def get_raspberry_pi_model():
                     return 4
                 elif 'Raspberry Pi 3' in model_info:
                     return 3
+                elif 'Raspberry Pi Zero 2' in model_info:
+                    return 2
                 elif 'Raspberry Pi 2' in model_info:
                     return 2
                 elif 'Raspberry Pi' in model_info:
@@ -12815,7 +12879,7 @@ async def main():
         elif args.apple and check_plugins('vtenc_h264_hw'):
             h264 = 'vtenc_h264_hw'
         elif args.h264:
-            if check_plugins('v4l2h264enc'):
+            if v4l2_h264_encoder_usable():
                 h264 = 'v4l2h264enc'
             elif check_plugins('mpph264enc'):
                 h264 = 'mpph264enc'
@@ -13113,7 +13177,7 @@ async def main():
 
                     if args.format == "JPEG":
                         # Check if on Raspberry Pi and recommend --rpi flag
-                        if not args.rpi and get_raspberry_pi_model() is not None:
+                        if not args.rpi and get_raspberry_pi_model() > 0:
                             printc("Tip: You're on a Raspberry Pi. Using --rpi flag can improve JPEG decoding performance and reduce errors.", "7F7")
                         pipeline_video_input += f' ! image/jpeg,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
                         # Add queue before decoder to handle bursty/corrupted frames from USB adapters
@@ -13294,7 +13358,7 @@ async def main():
                     pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420{timestampOverlay} ! queue max-size-buffers=10 ! x264enc  name="encoder1" bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
                 elif h264 == "openh264enc" and args.rpi:
                     pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420{timestampOverlay} ! queue max-size-buffers=10 ! openh264enc  name="encoder" bitrate={args.bitrate}000 complexity=0 ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
-                elif check_plugins("v4l2h264enc") and args.rpi and get_raspberry_pi_model() != 5:
+                elif h264 == "v4l2h264enc" and args.rpi and get_raspberry_pi_model() != 5:
                     if args.format in ["I420", "YV12", "NV12", "NV21", "RGB16", "RGB", "BGR", "RGBA", "BGRx", "BGRA", "YUY2", "YVYU", "UYVY"]:
                         pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw{timestampOverlay} ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4'
                     else:
@@ -13545,6 +13609,12 @@ async def main():
             if args.join_gpio_pin is not None:
                 level_mode = "active-LOW" if args.join_gpio_active_low else "active-HIGH"
                 printc(f"   └─ GPIO pin {args.join_gpio_pin} ({level_mode}, {args.join_gpio_pulse:.2f}s)", "77F")
+        elif args.view and not args.room:
+            printc(f"\n📺 Viewer Mode", "0FF")
+            printc(f"   └─ Sender URL: {bold_color}{watchURL}push={args.view}{server}", "77F")
+        elif args.view:
+            printc(f"\n📺 Viewer Mode (Room: {args.room})", "0FF")
+            printc(f"   └─ Sender URL: {bold_color}{watchURL}push={args.view}{server}&room={args.room}", "77F")
         elif not args.room:
             printc(f"\n📹 Recording Mode", "0FF")
             printc(f"   └─ Publish to: {bold_color}{watchURL}push={args.streamin}{server}", "77F")
