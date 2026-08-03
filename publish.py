@@ -106,6 +106,22 @@ def build_signaling_connection_attempts(server_url: str, allow_insecure: bool = 
         )
     return attempts
 
+
+def normalize_signaling_server_url(server_url: str) -> str:
+    """Add the secure default scheme while preserving explicit WebSocket URLs."""
+    value = (server_url or "").strip()
+    if not value:
+        raise ValueError("Signaling server URL cannot be empty")
+    if "://" not in value:
+        value = f"wss://{value}"
+
+    parsed = urlparse(value)
+    if parsed.scheme.lower() not in {"ws", "wss"}:
+        raise ValueError("Signaling server URL must use ws:// or wss://")
+    if not parsed.hostname:
+        raise ValueError("Signaling server URL must include a hostname")
+    return value
+
 RN_DISABLE_HW_DECODER = env_flag("RN_DISABLE_HW_DECODER")
 RN_FORCE_HW_DECODER = env_flag("RN_FORCE_HW_DECODER")
 RN_DISABLE_V4L2_ENCODER = env_flag("RN_DISABLE_V4L2_ENCODER")
@@ -8035,7 +8051,8 @@ class WebRTCClient:
         client['qv'] = None
         client['qa_tee_pad'] = None
         client['qv_tee_pad'] = None
-        client['webrtc'] = None
+        # Keep the Python reference alive for already-queued GStreamer callbacks.
+        # The client generation is detached from self.clients before it can be reused.
 
     def _add_multiviewer_element(self, client, key, element, description):
         """Add and immediately track a dynamic element so failures remain recoverable."""
@@ -8066,16 +8083,6 @@ class WebRTCClient:
             session = previous.get('session') if previous else None
             original_uuid = previous.get('original_uuid') if previous else None
 
-            if previous:
-                timer = previous.get('timer')
-                if timer is not None:
-                    try:
-                        timer.cancel()
-                    except Exception as exc:
-                        printwarn(f"Failed to cancel previous viewer timer: {exc}")
-                    previous['timer'] = None
-                self._cleanup_multiviewer_client_elements(previous)
-
             client = {
                 "UUID": UUID,
                 "session": session,
@@ -8087,7 +8094,18 @@ class WebRTCClient:
             }
             if original_uuid is not None:
                 client['original_uuid'] = original_uuid
+            # Detach the old callback generation before changing its elements.
             self.clients[UUID] = client
+
+            if previous:
+                timer = previous.get('timer')
+                if timer is not None:
+                    try:
+                        timer.cancel()
+                    except Exception as exc:
+                        printwarn(f"Failed to cancel previous viewer timer: {exc}")
+                    previous['timer'] = None
+                self._cleanup_multiviewer_client_elements(previous)
             return client
 
     async def createPeer(self, UUID):
@@ -8133,6 +8151,8 @@ class WebRTCClient:
                     return False
 
                 def _receiver_pad_added(recv, pad):
+                    if not self._client_is_current(client):
+                        return
                     caps = pad.get_current_caps()
                     caps_str = caps.to_string() if caps else 'None'
                     print(f"[webrtc] Receiver pad added ({label}): {pad.get_name()} caps={caps_str}")
@@ -8150,6 +8170,8 @@ class WebRTCClient:
 
                 def _on_receiver_notify(transceiver, _pspec):
                     nonlocal handler_id
+                    if not self._client_is_current(client):
+                        return
                     if _hook_receiver(transceiver) and handler_id is not None:
                         try:
                             transceiver.disconnect(handler_id)
@@ -8179,6 +8201,8 @@ class WebRTCClient:
             if not self._client_is_current(client):
                 return
             promise.wait()
+            if not self._client_is_current(client):
+                return
             reply = promise.get_reply()
             offer = reply.get_value('offer')
             printc("📤 Sending connection offer...", "77F")
@@ -8246,6 +8270,8 @@ class WebRTCClient:
 
         def on_new_tranceiver(element, trans):
             # New transceiver added
+            if not self._client_is_current(client):
+                return
             configure_transceiver(trans)
 
         def on_negotiation_needed(element):
@@ -8271,9 +8297,12 @@ class WebRTCClient:
 
         def on_signaling_state(p1, p2):
             # Signaling state changed
-            pass
+            if not self._client_is_current(client):
+                return
 
         def on_ice_connection_state(p1, p2):
+            if not self._client_is_current(client):
+                return
             state = client['webrtc'].get_property(p2.name)
             if state == 1:
                 printc("🔍 ICE: Checking connectivity...", "77F")
@@ -8370,6 +8399,8 @@ class WebRTCClient:
                     self.stop_pipeline(client['UUID'], expected_client=client)
 
         def on_data_channel(webrtc, channel):
+            if not self._client_is_current(client):
+                return
             printc("   📡 Data channel event", "FFF")
             if channel is None:
                 printc('      └─ No data channel available', "F44")
@@ -8382,6 +8413,8 @@ class WebRTCClient:
             channel.connect('on-message-string', on_data_channel_message)
 
         def on_data_channel_error(arg1, arg2):
+            if not self._client_is_current(client):
+                return
             printc('❌ Data channel error', "F44")
 
         def on_data_channel_open(channel):
@@ -8427,6 +8460,8 @@ class WebRTCClient:
                         printwarn(f"Failed to send bitrate request: {exc}")
 
         def on_data_channel_close(channel):
+            if not self._client_is_current(client):
+                return
             printc('🔌 Data channel closed', "F77")
 
         def on_data_channel_message(channel, msg_raw): 
@@ -8614,6 +8649,8 @@ class WebRTCClient:
             if not self._client_is_current(client):
                 return
             promise.wait()
+            if not self._client_is_current(client):
+                return
             stats_reply = promise.get_reply()
             stats_text = stats_reply.to_string()
             stats_text = stats_text.replace("\\", "")
@@ -9455,6 +9492,7 @@ class WebRTCClient:
         printc("🔧 Creating WebRTC pipeline...", "0FF")
 
         started = True
+        pending_tee_branches = []
         if not self.pipe:
             printc("   └─ Loading pipeline configuration...", "FFF")
         pipeline_created = self._ensure_main_pipeline(log=True)
@@ -9609,16 +9647,13 @@ class WebRTCClient:
                 if not self._add_multiviewer_element(client, 'qv', qv, f"video queue {qv_name}"):
                     self._cleanup_multiviewer_client_elements(client)
                     return
-                if not self._link_multiviewer_tee_branch(
-                    client, 'qv_tee_pad', vtee, qv, qv_name
-                ):
-                    printwarn(f"Failed to link videotee to {qv_name}")
-                    self._cleanup_multiviewer_client_elements(client)
-                    return
                 if not Gst.Element.link(qv, webrtc):
                     printwarn(f"Failed to link {qv_name} to webrtcbin {uuid}")
                     self._cleanup_multiviewer_client_elements(client)
                     return
+                pending_tee_branches.append(
+                    ('qv_tee_pad', vtee, qv, qv_name)
+                )
 
             if atee is not None:
                 qa_name = f"qa-{uuid}"
@@ -9626,16 +9661,13 @@ class WebRTCClient:
                 if not self._add_multiviewer_element(client, 'qa', qa, f"audio queue {qa_name}"):
                     self._cleanup_multiviewer_client_elements(client)
                     return
-                if not self._link_multiviewer_tee_branch(
-                    client, 'qa_tee_pad', atee, qa, qa_name
-                ):
-                    printwarn(f"Failed to link audiotee to {qa_name}")
-                    self._cleanup_multiviewer_client_elements(client)
-                    return
                 if not Gst.Element.link(qa, webrtc):
                     printwarn(f"Failed to link {qa_name} to webrtcbin {uuid}")
                     self._cleanup_multiviewer_client_elements(client)
                     return
+                pending_tee_branches.append(
+                    ('qa_tee_pad', atee, qa, qa_name)
+                )
 
             if self.midi and (self.midi_thread == None):
                 self.midi_thread = threading.Thread(target=midi2vdo, args=(self.midi,), daemon=True)
@@ -9669,6 +9701,8 @@ class WebRTCClient:
         if self.streamin:
             # For room recording or viewer mode, attach incoming pads to processing pipeline
             def _on_pad_added(webrtc_element, pad):
+                if not self._client_is_current(client):
+                    return
                 print(f"[webrtc] Pad added: {pad.get_name()} caps={pad.get_current_caps().to_string() if pad.get_current_caps() else 'None'}")
                 self.on_incoming_stream(webrtc_element, pad)
 
@@ -9679,6 +9713,8 @@ class WebRTCClient:
             client['webrtc'].connect('on-new-transceiver', on_new_tranceiver)
 
             def _attach_existing_src_pads():
+                if not self._client_is_current(client):
+                    return False
                 for pad in client['webrtc'].pads:
                     try:
                         if pad.get_direction() == Gst.PadDirection.SRC:
@@ -9706,6 +9742,13 @@ class WebRTCClient:
             queue = client.get(queue_key)
             if queue is not None:
                 queue.sync_state_with_parent()
+        for pad_key, tee, queue, branch_name in pending_tee_branches:
+            if not self._link_multiviewer_tee_branch(
+                client, pad_key, tee, queue, branch_name
+            ):
+                printwarn(f"Failed to activate tee branch {branch_name}")
+                self._cleanup_multiviewer_client_elements(client)
+                return
 
         if not self.streamin and not client['send_channel']:
             channel = client['webrtc'].emit('create-data-channel', 'sendChannel', None)
@@ -9838,7 +9881,11 @@ class WebRTCClient:
             print("UNEXPECTED INCOMING")
 
     def on_answer_created(self, promise, _, client):
+        if not self._client_is_current(client):
+            return
         promise.wait()
+        if not self._client_is_current(client):
+            return
         reply = promise.get_reply()
         answer = reply.get_value('answer')
         if not answer:
@@ -13950,8 +13997,11 @@ async def main():
             sys.exit(1)
 
     if args.server:
-        server = "&wss="+args.server.split("wss://")[-1]
-        args.server = "wss://"+args.server.split("wss://")[-1]
+        try:
+            args.server = normalize_signaling_server_url(args.server)
+        except ValueError as exc:
+            parser.error(str(exc))
+        server = "&wss=" + args.server.split("://", 1)[1]
         if args.puuid is None and handshake_server_requires_puuid(args.server):
             args.puuid = str(random.randint(10000000,99999999999))
     else:

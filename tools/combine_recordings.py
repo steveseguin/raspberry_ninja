@@ -4,12 +4,78 @@ Combine async audio and video recordings with proper timestamp-based synchroniza
 """
 
 import asyncio
-import glob
 import os
 import sys
 import json
-import subprocess
 from pathlib import Path
+
+
+VIDEO_EXTENSIONS = {'.ts', '.webm', '.mkv'}
+AUDIO_EXTENSIONS = {'.webm', '.wav', '.ts', '.mka'}
+
+
+def recording_identity(filepath, audio=False):
+    """Return a timestamp-independent recording identity for a generated filename."""
+    path = Path(filepath)
+    stem = path.stem
+    if audio:
+        if not stem.endswith('_audio') or path.suffix.lower() not in AUDIO_EXTENSIONS:
+            return None
+        stem = stem[:-len('_audio')]
+    elif stem.endswith('_audio') or path.suffix.lower() not in VIDEO_EXTENSIONS:
+        return None
+
+    parts = stem.split('_')
+    timestamp_index = None
+    for index in range(len(parts) - 1, -1, -1):
+        try:
+            int(parts[index])
+        except ValueError:
+            continue
+        timestamp_index = index
+        break
+
+    if timestamp_index is None:
+        return None
+    timestamp = int(parts[timestamp_index])
+    identity_parts = parts[:timestamp_index] + parts[timestamp_index + 1:]
+    identity = '_'.join(identity_parts)
+    if not identity:
+        return None
+    return identity, timestamp
+
+
+def discover_recording_pairs(directory='.', tolerance_seconds=5):
+    """Find current and legacy video/audio recording pairs in a directory."""
+    directory = Path(directory)
+    videos = []
+    audio_files = []
+    for path in directory.iterdir():
+        if not path.is_file() or path.name.startswith('combined_'):
+            continue
+        video_info = recording_identity(path, audio=False)
+        if video_info:
+            videos.append((path, *video_info))
+        audio_info = recording_identity(path, audio=True)
+        if audio_info:
+            audio_files.append((path, *audio_info))
+
+    pairs = []
+    used_audio = set()
+    for video_path, video_identity, video_timestamp in sorted(videos):
+        candidates = [
+            (abs(audio_timestamp - video_timestamp), audio_path)
+            for audio_path, audio_identity, audio_timestamp in audio_files
+            if audio_path not in used_audio
+            and audio_identity == video_identity
+            and abs(audio_timestamp - video_timestamp) <= tolerance_seconds
+        ]
+        if not candidates:
+            continue
+        _, audio_path = min(candidates, key=lambda candidate: (candidate[0], str(candidate[1])))
+        used_audio.add(audio_path)
+        pairs.append((video_path, audio_path))
+    return pairs
 
 async def get_stream_start_time(filepath):
     """Get the actual start time of the first frame/sample in a media file"""
@@ -182,73 +248,39 @@ async def combine_files(video_file, audio_file, output_file):
         print(f"  ❌ Failed: {stderr.decode()[:200]}")
         return False
 
-async def main():
+async def main(directory='.'):
     """Find and combine matching audio/video pairs"""
     print("=== Combine Audio/Video Recordings (v2 - Timestamp-based sync) ===\n")
-    
-    # Find all video and audio files
-    video_files = glob.glob("testroom123999999999_*[!_audio].webm")
-    audio_files = glob.glob("testroom123999999999_*_audio.wav")
-    
-    if not video_files or not audio_files:
+
+    pairs = discover_recording_pairs(directory)
+    if not pairs:
         print("No files to combine!")
-        return
-    
-    print(f"Found {len(video_files)} video and {len(audio_files)} audio files\n")
-    
-    # Match files by stream ID
+        return 0
+
+    print(f"Found {len(pairs)} matching audio/video pair(s)\n")
+
     combined_count = 0
-    
-    for video_file in sorted(video_files):
-        # Extract stream ID from video filename
-        parts = Path(video_file).stem.split('_')
-        if len(parts) < 3:
+    directory = Path(directory)
+    for video_file, audio_file in pairs:
+        output_file = directory / f"combined_{video_file.stem}.mp4"
+        if output_file.exists():
+            print(f"Skipping {output_file} - already exists")
             continue
-            
-        stream_id = parts[1]
-        timestamp = parts[2]
-        
-        # Find matching audio file with same or close timestamp (within 2 seconds)
-        matching_audio = None
-        video_timestamp = int(timestamp)
-        
-        for audio_file in audio_files:
-            # Extract audio timestamp
-            if f"_{stream_id}_" in audio_file and "_audio.wav" in audio_file:
-                audio_parts = Path(audio_file).stem.split('_')
-                if len(audio_parts) >= 3:
-                    try:
-                        audio_timestamp = int(audio_parts[2])
-                        # Match if timestamps are within 2 seconds
-                        if abs(audio_timestamp - video_timestamp) <= 2:
-                            matching_audio = audio_file
-                            break
-                    except ValueError:
-                        continue
-        
-        if matching_audio:
-            output_file = f"combined_v2_{stream_id}_{timestamp}.mp4"
-            
-            if os.path.exists(output_file):
-                print(f"Skipping {output_file} - already exists")
-                continue
-                
-            success = await combine_files(video_file, matching_audio, output_file)
-            if success:
-                combined_count += 1
-        else:
-            print(f"No matching audio for {video_file}")
-    
+        success = await combine_files(video_file, audio_file, output_file)
+        if success:
+            combined_count += 1
+
     print(f"\n=== Summary ===")
     print(f"Combined {combined_count} file pairs")
-    
+
     # List combined files
-    combined_files = glob.glob("combined_v2_*.mp4")
+    combined_files = sorted(directory.glob("combined_*.mp4"))
     if combined_files:
         print("\nCombined files:")
-        for cf in sorted(combined_files):
+        for cf in combined_files:
             size = os.path.getsize(cf)
             print(f"  {cf} ({size:,} bytes)")
+    return combined_count
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
@@ -256,7 +288,7 @@ if __name__ == "__main__":
         if len(sys.argv) == 4:
             asyncio.run(combine_files(sys.argv[1], sys.argv[2], sys.argv[3]))
         else:
-            print("Usage: combine_recordings_v2.py [video_file audio_file output_file]")
+            print("Usage: combine_recordings.py [video_file audio_file output_file]")
     else:
         # Auto-combine all matching pairs
         asyncio.run(main())

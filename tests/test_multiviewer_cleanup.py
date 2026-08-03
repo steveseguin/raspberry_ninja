@@ -86,6 +86,21 @@ class FakeTimer:
         self.cancelled = True
 
 
+class ReplacementDuringWaitPromise:
+    def __init__(self, owner, uuid, replacement):
+        self.owner = owner
+        self.uuid = uuid
+        self.replacement = replacement
+        self.reply_requested = False
+
+    def wait(self):
+        self.owner.clients[self.uuid] = self.replacement
+
+    def get_reply(self):
+        self.reply_requested = True
+        raise AssertionError("stale promise reply must not be consumed")
+
+
 class MultiviewerCleanupTests(unittest.TestCase):
     def make_client(self, pipeline):
         client = publish.WebRTCClient.__new__(publish.WebRTCClient)
@@ -107,7 +122,7 @@ class MultiviewerCleanupTests(unittest.TestCase):
         audio_pad.link(audio_queue.get_static_pad("sink"))
         video_pad.link(video_queue.get_static_pad("sink"))
         owner = self.make_client(pipeline)
-        peer = {"UUID": uuid, "webrtc": None, "qa": None, "qv": None}
+        peer = {"UUID": uuid, "webrtc": webrtc, "qa": None, "qv": None}
 
         owner._cleanup_multiviewer_client_elements(peer)
 
@@ -116,7 +131,7 @@ class MultiviewerCleanupTests(unittest.TestCase):
         self.assertIn(video_pad, video_tee.released_pads)
         self.assertIn(webrtc, audio_queue.unlinked)
         self.assertIn(webrtc, video_queue.unlinked)
-        self.assertEqual(peer["webrtc"], None)
+        self.assertIs(peer["webrtc"], webrtc)
         self.assertEqual(peer["qa"], None)
         self.assertEqual(peer["qv"], None)
         self.assertEqual(webrtc.states[-1], publish.Gst.State.NULL)
@@ -199,6 +214,21 @@ class MultiviewerCleanupTests(unittest.TestCase):
         self.assertIsNone(replacement["timer"])
         self.assertEqual(replacement["ping"], 0)
         self.assertIsNone(pipeline.get_by_name(uuid))
+        self.assertIs(previous["webrtc"], webrtc)
+        self.assertFalse(owner._client_is_current(previous))
+
+    def test_answer_callback_rechecks_generation_after_wait(self):
+        uuid = "viewer-answer-race"
+        owner = self.make_client(FakePipeline())
+        current = {"UUID": uuid, "webrtc": FakeElement(uuid)}
+        replacement = {"UUID": uuid, "webrtc": FakeElement(uuid)}
+        owner.clients = {uuid: current}
+        promise = ReplacementDuringWaitPromise(owner, uuid, replacement)
+
+        owner.on_answer_created(promise, None, current)
+
+        self.assertIs(owner.clients[uuid], replacement)
+        self.assertFalse(promise.reply_requested)
 
     def test_stale_cleanup_does_not_remove_replacement_client(self):
         uuid = "viewer-stale"

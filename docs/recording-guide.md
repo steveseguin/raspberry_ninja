@@ -110,7 +110,7 @@ Install FFmpeg, then combine a known pair:
 python3 tools/combine_recordings.py video_file audio_file combined.mp4
 ```
 
-With no arguments, the tool scans the current directory for timestamp-matched pairs:
+With no arguments, the tool scans the current directory for timestamp-matched pairs. It recognizes current H.264 `.ts`, VP8/VP9 `.webm`/`.mkv`, and `_audio.webm` outputs, plus legacy `_audio.wav` and `_audio.ts` files:
 
 ```bash
 python3 tools/combine_recordings.py
