@@ -10784,32 +10784,14 @@ class WebRTCClient:
                         elif self.single_stream_recording:
                             # Single-stream recording mode - use subprocess
                             printc("📥 Incoming connection offer (subprocess recording)", "0FF")
-                            
-                            # Create subprocess for recording
                             stream_id = self.record  # Use the record parameter as stream ID
-                            config = {
-                                'mode': 'record',
-                                'stream_id': stream_id,
-                                'room': None,  # No room for single stream
-                                'record_file': self.record,
-                                'record_audio': not self.noaudio,
-                                'use_hls': self.use_hls,
-                                'use_splitmuxsink': self.use_splitmux,
-                                'password': self.password if self.password else None,
-                                'salt': self.salt if self.salt else ''
-                            }
-                            
-                            # Create and start subprocess
-                            await self.create_recording_subprocess(stream_id, UUID)
-                            
-                            # Map UUID to stream for routing
-                            self.uuid_to_stream_id[UUID] = stream_id
-                            self.stream_id_to_uuid[stream_id] = UUID
-                            
-                            # Route the offer to subprocess
-                            if stream_id in self.subprocess_managers:
-                                printc(f"[Subprocess] Routing offer to recording subprocess for {stream_id}", "0F0")
-                                await self.handle_subprocess_sdp(stream_id, sdp_data)
+                            session_id = msg.get('session') or self.clients.get(UUID, {}).get('session')
+                            await self.route_single_stream_recording_offer(
+                                stream_id,
+                                UUID,
+                                sdp_data['sdp'],
+                                session_id,
+                            )
                                 
                         elif self.streamin:
                             # Standard viewer mode
@@ -11071,7 +11053,7 @@ class WebRTCClient:
             if stream_uuid in self.room_streams:
                 self.room_streams[stream_uuid]['connection_requested'] = True
     
-    async def create_subprocess_recorder(self, stream_id, uuid=None):
+    async def create_subprocess_recorder(self, stream_id, uuid=None, request_play=True):
         """Create a subprocess recorder for a stream. The UUID is the key for routing."""
         if stream_id in self.subprocess_managers:
             printc(f"[{stream_id}] Subprocess manager already exists.", "FF0")
@@ -11146,21 +11128,37 @@ class WebRTCClient:
         
         if await manager.start():
             self.subprocess_managers[stream_id] = manager
-            # Immediately request to play the stream.
-            # The server will then connect us to the peer, which will send an offer.
-            # The 'uuid' parameter here is the websocket 'from' field of the peer we want to connect to.
-            play_request = {"request": "play", "streamID": stream_id}
-            if uuid:
-                play_request["UUID"] = uuid
-            
-            await self.sendMessageAsync(play_request)
-            printc(f"[{stream_id}] Subprocess started. Sent play request for UUID {uuid or 'any'}.", "0F0")
+            if request_play:
+                # Ask the server for an offer when this recorder was created from
+                # a room listing rather than from an offer already in hand.
+                play_request = {"request": "play", "streamID": stream_id}
+                if uuid:
+                    play_request["UUID"] = uuid
+
+                await self.sendMessageAsync(play_request)
+                printc(f"[{stream_id}] Subprocess started. Sent play request for UUID {uuid or 'any'}.", "0F0")
+            else:
+                printc(f"[{stream_id}] Subprocess started for the incoming offer.", "0F0")
         else:
             printc(f"[{stream_id}] ❌ Failed to start subprocess.", "F00")
             if uuid and uuid in self.uuid_to_stream_id:
                 del self.uuid_to_stream_id[uuid] # Clean up failed mapping
                 if stream_id in self.stream_id_to_uuid:
                     del self.stream_id_to_uuid[stream_id] # Clean up reverse mapping
+
+    async def route_single_stream_recording_offer(self, stream_id, uuid, offer_sdp, session_id):
+        """Start a recorder for an offer that has already been received."""
+        await self.create_subprocess_recorder(stream_id, uuid, request_play=False)
+
+        self.uuid_to_stream_id[uuid] = stream_id
+        self.stream_id_to_uuid[stream_id] = uuid
+
+        if stream_id not in self.subprocess_managers:
+            return False
+
+        printc(f"[Subprocess] Routing offer to recording subprocess for {stream_id}", "0F0")
+        await self.handle_subprocess_offer(stream_id, offer_sdp, session_id)
+        return True
             
     async def send_subprocess_sdp(self, stream_id, msg):
         """Send SDP (answer) from a subprocess back to the WebSocket peer."""
