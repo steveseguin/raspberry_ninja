@@ -1,5 +1,37 @@
 # Changelog
 
+# Release 16.0.0
+
+**Release Date:** 2026-08-03
+
+## 🚀 Major Release
+
+This release includes breaking changes or significant new features.
+
+### Core Changes (publish.py)
+
+The main streaming script has been updated. This includes significant changes that may affect compatibility.
+
+### Commits
+
+- Support low-memory Pi Zero 2 W deployments (b85f5f8)
+
+### Installation
+
+For installation instructions, please refer to the platform-specific guides:
+- [Raspberry Pi](./raspberry_pi/README.md)
+- [NVIDIA Jetson](./nvidia_jetson/README.md)
+- [Orange Pi](./orangepi/README.md)
+- [Ubuntu](./ubuntu/README.md)
+
+### ⚠️ Upgrade Notes
+
+This is a major version upgrade. Please review the changes carefully before updating.
+It's recommended to backup your configuration before upgrading.
+
+
+---
+
 # Release 15.0.0
 
 **Release Date:** 2026-08-02
