@@ -526,6 +526,13 @@ def gst_element_supports_property(element_name: str, property_name: str) -> bool
         return False
 
 
+def request_pad_compat(element, template_name: str):
+    """Request a pad across old and current GStreamer Python bindings."""
+    if hasattr(element, "request_pad_simple"):
+        return element.request_pad_simple(template_name)
+    return element.get_request_pad(template_name)
+
+
 def _run_v4l2_h264_encoder_probe() -> Tuple[bool, str]:
     """Exercise a few small system-memory frames through v4l2h264enc."""
     probe = (
@@ -583,6 +590,59 @@ def v4l2_h264_encoder_usable() -> bool:
     print(f"  Reason: {reason}")
     print(f"  Environment: kernel={platform.release()}, {Gst.version_string()}")
     print("  Set RN_FORCE_V4L2_ENCODER=1 to bypass this probe for a known-good zero-copy pipeline.")
+    return False
+
+
+def _run_v4l2_jpeg_decoder_probe() -> Tuple[bool, str]:
+    """Exercise synthetic JPEG frames through v4l2jpegdec."""
+    probe = (
+        "videotestsrc num-buffers=3 ! "
+        "video/x-raw,width=320,height=240,framerate=5/1 ! "
+        "jpegenc ! jpegparse ! v4l2jpegdec ! fakesink sync=false"
+    )
+    pipeline = None
+    try:
+        pipeline = Gst.parse_launch(probe)
+        if pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+            return False, "pipeline refused the PLAYING state"
+
+        message = pipeline.get_bus().timed_pop_filtered(
+            3 * Gst.SECOND,
+            Gst.MessageType.ERROR | Gst.MessageType.EOS,
+        )
+        if message is None:
+            return False, "probe timed out before EOS"
+        if message.type == Gst.MessageType.ERROR:
+            error, debug = message.parse_error()
+            detail = str(error)
+            if debug:
+                detail = f"{detail} ({debug})"
+            return False, detail
+        return True, "ok"
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        if pipeline is not None:
+            try:
+                pipeline.set_state(Gst.State.NULL)
+                pipeline.get_state(Gst.SECOND)
+            except Exception:
+                pass
+
+
+@lru_cache(maxsize=1)
+def v4l2_jpeg_decoder_usable() -> bool:
+    """Return whether v4l2jpegdec can actually decode frames on this host."""
+    if not gst_element_available("v4l2jpegdec"):
+        return False
+
+    usable, reason = _run_v4l2_jpeg_decoder_probe()
+    if usable:
+        return True
+
+    printwarn("V4L2 JPEG decoder is installed but failed a frame probe; using jpegdec.")
+    print(f"  Reason: {reason}")
+    print(f"  Environment: kernel={platform.release()}, {Gst.version_string()}")
     return False
 
 
@@ -7571,7 +7631,7 @@ class WebRTCClient:
                                 
                                 if src_pad:
                                     # Request video pad from HLS sink
-                                    video_pad = self.hls_sink.request_pad_simple('video')
+                                    video_pad = request_pad_compat(self.hls_sink, 'video')
                                     if video_pad:
                                         if src_pad.link(video_pad) == Gst.PadLinkReturn.OK:
                                             sink = out.get_static_pad('sink')
@@ -7615,7 +7675,7 @@ class WebRTCClient:
                                 
                                 if src_pad:
                                     # Request video pad from HLS sink
-                                    video_pad = self.hls_sink.request_pad_simple('video')
+                                    video_pad = request_pad_compat(self.hls_sink, 'video')
                                     if video_pad:
                                         if src_pad.link(video_pad) == Gst.PadLinkReturn.OK:
                                             sink = out.get_static_pad('sink')
@@ -7767,7 +7827,7 @@ class WebRTCClient:
                                 
                                 if src_pad:
                                     # Request audio pad from HLS sink
-                                    audio_pad = self.hls_sink.request_pad_simple('audio')
+                                    audio_pad = request_pad_compat(self.hls_sink, 'audio')
                                     if audio_pad:
                                         if src_pad.link(audio_pad) == Gst.PadLinkReturn.OK:
                                             sink = out.get_static_pad('sink')
@@ -12250,6 +12310,79 @@ def optimize_pipeline_for_device(device, width, height, framerate, iomode, forma
     return input_pipeline, converter_pipeline, best_format
 
 
+def parse_v4l2_capture_modes(output: str) -> Dict[str, Dict[Tuple[int, int], List[float]]]:
+    """Parse discrete formats, sizes, and frame rates from v4l2-ctl output."""
+    modes: Dict[str, Dict[Tuple[int, int], List[float]]] = {}
+    current_format: Optional[str] = None
+    current_size: Optional[Tuple[int, int]] = None
+
+    for line in output.splitlines():
+        match = re.match(r"\s*\[\d+\]:\s*'([^']+)'", line)
+        if match:
+            current_format = match.group(1).upper()
+            current_size = None
+            modes.setdefault(current_format, {})
+            continue
+
+        match = re.match(r"\s*Size:\s*Discrete\s*(\d+)x(\d+)", line)
+        if match and current_format:
+            current_size = (int(match.group(1)), int(match.group(2)))
+            modes[current_format].setdefault(current_size, [])
+            continue
+
+        match = re.match(r"\s*Interval:\s*Discrete\s+.*\(([\d.]+)\s+fps\)", line)
+        if match and current_format and current_size:
+            modes[current_format][current_size].append(float(match.group(1)))
+
+    return modes
+
+
+def get_v4l2_capture_modes(device: str) -> Dict[str, Dict[Tuple[int, int], List[float]]]:
+    """Return v4l2-ctl discrete capture modes, or an empty mapping if unavailable."""
+    try:
+        result = subprocess.run(
+            ["v4l2-ctl", "-d", device, "--list-formats-ext"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=3,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    return parse_v4l2_capture_modes(result.stdout)
+
+
+def select_v4l2_capture_mode(
+    modes: Dict[Tuple[int, int], List[float]],
+    width: int,
+    height: int,
+    framerate: float,
+) -> Tuple[int, int, bool, List[float]]:
+    """Choose a discrete size and report whether the requested rate is advertised."""
+    if not modes:
+        return width, height, True, []
+
+    requested_size = (width, height)
+    if requested_size in modes:
+        selected_size = requested_size
+    else:
+        target_ratio = (width / height) if height else 0.0
+        target_area = width * height
+
+        def score(size: Tuple[int, int]) -> Tuple[float, int]:
+            candidate_width, candidate_height = size
+            ratio = (candidate_width / candidate_height) if candidate_height else 0.0
+            return abs(ratio - target_ratio), abs((candidate_width * candidate_height) - target_area)
+
+        selected_size = min(modes, key=score)
+
+    rates = modes.get(selected_size, [])
+    rate_supported = not rates or any(abs(rate - framerate) < 0.01 for rate in rates)
+    return selected_size[0], selected_size[1], rate_supported, rates
+
+
 def resolve_v4l2sink_device(device: Optional[str], default_index: int = 0) -> Optional[str]:
     """Resolve a writable V4L2 output device for v4l2sink."""
     return resolve_v4l2_output_device(
@@ -13209,7 +13342,39 @@ async def main():
             elif args.v4l2:
                 needed += ['video4linux2']
                 args.v4l2, error = resolve_v4l2_input_device(args.v4l2)
-                
+                v4l2_source_rate_supported = True
+
+                # V4L2 devices frequently expose only discrete MJPEG modes. Do not force a
+                # source rate the driver did not advertise: some UVC adapters reject it with
+                # not-negotiated, even when VIDIOC_G_PARM reports that requested rate.
+                if not error and not args.raw:
+                    all_modes = get_v4l2_capture_modes(args.v4l2)
+                    mjpeg_modes = all_modes.get("MJPG") or all_modes.get("JPEG") or {}
+                    selected_width, selected_height, v4l2_source_rate_supported, rates = (
+                        select_v4l2_capture_mode(
+                            mjpeg_modes,
+                            args.width,
+                            args.height,
+                            args.framerate,
+                        )
+                    )
+                    if (selected_width, selected_height) != (args.width, args.height):
+                        printc(
+                            f"Requested {args.width}x{args.height} is not an advertised MJPEG mode on "
+                            f"{args.v4l2}; using {selected_width}x{selected_height}",
+                            "FA0",
+                        )
+                        args.width, args.height = selected_width, selected_height
+                    if not v4l2_source_rate_supported:
+                        advertised = ", ".join(f"{rate:g}" for rate in rates)
+                        printc(
+                            f"Requested {args.framerate} fps is not advertised for "
+                            f"{args.width}x{args.height} MJPEG on {args.v4l2} "
+                            f"(advertised: {advertised} fps); leaving the source rate unconstrained "
+                            "and limiting decoded output instead",
+                            "FA0",
+                        )
+
                 # Legacy Raspberry Pi (GStreamer < 1.20) USB/UVC capture quirks
                 #
                 # - Some MacroSilicon/MS2109 HDMI dongles produce MJPEG streams that v4l2jpegdec
@@ -13242,47 +13407,6 @@ async def main():
                             if is_macrosilicon and (not args.raw) and (not args.soft_jpeg):
                                 args.soft_jpeg = True
                                 printc("Auto-enabled --soft-jpeg for MacroSilicon/MS2109 capture device (GStreamer < 1.20)", "FA0")
-
-                            # If the requested MJPEG capture size isn't supported, choose the nearest.
-                            if is_macrosilicon and (not args.raw):
-                                try:
-                                    result = subprocess.run(
-                                        ['v4l2-ctl', '-d', args.v4l2, '--list-formats-ext'],
-                                        stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE,
-                                        text=True,
-                                        timeout=2,
-                                    )
-                                except (subprocess.SubprocessError, subprocess.TimeoutExpired, FileNotFoundError):
-                                    result = None
-
-                                if result and result.returncode == 0:
-                                    current_format = None
-                                    sizes = set()
-                                    for line in result.stdout.splitlines():
-                                        m = re.match(r"\s*\[\d+\]:\s*'(\w+)'", line)
-                                        if m:
-                                            current_format = m.group(1)
-                                            continue
-                                        m = re.match(r"\s*Size:\s*Discrete\s*(\d+)x(\d+)", line)
-                                        if m and current_format == "MJPG":
-                                            sizes.add((int(m.group(1)), int(m.group(2))))
-
-                                    if sizes and (args.width, args.height) not in sizes:
-                                        target_ratio = (args.width / args.height) if args.height else 0.0
-                                        target_area = args.width * args.height
-
-                                        def _score(size):
-                                            w, h = size
-                                            ratio = (w / h) if h else 0.0
-                                            return (abs(ratio - target_ratio), abs((w * h) - target_area))
-
-                                        best_w, best_h = min(sizes, key=_score)
-                                        printc(
-                                            f"Requested {args.width}x{args.height} not supported by {args.v4l2} ({v4l2_device_name}); using {best_w}x{best_h}",
-                                            "FA0",
-                                        )
-                                        args.width, args.height = best_w, best_h
 
                 if error:
                     pipeline_video_input = f'v4l2src device={args.v4l2} io-mode={str(args.iomode)}'
@@ -13325,7 +13449,12 @@ async def main():
                         pipeline_video_converter = f' ! videoconvert{timestampOverlay} ! video/x-raw,format={args.format or "NV12"}'
                 else:
                     # Non-raw mode (JPEG capture)
-                    pipeline_video_input = f'v4l2src device={args.v4l2} io-mode={str(args.iomode)} ! image/jpeg,width=(int){args.width},height=(int){args.height},framerate=(fraction){args.framerate}/1'
+                    source_caps = f'image/jpeg,width=(int){args.width},height=(int){args.height}'
+                    if v4l2_source_rate_supported:
+                        source_caps += f',framerate=(fraction){args.framerate}/1'
+                    pipeline_video_input = (
+                        f'v4l2src device={args.v4l2} io-mode={str(args.iomode)} ! {source_caps}'
+                    )
                     pipeline_video_converter = ""  # Add this line
                     if args.nvidia:
                         pipeline_video_input += ' ! jpegparse ! nvjpegdec ! video/x-raw'
@@ -13334,11 +13463,17 @@ async def main():
                              # Force software decoding
                              pipeline_video_input += ' ! jpegparse ! jpegdec'
                         else:
-                             # Try hardware first
-                             pipeline_video_input += ' ! jpegparse ! ' + ('v4l2jpegdec' if check_plugins('v4l2jpegdec') else 'jpegdec') + ' '
+                             # Use hardware only after it proves that it can process frames.
+                             decoder = 'v4l2jpegdec' if v4l2_jpeg_decoder_usable() else 'jpegdec'
+                             pipeline_video_input += f' ! jpegparse ! {decoder} '
                     else:
                         # Add jpegparse for better error handling of corrupted JPEG frames
                         pipeline_video_input += ' ! jpegparse ! jpegdec'
+                    if not v4l2_source_rate_supported:
+                        pipeline_video_input += (
+                            f' ! videorate drop-only=true max-rate={args.framerate} '
+                            f'! video/x-raw,framerate=(fraction){args.framerate}/1'
+                        )
 
             if args.filesrc2:
                 pass
@@ -13362,9 +13497,11 @@ async def main():
                 elif h264 == "omxh264enc" and args.rpi and get_raspberry_pi_model() != 5:
                     pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420{timestampOverlay} ! omxh264enc name="encoder" target-bitrate={args.bitrate}000 qos=true control-rate="constant" ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                 elif h264 == "x264enc" and args.rpi:
-                    pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420{timestampOverlay} ! queue max-size-buffers=10 ! x264enc  name="encoder1" bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
+                    # x264 is a system-memory encoder. Keeping conversion in system memory is
+                    # both cheaper and more portable, and avoids V4L2 mem2mem negotiation bugs.
+                    pipeline_video_input += f' ! videoconvert ! video/x-raw,format=I420{timestampOverlay} ! queue max-size-buffers=10 ! x264enc  name="encoder1" bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
                 elif h264 == "openh264enc" and args.rpi:
-                    pipeline_video_input += f' ! v4l2convert ! video/x-raw,format=I420{timestampOverlay} ! queue max-size-buffers=10 ! openh264enc  name="encoder" bitrate={args.bitrate}000 complexity=0 ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
+                    pipeline_video_input += f' ! videoconvert ! video/x-raw,format=I420{timestampOverlay} ! queue max-size-buffers=10 ! openh264enc  name="encoder" bitrate={args.bitrate}000 complexity=0 ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
                 elif h264 == "v4l2h264enc" and args.rpi and get_raspberry_pi_model() != 5:
                     if args.format in ["I420", "YV12", "NV12", "NV21", "RGB16", "RGB", "BGR", "RGBA", "BGRx", "BGRA", "YUY2", "YVYU", "UYVY"]:
                         pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw{timestampOverlay} ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4'
@@ -13418,8 +13555,9 @@ async def main():
                 if args.nvidia:
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxvp8enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                 elif args.rpi:
-                    # Keep normal queue before encoder
-                    pipeline_video_input += f' ! v4l2convert{timestampOverlay} ! video/x-raw,format=I420 ! queue max-size-buffers=10 ! vp8enc deadline=1 name="encoder" target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
+                    # vp8enc consumes system-memory frames; avoid fragile V4L2 mem2mem
+                    # conversion when no hardware encoder follows it.
+                    pipeline_video_input += f' ! videoconvert{timestampOverlay} ! video/x-raw,format=I420 ! queue max-size-buffers=10 ! vp8enc deadline=1 name="encoder" target-bitrate={args.bitrate}000 {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                 elif check_plugins('mppvp8enc'):
                     # Rockchip hardware VP8 encoder - ensure NV12 input
                     pipeline_video_input += f'{pipeline_video_converter} ! queue max-size-buffers=4 leaky=upstream ! mppvp8enc qp-init=40 qp-min=10 qp-max=100 gop=30 name="encoder" rc-mode=cbr bps={args.bitrate * 1000} {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'

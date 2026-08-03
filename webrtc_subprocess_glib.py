@@ -44,6 +44,13 @@ def filename_for_container(filename, extension):
     return f"{root or filename}{expected_suffix}"
 
 
+def request_pad_compat(element, template_name):
+    """Request a pad on both pre-1.20 and current GStreamer Python APIs."""
+    if hasattr(element, "request_pad_simple"):
+        return element.request_pad_simple(template_name)
+    return element.get_request_pad(template_name)
+
+
 # Decryption helper functions (if crypto is available)
 if HAS_CRYPTO:
     def to_byte_array(hex_str):
@@ -124,6 +131,7 @@ class GLibWebRTCHandler:
         self.recording_audio = False
         self.video_filename = None
         self.audio_filename = None
+        self._hls_setup_in_progress = False
         
         # NDI state
         self.ndi_combiner = None
@@ -910,7 +918,7 @@ class GLibWebRTCHandler:
                             if video_src_pad and not video_src_pad.is_linked():
                                 self.log("   ⚠️  Video queue not linked to splitmuxsink!")
                                 # Try to request video pad again
-                                video_sink_pad = self.hlssink.request_pad_simple('video')
+                                video_sink_pad = request_pad_compat(self.hlssink, 'video')
                                 if video_sink_pad:
                                     if video_src_pad.link(video_sink_pad) == Gst.PadLinkReturn.OK:
                                         self.log("   ✅ Re-linked video to splitmuxsink")
@@ -951,6 +959,45 @@ class GLibWebRTCHandler:
             GLib.timeout_add(delay, delayed_start)
     
     def setup_hls_muxer(self):
+        """Create the shared HLS mux exactly once, including during pad re-entrancy."""
+        if getattr(self, 'hlssink', None):
+            self.log("   HLS sink already exists, skipping setup")
+            return True
+        if getattr(self, 'base_filename', None):
+            self.log("   HLS recording already started, skipping setup")
+            return True
+        if self._hls_setup_in_progress:
+            self.log("   HLS mux setup is already in progress; deferring the other media pad")
+            return False
+
+        self._hls_setup_in_progress = True
+        try:
+            self._setup_hls_muxer_unlocked()
+            return bool(getattr(self, 'hlssink', None))
+        finally:
+            self._hls_setup_in_progress = False
+
+    def _defer_hls_pad(self, pad, media):
+        """Retry one re-entrant HLS pad after the shared mux setup completes."""
+        pending_attr = f"_hls_{media}_pad_deferred"
+        if getattr(self, pending_attr, False):
+            return
+        setattr(self, pending_attr, True)
+        self.log(f"   HLS mux setup is busy; deferring {media} pad setup")
+
+        def retry():
+            if self._hls_setup_in_progress:
+                return True
+            setattr(self, pending_attr, False)
+            if media == "video":
+                self.handle_video_pad(pad)
+            else:
+                self.handle_audio_pad(pad)
+            return False
+
+        GLib.timeout_add(25, retry)
+
+    def _setup_hls_muxer_unlocked(self):
         """Set up shared mpegtsmux and HLS sink for audio/video"""
         # Check if already set up by looking for any HLS-related attributes
         if hasattr(self, 'hlssink') and self.hlssink:
@@ -1046,7 +1093,6 @@ class GLibWebRTCHandler:
                 self.hlssink.set_property('location', f"{base_filename}_%05d.ts")
                 self.hlssink.set_property('max-size-time', 5 * Gst.SECOND)
                 self.hlssink.set_property('send-keyframe-requests', True)
-                self.hlssink.set_property('async-finalize', True)
                 self.hlssink.set_property('max-size-bytes', 0)  # Disable byte limit
                 self.hlssink.set_property('start-index', 0)  # Start from segment 0
                 # Force alignment on keyframes to prevent split video segments
@@ -1059,18 +1105,22 @@ class GLibWebRTCHandler:
                 # This is critical for Jetson boards
                 self.hlssink.set_property('async-handling', True)
                 
-                # Create and configure mpegtsmux for splitmuxsink
-                mux = Gst.ElementFactory.make('mpegtsmux', None)
-                if mux:
-                    mux.set_property('alignment', 7)
-                    # For live streaming, disable latency
-                    mux.set_property('latency', 0)
-                    # Set prog-map for better stream identification
-                    try:
-                        mux.set_property('prog-map', 'video/x-h264=2048,audio/mpeg=2049')
-                    except:
-                        pass
-                    self.hlssink.set_property('muxer', mux)
+                # With async-finalize enabled, splitmuxsink ignores its `muxer`
+                # object and uses `muxer-factory` instead (default: mp4mux). That
+                # silently produced MP4 data in files named .ts on GStreamer 1.18.
+                if self.hlssink.find_property('muxer-factory'):
+                    self.hlssink.set_property('async-finalize', True)
+                    self.hlssink.set_property('muxer-factory', 'mpegtsmux')
+                else:
+                    self.hlssink.set_property('async-finalize', False)
+                    mux = Gst.ElementFactory.make('mpegtsmux', None)
+                    if mux:
+                        mux.set_property('alignment', 7)
+                        try:
+                            mux.set_property('latency', 0)
+                        except Exception:
+                            pass
+                        self.hlssink.set_property('muxer', mux)
                 
                 self.log(f"   Output: {base_filename}_*.ts (5 second segments)")
                 self.base_filename = base_filename
@@ -1712,7 +1762,7 @@ class GLibWebRTCHandler:
         if self.ndi_combiner:
             # Try new API first, fall back to deprecated API
             try:
-                audio_pad = self.ndi_combiner.request_pad_simple('audio')
+                audio_pad = request_pad_compat(self.ndi_combiner, 'audio')
             except AttributeError:
                 # Fall back to deprecated method for older GStreamer versions
                 audio_pad = self.ndi_combiner.get_request_pad('audio')
@@ -1844,6 +1894,10 @@ class GLibWebRTCHandler:
             
     def handle_video_pad(self, pad):
         """Handle video pad - set up recording"""
+        if self.use_hls and self._hls_setup_in_progress:
+            self._defer_hls_pad(pad, "video")
+            return
+
         # Check if we already have video connected for HLS
         if self.use_hls and hasattr(self, 'hls_video_connected') and self.hls_video_connected:
             self.log("   ⚠️  Video already connected for HLS, ignoring duplicate pad")
@@ -1869,7 +1923,9 @@ class GLibWebRTCHandler:
             self.log(f"📹 HLS RECORDING START: Video stream from {self.stream_id}")
             self.log(f"   Mode: {'splitmuxsink' if self.use_splitmuxsink else 'hlssink'}")
             # For HLS, we'll set up a shared muxer for audio/video
-            self.setup_hls_muxer()
+            if not self.setup_hls_muxer():
+                self._defer_hls_pad(pad, "video")
+                return
         else:
             self.log(f"📹 RECORDING START: Video stream from {self.stream_id}")
         self.log(f"   Codec: {encoding_name}, Resolution: {width}x{height}")
@@ -2300,7 +2356,7 @@ class GLibWebRTCHandler:
                         return
                     
                     # Request video pad from splitmuxsink
-                    video_sink_pad = self.hlssink.request_pad_simple('video')
+                    video_sink_pad = request_pad_compat(self.hlssink, 'video')
                     if not video_sink_pad:
                         self.log("Failed to get video pad from splitmuxsink", "error")
                         return
@@ -2315,7 +2371,9 @@ class GLibWebRTCHandler:
                 else:
                     self.log("   ⚠️  Splitmuxsink not available, attempting to recreate", "warning")
                     # Try to set up HLS muxer again if it failed before
-                    self.setup_hls_muxer()
+                    if not self.setup_hls_muxer():
+                        self._defer_hls_pad(pad, "video")
+                        return
                     return
             elif hasattr(self, 'hls_mux') and self.hls_mux:
                 # Request video pad from mpegtsmux
@@ -2324,7 +2382,7 @@ class GLibWebRTCHandler:
                     video_pad = self.hls_mux.request_pad(video_pad_template, None, None)
                 else:
                     # Fallback for different mpegtsmux versions
-                    video_pad = self.hls_mux.request_pad_simple('sink_%d')
+                    video_pad = request_pad_compat(self.hls_mux, 'sink_%d')
                     
                 if video_pad:
                     src_pad = video_queue.get_static_pad('src')
@@ -2600,6 +2658,10 @@ class GLibWebRTCHandler:
         
     def handle_audio_pad(self, pad):
         """Handle audio pad"""
+        if self.use_hls and self._hls_setup_in_progress:
+            self._defer_hls_pad(pad, "audio")
+            return
+
         # Check if we already have audio connected for HLS
         if self.use_hls and hasattr(self, 'hls_audio_connected') and self.hls_audio_connected:
             self.log("   ⚠️  Audio already connected for HLS, ignoring duplicate pad")
@@ -2669,7 +2731,9 @@ class GLibWebRTCHandler:
                     hls_already_setup = True
                 else:
                     self.log("   🆕 Creating new HLS muxer for audio")
-                    self.setup_hls_muxer()
+                    if not self.setup_hls_muxer():
+                        self._defer_hls_pad(pad, "audio")
+                        return
             else:
                 self.log("   ✅ Using existing HLS muxer")
                 if hasattr(self, 'base_filename'):
@@ -2791,7 +2855,7 @@ class GLibWebRTCHandler:
                         return
                     
                     # Request audio pad from splitmuxsink
-                    audio_sink_pad = self.hlssink.request_pad_simple('audio_%u')
+                    audio_sink_pad = request_pad_compat(self.hlssink, 'audio_%u')
                     if not audio_sink_pad:
                         self.log("Failed to get audio pad from splitmuxsink", "error")
                         return
@@ -2810,7 +2874,7 @@ class GLibWebRTCHandler:
                     audio_pad = self.hls_mux.request_pad(audio_pad_template, None, None)
                 else:
                     # Fallback for different mpegtsmux versions
-                    audio_pad = self.hls_mux.request_pad_simple('sink_%d')
+                    audio_pad = request_pad_compat(self.hls_mux, 'sink_%d')
                     
                 if audio_pad:
                     src_pad = audio_queue.get_static_pad('src')
