@@ -1925,10 +1925,12 @@ class GLibWebRTCHandler:
                     self.log("   openh264dec not available, using avdec_h264")
                     decoder = Gst.ElementFactory.make('avdec_h264', None)
             elif not self.use_hls:
-                # Direct H264 to MP4 without transcoding
-                self.log("   📦 Direct H264 → MP4 (no transcoding)")
-                mux = Gst.ElementFactory.make('mp4mux', None)
-                extension = 'mp4'
+                # MPEG-TS tolerates the missing PTS values produced by some
+                # older WebRTC/GStreamer H264 depayloaders. mp4mux rejects
+                # those streams and leaves an unplayable file at shutdown.
+                self.log("   📦 Direct H264 → MPEG-TS (no transcoding)")
+                mux = Gst.ElementFactory.make('mpegtsmux', None)
+                extension = 'ts'
         elif encoding_name == 'VP9':
             depay = Gst.ElementFactory.make('rtpvp9depay', None)
             if self.room_ndi:
@@ -2501,7 +2503,7 @@ class GLibWebRTCHandler:
                     self.log("Failed to link depay to mux", "error")
                     return
             else:  # H264
-                # H264: queue -> depay -> h264parse -> mp4mux -> filesink
+                # H264: queue -> depay -> h264parse -> mpegtsmux -> filesink
                 if not queue.link(depay):
                     self.log("Failed to link queue to depay", "error")
                     return
