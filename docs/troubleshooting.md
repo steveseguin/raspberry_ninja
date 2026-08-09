@@ -129,6 +129,10 @@ aplay -l
 
 Boot with the display connected when its EDID is needed. Remove `RN_FORCE_SINK` for the real test. If video works and audio does not, test the selected HDMI ALSA device independently; card numbers are not portable between systems.
 
+For Raspberry Pi HDMI receiver mode, use `--view STREAM_ID`; do not add `--framebuffer /dev/fb0`. `--framebuffer` is the raw-frame shared-memory mode and does not select HDMI. Modern KMS images may not expose `/dev/fb0`.
+
+If video opens in an OpenGL window on the computer running SSH, the session is probably forwarding X11. Check `echo "$DISPLAY"`; a value like `localhost:10.0` is forwarded. Run `unset DISPLAY WAYLAND_DISPLAY` and restart the receiver. With HDMI connected, Raspberry Ninja will prefer `kmssink` for direct Pi output.
+
 ## Decoder instability
 
 Force software decoding to distinguish a hardware decoder or memory-conversion problem:

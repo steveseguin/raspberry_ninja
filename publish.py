@@ -447,6 +447,25 @@ def check_drm_displays():
                 # Output wasn't usable as JSON; try next invocation
         return None
 
+    def _check_sysfs_connectors():
+        connector_statuses = sorted(Path("/sys/class/drm").glob("card*-*/status"))
+        if not connector_statuses:
+            return None
+
+        connected = []
+        for status_path in connector_statuses:
+            try:
+                status = status_path.read_text(errors="ignore").strip().lower()
+            except Exception:
+                continue
+            if status == "connected":
+                connected.append(status_path.parent.name)
+
+        if connected:
+            _print_connected("Display(s) detected via DRM sysfs:", connected)
+            return True
+        return False
+
     def _check_kmsprint():
         if shutil.which("kmsprint") is None:
             raise FileNotFoundError
@@ -488,6 +507,7 @@ def check_drm_displays():
         return False
 
     checkers = [
+        ("DRM sysfs", _check_sysfs_connectors),
         ("drm_info", _check_drm_info),
         ("kmsprint", _check_kmsprint),
         ("xrandr", _check_xrandr),
@@ -514,6 +534,29 @@ def check_drm_displays():
 
     print("Unable to detect a connected display. You may need to install drm-tools or ensure an X/Wayland session is active.")
     return False
+
+
+@lru_cache(maxsize=1)
+def is_raspberry_pi_device() -> bool:
+    """Return whether the current device identifies as a Raspberry Pi."""
+    for model_path in (
+        Path("/proc/device-tree/model"),
+        Path("/sys/firmware/devicetree/base/model"),
+    ):
+        try:
+            if model_path.exists() and "Raspberry Pi" in model_path.read_text(errors="ignore"):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def is_ssh_forwarded_display() -> bool:
+    """Detect an X11 display forwarded through the current SSH connection."""
+    display = os.environ.get("DISPLAY", "").strip().lower()
+    if not display or not os.environ.get("SSH_CONNECTION"):
+        return False
+    return display.startswith(("localhost:", "127.0.0.1:", "[::1]:"))
 
 
 @lru_cache(maxsize=1)
@@ -815,8 +858,22 @@ def select_display_sink(default_sink: str = "autovideosink") -> str:
         return forced_sink
 
     display_detected = check_drm_displays()
+    forwarded_display = is_ssh_forwarded_display()
+    local_graphical_session = bool(
+        os.environ.get("WAYLAND_DISPLAY")
+        or (os.environ.get("DISPLAY") and not forwarded_display)
+    )
     if display_detected:
         printc('\nThere is at least one connected display.', "00F")
+        if (
+            is_raspberry_pi_device()
+            and not local_graphical_session
+            and gst_element_available("kmssink")
+        ):
+            if forwarded_display:
+                printwarn("Ignoring SSH-forwarded DISPLAY; using the Raspberry Pi's local DRM/KMS HDMI output.")
+            printc(" ! Raspberry Pi console receiver detected. Using kmssink for direct HDMI output.", "0AF")
+            return "kmssink sync=false"
         if is_jetson_device():
             using_wayland = bool(os.environ.get("WAYLAND_DISPLAY"))
             using_x11 = bool(os.environ.get("DISPLAY")) and not using_wayland
@@ -834,6 +891,19 @@ def select_display_sink(default_sink: str = "autovideosink") -> str:
                     printc(" ! Jetson desktop (X11) detected. Using xvimagesink as fallback.", "0AF")
                     return "xvimagesink sync=false"
         return default_sink
+
+    if is_raspberry_pi_device() and not local_graphical_session:
+        if forwarded_display:
+            printwarn(
+                "SSH-forwarded DISPLAY was ignored and no connected local HDMI display was detected. "
+                "Using fakesink; connect HDMI before boot and restart the receiver."
+            )
+        else:
+            printwarn(
+                "No connected local HDMI display was detected on this Raspberry Pi. "
+                "Using fakesink; connect HDMI before boot and restart the receiver."
+            )
+        return "fakesink sync=true"
 
     if is_jetson_device():
         preferred_order = []
@@ -858,6 +928,22 @@ def select_display_sink(default_sink: str = "autovideosink") -> str:
 
     printc('\n ! No connected displays found. Will try to use glimagesink instead of autovideosink', "F60")
     return "glimagesink sync=true"
+
+
+def validate_receiver_output_args(args) -> None:
+    """Reject ambiguous viewer/raw-frame combinations with actionable guidance."""
+    view = getattr(args, "view", None)
+    framebuffer = getattr(args, "framebuffer", None)
+    if view and framebuffer:
+        raise ValueError(
+            "--framebuffer cannot be combined with --view. For HDMI output, use "
+            "--view STREAM_ID by itself; --framebuffer receives raw frames into shared memory."
+        )
+    if framebuffer and str(framebuffer).startswith("/dev/fb"):
+        raise ValueError(
+            "--framebuffer expects a VDO.Ninja stream ID, not a /dev/fb device. "
+            "For HDMI output, use --view STREAM_ID."
+        )
 
 def replace_ssrc_and_cleanup_sdp(sdp): ## fix for audio-only gstreamer -> chrome
     def generate_ssrc():
@@ -12792,7 +12878,7 @@ async def main():
     parser.add_argument('--pipein', type=str, default=None, help='Pipe a media stream in as the input source. Pass `auto` for auto-decode,pass codec type for pass-thru (mpegts,h264,vp8,vp9), or use `raw`')
     parser.add_argument('--ndiout',  type=str, help='VDO.Ninja to NDI output; requires the NDI Gstreamer plugin installed')
     parser.add_argument('--fdsink',  type=str, help='VDO.Ninja to the stdout pipe; common for piping data between command line processes')
-    parser.add_argument('--framebuffer', type=str, help='VDO.Ninja to local frame buffer; performant and Numpy/OpenCV friendly')
+    parser.add_argument('--framebuffer', type=str, help='Receive a VDO.Ninja stream as raw BGR frames in shared memory; this is not an HDMI device selector')
     parser.add_argument('--v4l2sink', type=str, default=None, help='Viewer output to V4L2 device; requires --view STREAMID (accepts device index or path)')
     parser.add_argument('--v4l2sink-width', type=int, default=1280, help='V4L2 sink output width (default: 1280)')
     parser.add_argument('--v4l2sink-height', type=int, default=720, help='V4L2 sink output height (default: 720)')
@@ -12840,6 +12926,11 @@ async def main():
                 print(f"Error loading config file: {e}")
         else:
             print(f"Config file not found: {config_path}")
+
+    try:
+        validate_receiver_output_args(args)
+    except ValueError as exc:
+        parser.error(str(exc))
     
     if args.force_h264_profile and not args.force_h264_profile_id:
         alias = args.force_h264_profile.strip().lower()

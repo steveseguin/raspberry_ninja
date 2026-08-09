@@ -119,11 +119,14 @@ https://vdo.ninja/?push=rn-receiver&password=false&h264
 For an attached HDMI display, remove `RN_FORCE_SINK`:
 
 ```bash
+unset DISPLAY WAYLAND_DISPLAY
 python3 -u publish.py \
   --view rn-receiver \
   --password false \
   --stretch-display
 ```
+
+Do not add `--framebuffer /dev/fb0`; that option is the raw-frame shared-memory mode, not HDMI output. If SSH has set `DISPLAY` to a value such as `localhost:10.0`, unset it as above so an X11-forwarded OpenGL window cannot replace the Pi's local KMS output.
 
 The receiver remains available while the sender is absent. Automatic retry defaults to a short sequence followed by a longer interval. Use `--no-auto-retry` only for a supervised diagnostic run.
 

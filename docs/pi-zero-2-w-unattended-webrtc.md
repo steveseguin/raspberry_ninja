@@ -258,11 +258,41 @@ At least one HDMI status should say `connected`. Then run the real receiver with
 
 ```bash
 cd "$HOME/raspberry_ninja"
+unset DISPLAY WAYLAND_DISPLAY
 python3 -u publish.py \
   --view illinois-tv \
   --password false \
   --stretch-display
 ```
+
+On a Pi 4, start with the micro-HDMI port closest to the USB-C power connector (HDMI 0). The Pi's HDMI connectors are outputs; a USB capture card is not required to display a received stream on a TV.
+
+Do **not** add `--framebuffer /dev/fb0`. The `--framebuffer` option takes a VDO.Ninja stream ID and exposes decoded BGR frames through shared memory for another program; it does not select an HDMI output. Current Raspberry Pi OS KMS installations may not provide `/dev/fb0` at all.
+
+If an OpenGL video window appears on the computer from which you opened SSH, check:
+
+```bash
+printf 'DISPLAY=%s\n' "$DISPLAY"
+```
+
+A value such as `localhost:10.0` is SSH X11 forwarding. `unset DISPLAY WAYLAND_DISPLAY` before the manual receiver command, as shown above. Raspberry Ninja will then prefer direct `kmssink` output when a local HDMI connector is detected. If HDMI is disconnected, it uses a non-visible fallback instead of opening a window on the SSH client.
+
+For a direct KMS diagnostic, stop any running receiver and test a local pattern:
+
+```bash
+gst-launch-1.0 -v videotestsrc num-buffers=150 \
+  ! videoconvert ! kmssink sync=false
+```
+
+The pattern must appear on the Pi-connected TV, not on the SSH computer. If it fails, collect:
+
+```bash
+id
+grep -H . /sys/class/drm/card*-*/status
+gst-inspect-1.0 kmssink
+```
+
+The receiver user normally needs access to the `video` and `render` groups. After changing group membership, reboot before retesting.
 
 If video works but audio does not, verify the HDMI ALSA device with `aplay -l` and test it independently. Audio device naming differs across Raspberry Pi OS, Ubuntu, kernels, and board revisions, so do not hard-code a card number copied from another Pi.
 

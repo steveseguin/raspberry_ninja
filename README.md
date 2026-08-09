@@ -389,7 +389,8 @@ options:
   --ndiout NDIOUT       VDO.Ninja to NDI output; requires the NDI Gstreamer plugin installed
   --fdsink FDSINK       VDO.Ninja to the stdout pipe; common for piping data between command line processes
   --framebuffer FRAMEBUFFER
-                        VDO.Ninja to local frame buffer; performant and Numpy/OpenCV friendly
+                        Receive a VDO.Ninja stream as raw BGR frames in shared memory; this is not an HDMI device
+                        selector
   --v4l2sink V4L2SINK   Viewer output to V4L2 device; requires --view STREAMID
   --v4l2sink-width V4L2SINK_WIDTH
                         V4L2 sink output width (default: 1280)
@@ -785,7 +786,7 @@ node tests/e2e/room_join_notification_e2e.js
 
 ### OpenCV / Tensorflow / FFMPEG / FDSink / Framebuffer support
 
-There's support for OpenCV/Framebuffer (--framebuffer STREAMIDHERE) and FDSink now. There's a Youtube video link below demoing how to use Raspberry.Ninja to bring raw BGR video frames into Numpy. 
+There's support for OpenCV/shared-memory frames (`--framebuffer STREAMIDHERE`) and FDSink now. Despite the legacy option name, `--framebuffer` does not select `/dev/fb0` or an HDMI output; use `--view STREAMIDHERE` for local display. There's a Youtube video link below demoing how to use Raspberry.Ninja to bring raw BGR video frames into Numpy.
 
 [https://www.youtube.com/watch?v=LGaruUjb8dg](https://www.youtube.com/watch?v=LGaruUjb8dg)
 
