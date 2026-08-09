@@ -19,6 +19,35 @@ class DisplaySelectionTests(unittest.TestCase):
         with mock.patch.object(publish.Path, "glob", return_value=[status_path]):
             self.assertTrue(publish.check_drm_displays())
 
+    def test_connected_drm_preferred_mode_is_used_for_direct_display(self):
+        status_path = mock.MagicMock()
+        status_path.read_text.return_value = "connected\n"
+        modes_path = mock.MagicMock()
+        modes_path.exists.return_value = True
+        modes_path.read_text.return_value = "1920x1200\n1920x1080\n"
+        status_path.parent.__truediv__.return_value = modes_path
+
+        with mock.patch.object(publish.Path, "glob", return_value=[status_path]):
+            self.assertEqual(publish.get_drm_display_resolution(), (1920, 1200))
+
+    def test_disconnected_drm_mode_is_ignored(self):
+        status_path = mock.MagicMock()
+        status_path.read_text.return_value = "disconnected\n"
+
+        with mock.patch.object(publish.Path, "glob", return_value=[status_path]):
+            self.assertIsNone(publish.get_drm_display_resolution())
+
+    def test_kms_conversion_preserves_aspect_ratio_by_default(self):
+        chain = publish.build_kms_conversion_chain((1920, 1200), stretch=False)
+
+        self.assertIn("videoscale add-borders=true", chain)
+        self.assertIn("width=(int)1920,height=(int)1200", chain)
+
+    def test_kms_conversion_can_stretch_to_display_mode(self):
+        chain = publish.build_kms_conversion_chain((1920, 1200), stretch=True)
+
+        self.assertIn("videoscale add-borders=false", chain)
+
     def test_detects_standard_ssh_forwarded_x11_display(self):
         with mock.patch.dict(
             os.environ,
@@ -38,7 +67,10 @@ class DisplaySelectionTests(unittest.TestCase):
             {"DISPLAY": "localhost:10.0", "SSH_CONNECTION": "client server"},
             clear=True,
         ):
-            self.assertEqual(publish.select_display_sink(), "kmssink sync=false")
+            self.assertEqual(
+                publish.select_display_sink(),
+                "kmssink sync=false force-modesetting=true",
+            )
 
     @mock.patch("publish.is_raspberry_pi_device", return_value=True)
     @mock.patch("publish.check_drm_displays", return_value=False)

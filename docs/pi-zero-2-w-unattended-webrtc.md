@@ -275,13 +275,24 @@ If an OpenGL video window appears on the computer from which you opened SSH, che
 printf 'DISPLAY=%s\n' "$DISPLAY"
 ```
 
-A value such as `localhost:10.0` is SSH X11 forwarding. `unset DISPLAY WAYLAND_DISPLAY` before the manual receiver command, as shown above. Raspberry Ninja will then prefer direct `kmssink` output when a local HDMI connector is detected. If HDMI is disconnected, it uses a non-visible fallback instead of opening a window on the SSH client.
+A value such as `localhost:10.0` is SSH X11 forwarding. `unset DISPLAY WAYLAND_DISPLAY` before the manual receiver command, as shown above. Raspberry Ninja will then prefer direct `kmssink` output with KMS mode-setting enabled when a local HDMI connector is detected. It reads the connected monitor's advertised modes instead of assuming that the framebuffer's virtual size is supported. If HDMI is disconnected, it uses a non-visible fallback instead of opening a window on the SSH client.
 
 For a direct KMS diagnostic, stop any running receiver and test a local pattern:
 
 ```bash
-gst-launch-1.0 -v videotestsrc num-buffers=150 \
-  ! videoconvert ! kmssink sync=false
+MODE=""
+for connector in /sys/class/drm/card*-HDMI-A-*; do
+  [ "$(cat "$connector/status" 2>/dev/null)" = connected ] || continue
+  MODE="$(head -n 1 "$connector/modes")"
+  break
+done
+[ -n "$MODE" ] || { echo "No connected HDMI mode found"; exit 1; }
+WIDTH="${MODE%x*}"
+HEIGHT="${MODE#*x}"
+
+gst-launch-1.0 -v videotestsrc num-buffers=100 pattern=smpte \
+  ! video/x-raw,format=BGRx,width="$WIDTH",height="$HEIGHT",framerate=10/1 \
+  ! kmssink sync=false force-modesetting=true
 ```
 
 The pattern must appear on the Pi-connected TV, not on the SSH computer. If it fails, collect:

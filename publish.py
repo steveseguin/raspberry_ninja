@@ -764,6 +764,47 @@ def get_framebuffer_resolution() -> Optional[Tuple[int, int]]:
     return None
 
 
+def get_drm_display_resolution() -> Optional[Tuple[int, int]]:
+    """Return the first advertised mode for a connected DRM display.
+
+    The framebuffer's virtual size can be a firmware default that the attached
+    monitor does not advertise.  Direct KMS output must use a real connector
+    mode or ``kmssink`` can fail negotiation while leaving the console visible.
+    Sysfs lists the preferred connector mode first on DRM/KMS systems.
+    """
+    try:
+        status_files = list(Path("/sys/class/drm").glob("card*-*/status"))
+    except Exception:
+        return None
+
+    for status_path in status_files:
+        try:
+            if status_path.read_text().strip().lower() != "connected":
+                continue
+            modes_path = status_path.parent / "modes"
+            if not modes_path.exists():
+                continue
+            for mode in modes_path.read_text().splitlines():
+                match = re.search(r"(?P<width>\d+)x(?P<height>\d+)", mode)
+                if match:
+                    return int(match.group("width")), int(match.group("height"))
+        except Exception:
+            continue
+
+    return None
+
+
+def build_kms_conversion_chain(display_size: Tuple[int, int], stretch: bool) -> str:
+    """Scale decoded video to a mode that direct KMS output can display."""
+    width, height = display_size
+    add_borders = "false" if stretch else "true"
+    return (
+        f"videoconvert ! videoscale add-borders={add_borders} ! "
+        f"video/x-raw,format=BGRx,width=(int){width},height=(int){height},"
+        "pixel-aspect-ratio=(fraction)1/1"
+    )
+
+
 def select_preferred_decoder(
     codec: str,
     fallback: str,
@@ -873,7 +914,7 @@ def select_display_sink(default_sink: str = "autovideosink") -> str:
             if forwarded_display:
                 printwarn("Ignoring SSH-forwarded DISPLAY; using the Raspberry Pi's local DRM/KMS HDMI output.")
             printc(" ! Raspberry Pi console receiver detected. Using kmssink for direct HDMI output.", "0AF")
-            return "kmssink sync=false"
+            return "kmssink sync=false force-modesetting=true"
         if is_jetson_device():
             using_wayland = bool(os.environ.get("WAYLAND_DISPLAY"))
             using_x11 = bool(os.environ.get("DISPLAY")) and not using_wayland
@@ -4945,6 +4986,11 @@ class WebRTCClient:
             "nvoverlaysink": "video/x-raw(memory:NVMM),format=NV12,pixel-aspect-ratio=1/1",
         }
         fb_size = get_framebuffer_resolution()
+        if sink_base == "kmssink":
+            drm_size = get_drm_display_resolution()
+            if drm_size:
+                fb_size = drm_size
+                print(f"[display] Using connected DRM mode {drm_size[0]}x{drm_size[1]}")
         nvvidconv_has_nvbuf = gst_element_supports_property("nvvidconv", "nvbuf-memory-type")
         needs_system_memory = sink_base not in jetson_caps
         debug_display = bool(os.environ.get("RN_DEBUG_DISPLAY"))
@@ -5052,6 +5098,11 @@ class WebRTCClient:
                 return "videoconvert ! video/x-raw,format=BGRx"
             if sink_base == "glimagesink":
                 return "videoconvert ! video/x-raw,format=RGBA"
+            if sink_base == "kmssink" and fb_size:
+                return build_kms_conversion_chain(
+                    fb_size,
+                    getattr(self, "stretch_display", False),
+                )
             return "videoconvert ! video/x-raw,format=BGRx"
 
         self._display_chain_config = {
