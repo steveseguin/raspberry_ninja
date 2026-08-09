@@ -1029,6 +1029,18 @@ def handle_data_channel_heartbeat(channel, msg, client) -> bool:
     return False
 
 
+def should_scan_rpi_video_devices(args) -> bool:
+    """Return whether Pi camera auto-discovery is relevant to this source."""
+    return bool(
+        getattr(args, "rpi", False)
+        and not getattr(args, "test", False)
+        and not getattr(args, "v4l2", None)
+        and not getattr(args, "hdmi", False)
+        and not getattr(args, "rpicam", False)
+        and not getattr(args, "z1", False)
+    )
+
+
 def normalize_stun_server_option(value) -> Tuple[Optional[str], bool]:
     """Return (STUN URL, disabled) for a CLI/config STUN value."""
     if value is None:
@@ -13411,7 +13423,7 @@ async def main():
                 break
         print("")
 
-    elif args.rpi and not args.v4l2 and not args.hdmi and not args.rpicam and not args.z1:
+    elif should_scan_rpi_video_devices(args):
         gst_ver = Gst.version()
 
         # On older GStreamer builds (notably 1.18), libcamerasrc can be unstable with some
