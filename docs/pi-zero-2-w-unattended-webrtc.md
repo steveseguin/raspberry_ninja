@@ -179,6 +179,7 @@ Identify a real capture node rather than selecting a Pi codec node:
 ```bash
 v4l2-ctl --list-devices
 v4l2-ctl -d /dev/video0 --all
+v4l2-ctl -d /dev/video0 --list-formats-ext
 ```
 
 Then start with conservative settings:
@@ -196,6 +197,35 @@ Remove `--noaudio` and select an ALSA input when a microphone is ready:
 ```bash
 arecord -l
 python3 -u publish.py ... --alsa hw:CARD,DEVICE
+```
+
+Some webcams, including many Logitech C920 units, advertise an `H264` capture
+format. On a Zero 2 W, use that camera-provided compressed stream to avoid
+decoding MJPEG and encoding it again in software:
+
+```bash
+python3 -u publish.py \
+  --v4l2 /dev/video0 --format H264 --h264 \
+  --width 1280 --height 720 --framerate 15 \
+  --alsa hw:1,0 --audiobitrate 48 \
+  --streamid florida-camera \
+  --password false
+```
+
+Use `--format H264` only when `--list-formats-ext` advertises H.264 at the
+requested resolution and frame rate. Raspberry Ninja validates the advertised
+mode and otherwise retains the existing MJPEG fallback. Native passthrough
+cannot add clock overlays or change the webcam's internally selected H.264
+bitrate; `--bitrate` still communicates the WebRTC bandwidth preference but
+does not re-encode the camera stream.
+
+A webcam can exceed the Zero 2 W's USB power budget even when capture itself is
+lightweight. If the Pi reboots, disappears from Wi-Fi, or reports undervoltage
+after connecting the camera, use a separately powered USB hub and verify:
+
+```bash
+lsusb
+vcgencmd get_throttled
 ```
 
 Increase resolution, frame rate, and bitrate one setting at a time while watching memory, temperature, throttling, and dropped frames.

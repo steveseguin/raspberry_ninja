@@ -13,6 +13,9 @@ V4L2_SAMPLE = """\
     [1]: 'YUYV' (YUYV 4:2:2)
         Size: Discrete 640x480
             Interval: Discrete 0.033s (30.000 fps)
+    [2]: 'H264' (H.264, compressed)
+        Size: Discrete 1920x1080
+            Interval: Discrete 0.033s (30.000 fps)
 """
 
 
@@ -22,6 +25,7 @@ class V4L2CaptureModeTests(unittest.TestCase):
         self.assertEqual(modes["MJPG"][(1280, 720)], [120.0])
         self.assertEqual(modes["MJPG"][(640, 360)], [210.0])
         self.assertEqual(modes["YUYV"][(640, 480)], [30.0])
+        self.assertEqual(modes["H264"][(1920, 1080)], [30.0])
 
     def test_selects_nearest_size_and_marks_unsupported_rate(self):
         modes = publish.parse_v4l2_capture_modes(V4L2_SAMPLE)["MJPG"]
@@ -40,6 +44,25 @@ class V4L2CaptureModeTests(unittest.TestCase):
         self.assertEqual((width, height), (640, 480))
         self.assertTrue(rate_supported)
         self.assertEqual(rates, [30.0])
+
+    def test_builds_native_h264_passthrough_without_encoder(self):
+        pipeline = publish.build_v4l2_h264_passthrough_pipeline(
+            "/dev/video0", 2, 1280, 720, 15
+        )
+
+        self.assertIn("video/x-h264", pipeline)
+        self.assertIn("width=(int)1280,height=(int)720", pipeline)
+        self.assertIn("framerate=(fraction)15/1", pipeline)
+        self.assertIn("h264parse", pipeline)
+        self.assertIn("rtph264pay", pipeline)
+        self.assertNotIn("264enc", pipeline)
+
+    def test_h264_passthrough_can_leave_rate_unconstrained(self):
+        pipeline = publish.build_v4l2_h264_passthrough_pipeline(
+            "/dev/video0", 2, 1280, 720, 25, constrain_rate=False
+        )
+
+        self.assertNotIn("framerate=", pipeline)
 
 
 class V4L2JpegProbeTests(unittest.TestCase):

@@ -12812,6 +12812,27 @@ def select_v4l2_capture_mode(
     return selected_size[0], selected_size[1], rate_supported, rates
 
 
+def build_v4l2_h264_passthrough_pipeline(
+    device: str,
+    iomode: int,
+    width: int,
+    height: int,
+    framerate: float,
+    constrain_rate: bool = True,
+    save_fragment: str = "",
+) -> str:
+    """Build a native H.264 UVC capture pipeline without decoding/re-encoding."""
+    source_caps = f"video/x-h264,width=(int){width},height=(int){height}"
+    if constrain_rate:
+        source_caps += f",framerate=(fraction){framerate}/1"
+    return (
+        f"v4l2src device={device} io-mode={iomode} ! {source_caps} "
+        "! queue max-size-buffers=4 leaky=downstream ! h264parse"
+        f"{save_fragment} ! rtph264pay config-interval=-1 aggregate-mode=zero-latency "
+        "! application/x-rtp,media=video,encoding-name=H264,payload=96"
+    )
+
+
 def resolve_v4l2sink_device(device: Optional[str], default_index: int = 0) -> Optional[str]:
     """Resolve a writable V4L2 output device for v4l2sink."""
     return resolve_v4l2_output_device(
@@ -13417,6 +13438,7 @@ async def main():
         
         pipeline_video_input = ''
         pipeline_audio_input = ''
+        v4l2_h264_passthrough = False
 
         if args.bt601:
             args.raw = True
@@ -13442,6 +13464,13 @@ async def main():
         if args.x265:
             args.h265 = True
 
+        native_v4l2_h264_requested = bool(
+            args.v4l2
+            and not args.raw
+            and args.h264
+            and (args.format or "").upper() in {"H264", "H.264"}
+        )
+
         h264 = None
         if args.omx and check_plugins('omxh264enc'):
             h264 = 'omxh264enc'
@@ -13454,7 +13483,7 @@ async def main():
         elif args.apple and check_plugins('vtenc_h264_hw'):
             h264 = 'vtenc_h264_hw'
         elif args.h264:
-            if v4l2_h264_encoder_usable():
+            if not native_v4l2_h264_requested and v4l2_h264_encoder_usable():
                 h264 = 'v4l2h264enc'
             elif check_plugins('mpph264enc'):
                 h264 = 'mpph264enc'
@@ -13473,7 +13502,7 @@ async def main():
         elif args.omx or args.x264 or args.openh264 or args.h264:
             print("Couldn't find the h264 encoder")
             
-        if h264:
+        if h264 and not native_v4l2_h264_requested:
             print("H264 encoder that we will try to use: "+h264)
        
         h265 = None
@@ -13784,10 +13813,25 @@ async def main():
                 # not-negotiated, even when VIDIOC_G_PARM reports that requested rate.
                 if not error and not args.raw:
                     all_modes = get_v4l2_capture_modes(args.v4l2)
-                    mjpeg_modes = all_modes.get("MJPG") or all_modes.get("JPEG") or {}
+                    requested_h264_passthrough = bool(
+                        args.h264 and (args.format or "").upper() in {"H264", "H.264"}
+                    )
+                    h264_modes = all_modes.get("H264") or {}
+                    if requested_h264_passthrough and h264_modes:
+                        capture_modes = h264_modes
+                        capture_format_label = "H.264"
+                        v4l2_h264_passthrough = True
+                    else:
+                        if requested_h264_passthrough:
+                            printwarn(
+                                f"{args.v4l2} does not advertise native H.264 capture; "
+                                "falling back to MJPEG decode and encode."
+                            )
+                        capture_modes = all_modes.get("MJPG") or all_modes.get("JPEG") or {}
+                        capture_format_label = "MJPEG"
                     selected_width, selected_height, v4l2_source_rate_supported, rates = (
                         select_v4l2_capture_mode(
-                            mjpeg_modes,
+                            capture_modes,
                             args.width,
                             args.height,
                             args.framerate,
@@ -13795,7 +13839,7 @@ async def main():
                     )
                     if (selected_width, selected_height) != (args.width, args.height):
                         printc(
-                            f"Requested {args.width}x{args.height} is not an advertised MJPEG mode on "
+                            f"Requested {args.width}x{args.height} is not an advertised {capture_format_label} mode on "
                             f"{args.v4l2}; using {selected_width}x{selected_height}",
                             "FA0",
                         )
@@ -13804,9 +13848,13 @@ async def main():
                         advertised = ", ".join(f"{rate:g}" for rate in rates)
                         printc(
                             f"Requested {args.framerate} fps is not advertised for "
-                            f"{args.width}x{args.height} MJPEG on {args.v4l2} "
+                            f"{args.width}x{args.height} {capture_format_label} on {args.v4l2} "
                             f"(advertised: {advertised} fps); leaving the source rate unconstrained "
-                            "and limiting decoded output instead",
+                            + (
+                                "because compressed H.264 passthrough cannot safely alter frame rate"
+                                if v4l2_h264_passthrough
+                                else "and limiting decoded output instead"
+                            ),
                             "FA0",
                         )
 
@@ -13883,34 +13931,58 @@ async def main():
                         pipeline_video_input = f'v4l2src device={args.v4l2} io-mode={str(args.iomode)} ! video/x-raw,width=(int){args.width},height=(int){args.height},framerate=(fraction){args.framerate}/1'
                         pipeline_video_converter = f' ! videoconvert{timestampOverlay} ! video/x-raw,format={args.format or "NV12"}'
                 else:
-                    # Non-raw mode (JPEG capture)
-                    source_caps = f'image/jpeg,width=(int){args.width},height=(int){args.height}'
-                    if v4l2_source_rate_supported:
-                        source_caps += f',framerate=(fraction){args.framerate}/1'
-                    pipeline_video_input = (
-                        f'v4l2src device={args.v4l2} io-mode={str(args.iomode)} ! {source_caps}'
-                    )
-                    pipeline_video_converter = ""  # Add this line
-                    if args.nvidia:
-                        pipeline_video_input += ' ! jpegparse ! nvjpegdec ! video/x-raw'
-                    elif args.rpi:
-                        if args.soft_jpeg:
-                             # Force software decoding
-                             pipeline_video_input += ' ! jpegparse ! jpegdec'
-                        else:
-                             # Use hardware only after it proves that it can process frames.
-                             decoder = 'v4l2jpegdec' if v4l2_jpeg_decoder_usable() else 'jpegdec'
-                             pipeline_video_input += f' ! jpegparse ! {decoder} '
-                    else:
-                        # Add jpegparse for better error handling of corrupted JPEG frames
-                        pipeline_video_input += ' ! jpegparse ! jpegdec'
-                    if not v4l2_source_rate_supported:
-                        pipeline_video_input += (
-                            f' ! videorate drop-only=true max-rate={args.framerate} '
-                            f'! video/x-raw,framerate=(fraction){args.framerate}/1'
+                    if v4l2_h264_passthrough:
+                        if timestampOverlay:
+                            printwarn(
+                                "Clock/timestamp overlays require decoded video and are ignored "
+                                "for native V4L2 H.264 passthrough."
+                            )
+                        pipeline_video_input = build_v4l2_h264_passthrough_pipeline(
+                            args.v4l2,
+                            args.iomode,
+                            args.width,
+                            args.height,
+                            args.framerate,
+                            v4l2_source_rate_supported,
+                            saveVideo,
                         )
+                        pipeline_video_converter = ""
+                        printc(
+                            f"Using native H.264 passthrough from {args.v4l2}; "
+                            "camera video will not be decoded or re-encoded.",
+                            "0AF",
+                        )
+                    else:
+                        # Non-raw mode (JPEG capture)
+                        source_caps = f'image/jpeg,width=(int){args.width},height=(int){args.height}'
+                        if v4l2_source_rate_supported:
+                            source_caps += f',framerate=(fraction){args.framerate}/1'
+                        pipeline_video_input = (
+                            f'v4l2src device={args.v4l2} io-mode={str(args.iomode)} ! {source_caps}'
+                        )
+                        pipeline_video_converter = ""  # Add this line
+                        if args.nvidia:
+                            pipeline_video_input += ' ! jpegparse ! nvjpegdec ! video/x-raw'
+                        elif args.rpi:
+                            if args.soft_jpeg:
+                                 # Force software decoding
+                                 pipeline_video_input += ' ! jpegparse ! jpegdec'
+                            else:
+                                 # Use hardware only after it proves that it can process frames.
+                                 decoder = 'v4l2jpegdec' if v4l2_jpeg_decoder_usable() else 'jpegdec'
+                                 pipeline_video_input += f' ! jpegparse ! {decoder} '
+                        else:
+                            # Add jpegparse for better error handling of corrupted JPEG frames
+                            pipeline_video_input += ' ! jpegparse ! jpegdec'
+                        if not v4l2_source_rate_supported:
+                            pipeline_video_input += (
+                                f' ! videorate drop-only=true max-rate={args.framerate} '
+                                f'! video/x-raw,framerate=(fraction){args.framerate}/1'
+                            )
 
             if args.filesrc2:
+                pass
+            elif v4l2_h264_passthrough:
                 pass
             elif args.z1passthru:
                 pass
