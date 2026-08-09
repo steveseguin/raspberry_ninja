@@ -5,13 +5,14 @@ See the [documentation index](README.md) for recording, cross-platform compatibi
 This guide sets up a Raspberry Pi Zero 2 W as either:
 
 - an unattended HDMI receiver that waits for a fixed VDO.Ninja stream ID; or
-- a low-resolution sender using a USB/CSI camera or a test source.
+- a low-resolution sender using a USB/CSI camera or a test source; or
+- a carefully tested two-way endpoint using separate receive and return stream IDs.
 
 The receiver may remain on continuously. When a sender starts using the matching stream ID, Raspberry Ninja reconnects and displays the stream. The same receiver works with either another Raspberry Pi sender or a normal VDO.Ninja browser publisher.
 
 ## Tested baseline
 
-This procedure was tested on August 2, 2026 with:
+This procedure was most recently tested on August 9, 2026 with:
 
 - Raspberry Pi Zero 2 W Rev 1.0
 - Raspberry Pi OS Lite 32-bit, Debian/Raspbian 13 Trixie
@@ -20,13 +21,20 @@ This procedure was tested on August 2, 2026 with:
 - Python 3.13.5
 - an 8 GB microSD card
 - 424 MiB usable RAM and 423 MiB swap
+- a directly connected 1920x1200 HDMI monitor
+- a powered USB hub and Logitech C920 webcam/microphone
+- a Pi 3 running Raspberry Pi OS Bullseye and GStreamer 1.18.4 as a second native endpoint
+- current Chrome as the browser endpoint
 
-Both directions were tested over VDO.Ninja:
+The following paths were tested over VDO.Ninja:
 
-- Pi test source to Chrome: H.264, 640x360 at 15 fps, about 500 kbps
-- Chrome camera to Pi headless receiver: baseline H.264 received and decoded
+- Pi 3 test source to the Zero's physical HDMI output: H.264, 640x360 at 15 fps, about 520 kbps, with 0% reported loss
+- sender stop/start recovery: the Zero returned to its idle display and automatically reconnected
+- Zero C920 to Chrome: native H.264 plus Opus, 1280x720 at 15 fps, about 3.4 Mbps, with 0% reported loss
+- simultaneous HDMI receive and native C920/Opus return: about 104 MiB plus 94 MiB RSS, 134-148 MiB available, 8 MiB swap, 49 C, and no throttling
+- systemd crash recovery and reconfiguration, including rejection of malformed configuration
 
-The test Pi's HDMI connector was disconnected, so receiver negotiation and decoding were validated with `fakesink`. Repeat the final receiver test with the TV attached to validate the physical HDMI and audio path.
+The simultaneous result is a proof of this exact powered C920/native-H.264 setup, not a general promise that two software encoders will fit on a Zero 2 W. A Pi 4 or Pi 5 remains the safer two-way and 24/7 choice. The attached monitor's 1920x1200 mode also confirmed that the receiver does not assume every display is 1920x1080.
 
 The broader v17 test bench also validated three-minute H.264/Opus operation on this Zero 2 W, direct H.264 and VP8 recordings, automatic receiver recovery, and clean decoding on a second Raspberry Pi. Those results apply to the exact baseline above; they do not prove every Raspberry Pi OS or GStreamer combination.
 
@@ -291,8 +299,7 @@ cd "$HOME/raspberry_ninja"
 unset DISPLAY WAYLAND_DISPLAY
 python3 -u publish.py \
   --view illinois-tv \
-  --password false \
-  --stretch-display
+  --password false
 ```
 
 On a Pi 4, start with the micro-HDMI port closest to the USB-C power connector (HDMI 0). The Pi's HDMI connectors are outputs; a USB capture card is not required to display a received stream on a TV.
@@ -306,6 +313,8 @@ printf 'DISPLAY=%s\n' "$DISPLAY"
 ```
 
 A value such as `localhost:10.0` is SSH X11 forwarding. `unset DISPLAY WAYLAND_DISPLAY` before the manual receiver command, as shown above. Raspberry Ninja will then prefer direct `kmssink` output with KMS mode-setting enabled when a local HDMI connector is detected. It reads the connected monitor's advertised modes instead of assuming that the framebuffer's virtual size is supported. If HDMI is disconnected, it uses a non-visible fallback instead of opening a window on the SSH client.
+
+The default preserves the source aspect ratio and may add black bars. This avoids distorting 16:9 video on a 1920x1200 monitor or another unexpected mode. Add `--stretch-display` only when filling every pixel matters more than preserving geometry.
 
 For a direct KMS diagnostic, stop any running receiver and test a local pattern:
 
@@ -339,36 +348,23 @@ If video works but audio does not, verify the HDMI ALSA device with `aplay -l` a
 
 ## 8. Make the receiver start on boot
 
-Run this while logged in as the account that owns the clone. Change `illinois-tv` and the password mode before deployment.
+First prove the receiver manually. Then run the installer while logged in as the account that owns the clone:
 
 ```bash
-RN_USER="$USER"
-RN_DIR="$HOME/raspberry_ninja"
-
-sudo tee /etc/systemd/system/raspberry-ninja-viewer.service >/dev/null <<EOF
-[Unit]
-Description=Raspberry Ninja unattended HDMI receiver
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-Type=simple
-User=$RN_USER
-WorkingDirectory=$RN_DIR
-Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 $RN_DIR/publish.py --view illinois-tv --password false --stretch-display
-Restart=always
-RestartSec=5
-TimeoutStopSec=15
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo systemctl daemon-reload
-sudo systemctl enable --now raspberry-ninja-viewer.service
+cd "$HOME/raspberry_ninja"
+sudo python3 tools/install_unattended.py \
+  receiver --stream-id illinois-tv
 systemctl status raspberry-ninja-viewer.service --no-pager
 ```
+
+The installer prompts for the shared VDO.Ninja password. It writes a validated systemd unit and a restricted JSON config under `/etc/raspberry-ninja/`, enables the service, and starts or restarts it. This keeps the password out of the unit's `ExecStart` line. Use the literal password `false` only for a controlled test:
+
+```bash
+sudo python3 tools/install_unattended.py --password false \
+  receiver --stream-id illinois-tv
+```
+
+Aspect ratio is preserved by default. Add `--stretch-display` after `receiver` if fill-to-screen distortion is intentional. Run the same command again to safely update and restart an existing service. Use `--no-start` before the role to install without starting immediately.
 
 Follow logs with:
 
@@ -378,38 +374,72 @@ journalctl -u raspberry-ninja-viewer.service -f
 
 The service remains connected to signaling while no sender is present. When either the Florida Pi or a browser publishes `illinois-tv`, the receiver connects and switches to live video. Its built-in viewer retry logic handles sender disconnects and later restarts.
 
-## 9. Optional sender auto-start
+If the service fails, do not run random commands until its first error is known:
 
-After a real camera command has been tested manually, put that exact command into a second service on the sender. For example:
-
-```ini
-[Unit]
-Description=Raspberry Ninja camera sender
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-Type=simple
-User=YOUR_USER
-WorkingDirectory=/home/YOUR_USER/raspberry_ninja
-Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 /home/YOUR_USER/raspberry_ninja/publish.py --v4l2 /dev/video0 --rpi --h264 --noaudio --width 640 --height 360 --framerate 15 --bitrate 500 --streamid illinois-tv --password false
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
+```bash
+systemctl status raspberry-ninja-viewer.service --no-pager
+journalctl -u raspberry-ninja-viewer.service -n 100 --no-pager
+sudo systemd-analyze verify /etc/systemd/system/raspberry-ninja-viewer.service
 ```
 
-Do not enable this until `/dev/video0` has been verified as the intended capture device. Stable device paths under `/dev/v4l/by-id/` are preferable for USB cameras when available.
+An explicitly requested missing or malformed JSON config is a hard startup error. Raspberry Ninja will not silently fall back to publishing from a default camera.
 
-## 10. Zero 2 W operating limits
+## 9. Optional sender auto-start
+
+After a real camera command has been tested manually, install the matching sender service. For a conservative camera-only sender:
+
+```bash
+sudo python3 tools/install_unattended.py \
+  sender --stream-id illinois-tv \
+  --camera /dev/v4l/by-id/YOUR-CAMERA \
+  --width 640 --height 360 --framerate 15 --bitrate 500
+```
+
+For a C920 that advertises H.264 and has already passed the manual test:
+
+```bash
+sudo python3 tools/install_unattended.py \
+  sender --stream-id illinois-tv \
+  --camera /dev/v4l/by-id/YOUR-C920-video-index0 \
+  --format H264 --width 1280 --height 720 --framerate 15 --bitrate 2500 \
+  --audio-device hw:C920,0 --audio-bitrate 48
+```
+
+The installer prompts for the password. Do not enable a real-camera service until the selected node has been verified. Stable paths under `/dev/v4l/by-id/` are preferable to `/dev/video0`; use a stable ALSA name such as `hw:C920,0` when the device provides one.
+
+For a local test that must not contact a STUN server, place `--stun-server false` before `sender` or `receiver`. Do not disable STUN for the Florida-to-Illinois deployment: peers behind different routers normally need STUN and sometimes TURN.
+
+## 10. Optional two-way conversation
+
+Use two different stream IDs:
+
+- Florida to Illinois TV: `illinois-tv`
+- Illinois camera/microphone back to Florida: `illinois-return`
+
+Keep the receiver service from section 8. On the Illinois Pi, manually prove the C920/native-H.264 command, then install a second service with the return ID:
+
+```bash
+sudo python3 tools/install_unattended.py \
+  sender --service-name raspberry-ninja-return \
+  --stream-id illinois-return \
+  --camera /dev/v4l/by-id/YOUR-C920-video-index0 \
+  --format H264 --width 1280 --height 720 --framerate 15 --bitrate 2500 \
+  --audio-device hw:C920,0 --audio-bitrate 48
+```
+
+The Florida laptop can publish `illinois-tv` and view `illinois-return`. If both actions are done in VDO.Ninja browser tabs, both must use the same strong shared password as their corresponding Pi services.
+
+Two-way audio needs echo control. Raspberry Ninja's raw ALSA path does not provide browser-style acoustic echo cancellation. Use headphones, an echo-cancelling USB speakerphone, or careful microphone/speaker placement and volume. Test HDMI audio and microphone audio separately before combining them.
+
+On the tested Zero, two processes worked only because the C920 supplied H.264 directly. Do not attempt two software encoders on this board. A Pi 4 or Pi 5 with Ethernet, cooling, and a strong power supply is the safer unattended two-way endpoint.
+
+## 11. Zero 2 W operating limits
 
 Use these defaults until the setup has been stable for several hours:
 
 - 640x360 at 15 fps
 - 500 kbps video
-- one Raspberry Ninja process
+- one Raspberry Ninja process for the recommended receive-only deployment
 - Raspberry Pi OS Lite without a desktop/browser on the Pi
 - test video without audio while isolating problems
 
@@ -430,7 +460,9 @@ df -h /
 
 Avoid parallel package installs, builds, browsers, or multiple software encoders on this board. Some swap use during package installation is normal; sustained video should not continually grow swap or trigger throttling.
 
-## 11. Troubleshooting by platform capability
+If the exact native-H.264 two-way path is used, watch both processes for several hours. Stop or downgrade the return sender if available memory continually falls, swap keeps growing, temperature rises excessively, or either stream loses frames.
+
+## 12. Troubleshooting by platform capability
 
 When a pipeline fails, collect the actual environment instead of applying another board's settings:
 
@@ -457,4 +489,4 @@ Important differences include:
 
 Use detected elements and tested fallbacks. Do not replace working legacy or non-Pi paths with settings verified on only this Zero 2 W.
 
-For a shareable diagnostic checklist, continue with [Troubleshooting](troubleshooting.md). For longer validation and soak-test criteria, see the [Operations guide](operations-guide.md#stability-checks).
+For a shareable diagnostic checklist, continue with [Troubleshooting](troubleshooting.md). Before leaving the unit unattended, complete the [unattended validation checklist](unattended-validation-checklist.md). For broader operating guidance, see the [Operations guide](operations-guide.md#stability-checks).

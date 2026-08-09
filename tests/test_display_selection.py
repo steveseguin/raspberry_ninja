@@ -107,6 +107,31 @@ class DisplaySelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "expects a VDO.Ninja stream ID"):
             publish.validate_receiver_output_args(args)
 
+    def test_viewer_retry_delays_must_be_finite(self):
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                args = SimpleNamespace(
+                    view="illinois-tv",
+                    framebuffer=None,
+                    viewer_retry_initial=value,
+                    viewer_retry_short=45,
+                    viewer_retry_long=180,
+                )
+                with self.assertRaisesRegex(ValueError, "finite, non-negative"):
+                    publish.validate_receiver_output_args(args)
+
+    def test_viewer_retry_delays_cannot_be_negative(self):
+        args = SimpleNamespace(
+            view="illinois-tv",
+            framebuffer=None,
+            viewer_retry_initial=15,
+            viewer_retry_short=-1,
+            viewer_retry_long=180,
+        )
+
+        with self.assertRaisesRegex(ValueError, "--viewer-retry-short"):
+            publish.validate_receiver_output_args(args)
+
 
 if __name__ == "__main__":
     unittest.main()

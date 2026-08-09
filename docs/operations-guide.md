@@ -122,17 +122,18 @@ For an attached HDMI display, remove `RN_FORCE_SINK`:
 unset DISPLAY WAYLAND_DISPLAY
 python3 -u publish.py \
   --view rn-receiver \
-  --password false \
-  --stretch-display
+  --password false
 ```
 
 Do not add `--framebuffer /dev/fb0`; that option is the raw-frame shared-memory mode, not HDMI output. If SSH has set `DISPLAY` to a value such as `localhost:10.0`, unset it as above so an X11-forwarded OpenGL window cannot replace the Pi's local KMS output.
+
+The default preserves aspect ratio on whatever mode the display advertises. Add `--stretch-display` only when intentional fill-to-screen distortion is preferable to black bars.
 
 The receiver remains available while the sender is absent. Automatic retry defaults to a short sequence followed by a longer interval. Use `--no-auto-retry` only for a supervised diagnostic run.
 
 ## Run unattended with systemd
 
-First prove the exact command interactively. Then create a service whose `User` and `WorkingDirectory` match the installed clone. A complete receiver example is in the [Pi Zero 2 W guide](pi-zero-2-w-unattended-webrtc.md#8-make-the-receiver-start-on-boot).
+First prove the exact command interactively. Then use `tools/install_unattended.py` to create a validated receiver or sender unit whose user and working directory match the installed clone. Complete examples are in the [Pi Zero 2 W guide](pi-zero-2-w-unattended-webrtc.md#8-make-the-receiver-start-on-boot).
 
 Useful service commands:
 
@@ -143,7 +144,7 @@ systemctl status raspberry-ninja-viewer.service --no-pager
 journalctl -u raspberry-ninja-viewer.service -f
 ```
 
-Use `Restart=always`, a small `RestartSec`, unbuffered Python output, and `network-online.target`. Never put credentials directly in a public repository. For a private service file, restrict its permissions if it contains a password.
+The helper uses `Restart=always`, a small `RestartSec`, unbuffered Python output, and `network-online.target`. It stores credentials in a restricted JSON config instead of the unit command. Running the installer again validates the replacement unit and restarts the existing service so new settings take effect.
 
 ## Conservative performance profiles
 
@@ -179,3 +180,4 @@ During a soak, confirm:
 - a saved test recording can be decoded, not merely created.
 
 See [Troubleshooting](troubleshooting.md) for diagnostic commands and [Recording](recording-guide.md) for file validation.
+For a repeatable deployment gate, use the [unattended validation checklist](unattended-validation-checklist.md).

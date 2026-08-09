@@ -21,10 +21,11 @@ import glob
 import signal
 import weakref
 import mmap
+import math
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, Set, List
 from functools import lru_cache
-from config_loader import apply_config_overrides
+from config_loader import apply_config_overrides, load_config_file
 from signaling_utils import handshake_server_requires_puuid
 from v4l2_devices import resolve_v4l2_input_device, resolve_v4l2_output_device
 try:
@@ -972,7 +973,7 @@ def select_display_sink(default_sink: str = "autovideosink") -> str:
 
 
 def validate_receiver_output_args(args) -> None:
-    """Reject ambiguous viewer/raw-frame combinations with actionable guidance."""
+    """Reject unsafe or ambiguous viewer options with actionable guidance."""
     view = getattr(args, "view", None)
     framebuffer = getattr(args, "framebuffer", None)
     if view and framebuffer:
@@ -985,6 +986,57 @@ def validate_receiver_output_args(args) -> None:
             "--framebuffer expects a VDO.Ninja stream ID, not a /dev/fb device. "
             "For HDMI output, use --view STREAM_ID."
         )
+
+    for attr, option in (
+        ("viewer_retry_initial", "--viewer-retry-initial"),
+        ("viewer_retry_short", "--viewer-retry-short"),
+        ("viewer_retry_long", "--viewer-retry-long"),
+    ):
+        value = getattr(args, attr, None)
+        if value is None:
+            continue
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{option} must be a finite, non-negative number")
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"{option} must be a finite, non-negative number")
+
+
+def handle_data_channel_heartbeat(channel, msg, client) -> bool:
+    """Handle VDO.Ninja ping/pong messages and report whether one was consumed."""
+    if not isinstance(msg, dict):
+        return False
+
+    if "pong" in msg:
+        client["ping"] = 0
+        return True
+
+    if "ping" in msg:
+        # Any heartbeat proves that the remote data channel is alive. Answering
+        # the ping is required for Raspberry Ninja-to-Raspberry Ninja sessions;
+        # browser peers already provide this response themselves.
+        client["ping"] = 0
+        try:
+            channel.emit(
+                "send-string",
+                json.dumps({"pong": msg["ping"]}, separators=(",", ":")),
+            )
+        except Exception as exc:
+            printwarn(f"Failed to send heartbeat response: {exc}")
+        return True
+
+    return False
+
+
+def normalize_stun_server_option(value) -> Tuple[Optional[str], bool]:
+    """Return (STUN URL, disabled) for a CLI/config STUN value."""
+    if value is None:
+        return None, False
+    normalized = str(value).strip()
+    if normalized.lower() in ("0", "false", "none", "null", "off"):
+        return None, True
+    return normalized or None, False
 
 def replace_ssrc_and_cleanup_sdp(sdp): ## fix for audio-only gstreamer -> chrome
     def generate_ssrc():
@@ -3375,7 +3427,9 @@ class WebRTCClient:
             _register_hw_decoder_warning_listener(self)
         
         # ICE/TURN configuration
-        self.stun_server = getattr(params, 'stun_server', None)
+        self.stun_server, self.no_stun = normalize_stun_server_option(
+            getattr(params, 'stun_server', None)
+        )
         self.turn_server = getattr(params, 'turn_server', None)
         self.auto_turn = getattr(params, 'auto_turn', False)
         self.ice_transport_policy = getattr(params, 'ice_transport_policy', 'all')
@@ -3733,9 +3787,11 @@ class WebRTCClient:
         """Configure ICE servers including default VDO.Ninja TURN servers"""
         try:
             # STUN servers
-            if hasattr(self, 'stun_server') and self.stun_server:
+            if getattr(self, 'no_stun', False):
+                webrtc.set_property('stun-server', None)
+            elif hasattr(self, 'stun_server') and self.stun_server:
                 webrtc.set_property('stun-server', self.stun_server)
-            elif not hasattr(self, 'no_stun') or not self.no_stun:
+            else:
                 # Default STUN servers
                 webrtc.set_property('stun-server', 'stun://stun.l.google.com:19302')
                     
@@ -8609,6 +8665,8 @@ class WebRTCClient:
             except:
                 # Invalid JSON in data channel message
                 return
+            if handle_data_channel_heartbeat(channel, msg, client):
+                return
             if 'candidates' in msg:
                 # Processing ICE candidates bundle
                 
@@ -8634,9 +8692,6 @@ class WebRTCClient:
 
                 
                 self.handle_sdp_ice(msg, client["UUID"])
-            elif 'pong' in msg: # Supported in v19 of VDO.Ninja
-                # Don't print individual pongs, handled by periodic health message
-                client['ping'] = 0
             elif 'bye' in msg: ## v19 of VDO.Ninja
                 printc("👋 Peer disconnected gracefully", "77F")
                 if self.view:
@@ -11592,7 +11647,7 @@ class WebRTCClient:
             'stream_id': stream_id,
             'room': self.record,  # Room name prefix for files
             'record_file': f"{self.record}_{stream_id}_{int(time.time())}.webm",
-            'stun_server': self.stun_server or 'stun://stun.cloudflare.com:3478',
+            'stun_server': None if self.no_stun else (self.stun_server or 'stun://stun.cloudflare.com:3478'),
             'turn_server': self.turn_server or default_turn_url,
             'ice_transport_policy': self.ice_transport_policy,
             'record_audio': True if not self.noaudio else False,  # Default to recording audio unless --noaudio is set
@@ -12969,7 +13024,7 @@ async def main():
     parser.add_argument('--clockstamp', action='store_true',  help='Add a clock overlay to the video output, if possible')
     parser.add_argument('--socketport', type=str, default=12345, help='Output video frames to a socket; specify the port number')
     parser.add_argument('--socketout', type=str, help='Output video frames to a socket; specify the stream ID')
-    parser.add_argument('--stun-server', type=str, help='STUN server URL (stun://hostname:port)')
+    parser.add_argument('--stun-server', type=str, help='STUN server URL (stun://hostname:port), or false to disable STUN')
     parser.add_argument('--turn-server', type=str, help='TURN server URL (turn(s)://username:password@host:port)')
     parser.add_argument('--ice-transport-policy', type=str, choices=['all', 'relay'], default='all', help='ICE transport policy (all or relay)')
     parser.add_argument('--h265', action='store_true', help='Prioritize h265/hevc encoding over h264')
@@ -12985,19 +13040,14 @@ async def main():
     # Load config file if specified
     if args.config:
         config_path = os.path.expanduser(args.config)
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-                
-                # Override args with config values (but command line args take precedence)
-                apply_config_overrides(args, parser, config, sys.argv[1:])
-                
-                print(f"Loaded configuration from: {config_path}")
-            except Exception as e:
-                print(f"Error loading config file: {e}")
-        else:
-            print(f"Config file not found: {config_path}")
+        try:
+            config = load_config_file(config_path)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            parser.error(f"cannot load configuration '{config_path}': {exc}")
+
+        # Override args with config values (but command line args take precedence)
+        apply_config_overrides(args, parser, config, sys.argv[1:])
+        print(f"Loaded configuration from: {config_path}")
 
     try:
         validate_receiver_output_args(args)
@@ -14199,9 +14249,8 @@ async def main():
         elif not args.multiviewer:
             if Gst.version().minor >= 18:
                 PIPELINE_DESC = f'webrtcbin name=sendrecv latency={args.buffer} async-handling=true bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
-                PIPELINE_DESC = f'webrtcbin name=sendrecv latency={args.buffer} async-handling=true stun-server=stun://stun.cloudflare.com:3478 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
             else: ## oldvers v1.16 options  non-advanced options
-                PIPELINE_DESC = f'webrtcbin name=sendrecv stun-server=stun://stun.cloudflare.com:3478 bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
+                PIPELINE_DESC = f'webrtcbin name=sendrecv bundle-policy=max-bundle {pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
             printc('\ngst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'), "FFF")
         else:
             PIPELINE_DESC = f'{pipeline_video_input} {pipeline_audio_input} {pipeline_save}'

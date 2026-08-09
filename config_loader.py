@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from argparse import ArgumentParser, Namespace
+import json
+from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Set
 
 
@@ -24,6 +26,16 @@ VIDEO_SOURCE_OVERRIDE_ATTRS = (
     "pipein",
     "novideo",
 )
+
+
+def load_config_file(path: str) -> Dict[str, Any]:
+    """Load one JSON configuration file or raise an actionable exception."""
+    config_path = Path(path).expanduser()
+    with config_path.open("r", encoding="utf-8") as config_file:
+        config = json.load(config_file)
+    if not isinstance(config, dict):
+        raise ValueError("configuration root must be a JSON object")
+    return config
 
 
 def _explicit_cli_destinations(parser: ArgumentParser, cli_argv: Iterable[str]) -> Set[str]:

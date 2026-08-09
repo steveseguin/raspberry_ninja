@@ -8,6 +8,7 @@ Raspberry Ninja publishes, receives, records, and relays VDO.Ninja streams from 
 | --- | --- |
 | Install and publish a first test stream | [Quick start](../QUICK_START.md) |
 | Configure a Pi Zero 2 W as an unattended sender or HDMI receiver | [Pi Zero 2 W unattended WebRTC](pi-zero-2-w-unattended-webrtc.md) |
+| Validate recovery, soak behavior, and unattended readiness | [Unattended validation checklist](unattended-validation-checklist.md) |
 | Run and monitor publishers, receivers, and test benches | [Operations guide](operations-guide.md) |
 | Record one stream, a room, or HLS segments | [Recording guide](recording-guide.md) |
 | Diagnose installation, media, display, network, or resource failures | [Troubleshooting](troubleshooting.md) |

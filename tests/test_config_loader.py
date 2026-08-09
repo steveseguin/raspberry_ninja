@@ -1,7 +1,10 @@
 import argparse
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
-from config_loader import apply_config_overrides
+from config_loader import apply_config_overrides, load_config_file
 
 
 def build_parser():
@@ -29,6 +32,22 @@ def build_parser():
 
 
 class TestConfigLoader(unittest.TestCase):
+    def test_load_config_file_rejects_non_object_root(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "config.json"
+            path.write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "JSON object"):
+                load_config_file(str(path))
+
+    def test_load_config_file_reports_invalid_json(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "config.json"
+            path.write_text("{broken", encoding="utf-8")
+
+            with self.assertRaises(json.JSONDecodeError):
+                load_config_file(str(path))
+
     def test_installer_config_maps_stream_id_and_test_source(self):
         parser = build_parser()
         args = parser.parse_args([])
