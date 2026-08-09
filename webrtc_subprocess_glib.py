@@ -3186,6 +3186,7 @@ class GLibWebRTCHandler:
 
 def main():
     """Main entry point"""
+    handler = None
     try:
         # Read configuration from first line
         config_line = sys.stdin.readline()
@@ -3203,7 +3204,13 @@ def main():
         
         # Run main loop
         handler.run()
-        
+
+    except KeyboardInterrupt:
+        # SIGINT can reach this child at the same time as the parent process.
+        # Treat it as a normal shutdown so recordings are finalized without a
+        # misleading traceback in the parent log.
+        if handler is not None:
+            handler.shutdown()
     except Exception as e:
         sys.stderr.write(f"Subprocess error: {e}\n")
         import traceback

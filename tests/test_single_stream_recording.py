@@ -1,6 +1,7 @@
 import unittest
+from io import StringIO
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import publish
 import webrtc_subprocess_glib
@@ -32,6 +33,20 @@ class SingleStreamRecordingTests(unittest.TestCase):
         self.assertTrue(args.single_stream_recording)
         self.assertFalse(args.room_recording)
         self.assertTrue(args.auto_turn)
+
+    def test_subprocess_sigint_is_a_clean_shutdown(self):
+        handler = MagicMock()
+        handler.run.side_effect = KeyboardInterrupt
+
+        with (
+            patch("webrtc_subprocess_glib.sys.stdin", StringIO("{}\n")),
+            patch("webrtc_subprocess_glib.sys.stderr", new_callable=StringIO) as stderr,
+            patch("webrtc_subprocess_glib.GLibWebRTCHandler", return_value=handler),
+        ):
+            webrtc_subprocess_glib.main()
+
+        handler.shutdown.assert_called_once_with()
+        self.assertEqual(stderr.getvalue(), "")
 
 
 class SingleStreamRecordingOfferTests(unittest.IsolatedAsyncioTestCase):
