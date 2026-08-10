@@ -1,12 +1,12 @@
 # Raspberry Ninja documentation
 
-Raspberry Ninja publishes, receives, records, and relays VDO.Ninja streams from Linux systems and single-board computers. Start with the guide that matches the job you are trying to do.
+Raspberry Ninja publishes, receives, records, and relays VDO.Ninja streams from Linux systems and single-board computers. Most Raspberry Pi users only need the short [Quick start](../QUICK_START.md); the other guides are available when doing something advanced or diagnosing a problem.
 
 ## Start here
 
 | Goal | Guide |
 | --- | --- |
-| Install and publish a first test stream | [Quick start](../QUICK_START.md) |
+| Set up a Pi as a sender or TV receiver | [Quick start](../QUICK_START.md) |
 | Configure a Pi Zero 2 W as an unattended sender or HDMI receiver | [Pi Zero 2 W unattended WebRTC](pi-zero-2-w-unattended-webrtc.md) |
 | Validate recovery, soak behavior, and unattended readiness | [Unattended validation checklist](unattended-validation-checklist.md) |
 | Run and monitor publishers, receivers, and test benches | [Operations guide](operations-guide.md) |

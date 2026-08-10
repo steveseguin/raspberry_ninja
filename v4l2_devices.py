@@ -22,7 +22,12 @@ V4L2_CAP_DEVICE_CAPS = 0x80000000
 # These Raspberry Pi nodes are transform/codec helpers in a media-controller
 # graph, not standalone camera inputs. Some ISP capture pads advertise
 # V4L2_CAP_VIDEO_CAPTURE, so capability flags alone are insufficient.
-_NON_CAMERA_DEVICE_NAME_PREFIXES = ("bcm2835-isp", "bcm2835-codec")
+_NON_CAMERA_DEVICE_NAME_PREFIXES = (
+    "bcm2835-isp",
+    "bcm2835-codec",
+    "pispbe-",
+    "rp1-cfe-",
+)
 
 
 def get_v4l2_device_name(path: str) -> Optional[str]:

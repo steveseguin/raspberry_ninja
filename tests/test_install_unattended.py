@@ -2,6 +2,8 @@ import argparse
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from tools import install_unattended
 
@@ -69,6 +71,36 @@ class InstallUnattendedTests(unittest.TestCase):
         self.assertTrue(config["vp8"])
         self.assertNotIn("v4l2", config)
 
+    def test_raw_sender_config_is_preserved(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            camera = Path(temporary) / "camera"
+            camera.touch()
+            args = self.parse(
+                "sender",
+                "--stream-id",
+                "raw-camera",
+                "--camera",
+                str(camera),
+                "--format",
+                "YUY2",
+                "--raw",
+            )
+
+        config = install_unattended.build_config(args)
+        self.assertTrue(config["raw"])
+        self.assertEqual(config["format"], "YUY2")
+
+    def test_csi_sender_config_uses_selected_camera_stack(self):
+        args = self.parse(
+            "sender",
+            "--stream-id",
+            "csi-camera",
+            "--libcamera",
+        )
+        config = install_unattended.build_config(args)
+        self.assertTrue(config["libcamera"])
+        self.assertNotIn("v4l2", config)
+
     def test_explicit_stun_disable_is_written_to_config(self):
         parser = install_unattended.create_parser()
         args = parser.parse_args(
@@ -98,6 +130,37 @@ class InstallUnattendedTests(unittest.TestCase):
             install_unattended.systemd_setting_path("/home/100%/raspberry ninja"),
             "/home/100%%/raspberry\\x20ninja",
         )
+
+    def test_service_start_check_accepts_active_unit(self):
+        runner = Mock(return_value=SimpleNamespace(returncode=0))
+        sleep = Mock()
+
+        install_unattended.verify_service_started(
+            "raspberry-ninja-viewer.service",
+            runner=runner,
+            sleep=sleep,
+        )
+
+        sleep.assert_called_once_with(2)
+        runner.assert_called_once_with(
+            [
+                "systemctl",
+                "is-active",
+                "--quiet",
+                "raspberry-ninja-viewer.service",
+            ],
+            check=False,
+        )
+
+    def test_service_start_check_reports_failed_unit(self):
+        runner = Mock(return_value=SimpleNamespace(returncode=3))
+
+        with self.assertRaisesRegex(RuntimeError, "journalctl"):
+            install_unattended.verify_service_started(
+                "raspberry-ninja-viewer.service",
+                runner=runner,
+                sleep=lambda _seconds: None,
+            )
 
 
 if __name__ == "__main__":

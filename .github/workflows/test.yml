@@ -2,130 +2,69 @@ name: Test Suite
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main ]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  test:
+  compatibility:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ['3.8', '3.9', '3.10', '3.11']
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ matrix.python-version }}
-    
-    - name: Install system dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          gstreamer1.0-tools \
-          gstreamer1.0-plugins-base \
-          gstreamer1.0-plugins-good \
-          gstreamer1.0-plugins-bad \
-          gstreamer1.0-plugins-ugly \
-          gstreamer1.0-libav \
-          gstreamer1.0-nice \
-          libgstreamer1.0-dev \
-          libgstreamer-plugins-base1.0-dev \
-          python3-gi \
-          python3-gi-cairo \
-          gir1.2-gstreamer-1.0 \
-          gir1.2-gst-plugins-base-1.0
-    
-    - name: Install Python dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pytest pytest-asyncio pytest-cov coverage psutil
-    
-    - name: Run unit tests
-      run: |
-        # Run tests with coverage
-        python -m pytest \
-          tests/test_multiple_webrtc_connections.py \
-          -v --tb=short --cov=. --cov-report=xml
-      continue-on-error: true
-    
-    - name: Upload coverage reports
-      uses: codecov/codecov-action@v3
-      with:
-        file: ./coverage.xml
-        flags: unittests
-        name: codecov-umbrella
-      if: always()
-    
-    - name: Upload test results
-      uses: actions/upload-artifact@v4
-      with:
-        name: test-results-${{ matrix.python-version }}
-        path: |
-          test_report.json
-          test_report.txt
-          coverage.xml
-      if: always()
+        include:
+          - name: Bullseye / Python 3.9 / GStreamer 1.18
+            image: debian:bullseye
+          - name: Bookworm / Python 3.11 / GStreamer 1.22
+            image: debian:bookworm
+          - name: Trixie / Python 3.13 / GStreamer 1.26
+            image: debian:trixie
 
-  lint:
-    runs-on: ubuntu-latest
-    
     steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install flake8 black isort mypy
-    
-    - name: Lint with flake8
-      run: |
-        # Stop the build if there are Python syntax errors or undefined names
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        # Exit-zero treats all errors as warnings
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-      continue-on-error: true
-    
-    - name: Check formatting with black
-      run: |
-        black --check --diff .
-      continue-on-error: true
-    
-    - name: Check import sorting with isort
-      run: |
-        isort --check-only --diff .
-      continue-on-error: true
+      - uses: actions/checkout@v4
 
-  security:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
-    
-    - name: Install safety
-      run: |
-        python -m pip install --upgrade pip
-        pip install safety
-    
-    - name: Run security checks
-      run: |
-        # Run safety check on requirements if they exist
-        if [ -f requirements.txt ]; then
-          safety check --json
-        else
-          echo "No requirements.txt found, skipping safety check"
-        fi
-      continue-on-error: true
+      - name: Install runtime dependencies
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates \
+            python3 \
+            python3-aiohttp \
+            python3-cryptography \
+            python3-gi \
+            python3-websockets \
+            gir1.2-gstreamer-1.0 \
+            gir1.2-gst-plugins-base-1.0 \
+            gir1.2-gst-plugins-bad-1.0 \
+            gstreamer1.0-libav \
+            gstreamer1.0-nice \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-ugly \
+            gstreamer1.0-tools
+
+      - name: Record compatibility environment
+        shell: bash
+        run: |
+          cat /etc/os-release
+          /usr/bin/python3 --version
+          gst-launch-1.0 --version
+
+      - name: Check Python syntax
+        shell: bash
+        run: |
+          /usr/bin/python3 -m compileall -q \
+            publish.py config_loader.py signaling_utils.py v4l2_devices.py \
+            webrtc_subprocess_glib.py tools tests
+
+      - name: Run complete test suite
+        shell: bash
+        run: /usr/bin/python3 -m unittest discover -s tests -v

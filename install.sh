@@ -520,6 +520,7 @@ install_dependencies() {
             wget \
             curl \
             v4l-utils \
+            alsa-utils \
             gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad \
@@ -574,14 +575,19 @@ install_dependencies() {
                 fi
             fi
             apt-cache show rpicam-apps-lite &> /dev/null && pi_packages+=(rpicam-apps-lite)
+            apt-cache show gstreamer1.0-libcamera &> /dev/null && pi_packages+=(gstreamer1.0-libcamera)
             if [ ${#pi_packages[@]} -gt 0 ]; then
                 sudo apt-get install -y "${pi_packages[@]}"
             else
                 print_color "$YELLOW" "⚠ No Raspberry Pi utility package candidates found; continuing with detected system tools."
             fi
             
-            # Add user to video group
-            sudo usermod -a -G video $USER
+            # Let unattended services access cameras, microphones, and DRM/KMS.
+            for media_group in video audio render; do
+                if getent group "$media_group" >/dev/null; then
+                    sudo usermod -a -G "$media_group" "$USER"
+                fi
+            done
         fi
         
         if [ "$IS_JETSON" = true ]; then

@@ -92,6 +92,17 @@ class TestV4l2DeviceRetry(unittest.TestCase):
         ):
             self.assertFalse(v4l2_devices.is_v4l2_capture_device("/dev/video14"))
 
+    def test_pi5_media_graph_nodes_are_not_standalone_cameras(self):
+        for device_name in ("rp1-cfe-csi2_ch0", "pispbe-output0"):
+            with (
+                patch(
+                    "v4l2_devices.query_v4l2_capabilities",
+                    return_value=v4l2_devices.V4L2_CAP_VIDEO_CAPTURE,
+                ),
+                patch("v4l2_devices.get_v4l2_device_name", return_value=device_name),
+            ):
+                self.assertFalse(v4l2_devices.is_v4l2_capture_device("/dev/video0"))
+
     def test_usb_capture_device_remains_available(self):
         with (
             patch(

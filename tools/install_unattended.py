@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 from typing import Any, Dict, Optional, Sequence
 
 
@@ -110,8 +111,14 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
     config[args.codec] = True
     if args.test_source:
         config["test"] = True
+    elif args.libcamera:
+        config["libcamera"] = True
+    elif args.rpicam:
+        config["rpicam"] = True
     else:
         config["v4l2"] = args.camera
+        if args.raw:
+            config["raw"] = True
         if args.format:
             config["format"] = args.format
     if args.audio_device:
@@ -136,12 +143,22 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         _finite_non_negative(parser, args.viewer_retry_initial, "--viewer-retry-initial")
         _finite_non_negative(parser, args.viewer_retry_short, "--viewer-retry-short")
         _finite_non_negative(parser, args.viewer_retry_long, "--viewer-retry-long")
-    elif not args.test_source:
+    elif not (args.test_source or args.libcamera or args.rpicam):
         camera = Path(args.camera)
         if not camera.exists() and not args.allow_missing_device:
             parser.error(
                 f"camera does not exist: {camera}; attach it or use --allow-missing-device"
             )
+    if args.role == "sender":
+        for value, option in (
+            (args.width, "--width"),
+            (args.height, "--height"),
+            (args.framerate, "--framerate"),
+            (args.bitrate, "--bitrate"),
+            (args.audio_bitrate, "--audio-bitrate"),
+        ):
+            if value <= 0:
+                parser.error(f"{option} must be greater than zero")
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -176,8 +193,11 @@ def create_parser() -> argparse.ArgumentParser:
     source = sender.add_mutually_exclusive_group(required=True)
     source.add_argument("--camera", help="V4L2 device; prefer /dev/v4l/by-id/... paths")
     source.add_argument("--test-source", action="store_true")
+    source.add_argument("--libcamera", action="store_true", help=argparse.SUPPRESS)
+    source.add_argument("--rpicam", action="store_true", help=argparse.SUPPRESS)
     sender.add_argument("--allow-missing-device", action="store_true")
-    sender.add_argument("--format", choices=("H264", "MJPG", "YUYV"))
+    sender.add_argument("--format", choices=("H264", "MJPG", "YUYV", "YUY2"))
+    sender.add_argument("--raw", action="store_true", help=argparse.SUPPRESS)
     sender.add_argument("--codec", choices=("h264", "vp8"), default="h264")
     sender.add_argument("--width", type=int, default=640)
     sender.add_argument("--height", type=int, default=360)
@@ -194,6 +214,25 @@ def _write_atomic(path: Path, content: str, mode: int, uid: int, gid: int) -> No
     os.chmod(temporary, mode)
     os.chown(temporary, uid, gid)
     temporary.replace(path)
+
+
+def verify_service_started(
+    unit_name: str,
+    *,
+    runner=subprocess.run,
+    sleep=time.sleep,
+) -> None:
+    """Confirm that a newly configured service survives its initial startup."""
+    sleep(2)
+    result = runner(
+        ["systemctl", "is-active", "--quiet", unit_name],
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"{unit_name} did not start correctly; run "
+            f"journalctl -u {unit_name} -n 30 --no-pager"
+        )
 
 
 def install(args: argparse.Namespace) -> None:
@@ -262,6 +301,7 @@ def install(args: argparse.Namespace) -> None:
         # `enable --now` does not restart an already-running unit, so a
         # reconfiguration would otherwise keep using stale settings.
         subprocess.run(["systemctl", "restart", unit_name], check=True)
+        verify_service_started(unit_name)
     print(f"Installed {args.service_name}.service")
     print(f"Config: {config_path}")
     print(f"Logs: journalctl -u {args.service_name}.service -f")
