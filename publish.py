@@ -4392,59 +4392,28 @@ class WebRTCClient:
         return repaired
 
     def sendMessage(self, msg): # send message to wss
-        if isinstance(msg, dict):
-            msg = dict(msg)
-            msg = self._inject_viewer_bitrate_hint(msg)
-        else:
+        if not isinstance(msg, dict):
             typeName = type(msg).__name__
             raise TypeError(f"sendMessage expects dict, got {typeName}")
 
-        if self.puuid:
-            msg['from'] = self.puuid
+        # GStreamer invokes several signaling callbacks from worker threads. A
+        # websocket transport belongs to the asyncio loop that created it, so
+        # driving conn.send() from a fresh loop can corrupt asyncio's SSL write
+        # queue during reconnects. Marshal every synchronous callback back to
+        # the owning loop instead.
+        loop = getattr(self, "event_loop", None)
+        if not loop or loop.is_closed():
+            printwarn("Signaling loop unavailable; dropping outbound message")
+            return None
 
-        client = None
-        if "UUID" in msg and msg['UUID'] in self.clients:
-            client = self.clients[msg['UUID']]
-
-        if client and client['send_channel']:
-            try:
-                msgJSON = json.dumps(msg)
-                client['send_channel'].emit('send-string', msgJSON)
-                printout("a message was sent via datachannels: "+msgJSON[:60])
-            except Exception as e:
-                try:
-                    if self.password:
-                        #printc("Password","0F3")
-                        if "candidate" in msg:
-                            msg['candidate'], msg['vector'] = encrypt_message(msg['candidate'], self.password+self.salt)
-                        if "candidates" in msg:
-                            msg['candidates'], msg['vector'] = encrypt_message(msg['candidates'], self.password+self.salt)
-                        if "description" in msg:
-                            msg['description'], msg['vector'] = encrypt_message(msg['description'], self.password+self.salt)
-                
-                    msgJSON = json.dumps(msg)
-                    loop = asyncio.new_event_loop()
-                    loop.run_until_complete(self.conn.send(msgJSON))
-                    printwout("a message was sent via websockets 2: "+msgJSON[:60])
-                except Exception as e:
-                    printc(e,"F00")
-        else:
-            try:
-                if self.password:
-                   # printc("Password","0F3")
-                    if "candidate" in msg:
-                        msg['candidate'], msg['vector'] = encrypt_message(msg['candidate'], self.password+self.salt)
-                    if "candidates" in msg:
-                        msg['candidates'], msg['vector'] = encrypt_message(msg['candidates'], self.password+self.salt)
-                    if "description" in msg:
-                        msg['description'], msg['vector'] = encrypt_message(msg['description'], self.password+self.salt)
-                
-                msgJSON = json.dumps(msg)
-                loop = asyncio.new_event_loop()        
-                loop.run_until_complete(self.conn.send(msgJSON))
-                printwout("a message was sent via websockets 1: "+msgJSON[:60])
-            except Exception as e:
-                printc(e,"F01")
+        try:
+            return asyncio.run_coroutine_threadsafe(
+                self.sendMessageAsync(dict(msg)),
+                loop,
+            )
+        except Exception as e:
+            printwarn(f"Unable to schedule signaling message: {get_exception_info(e)}")
+            return None
                 
                 
     async def sendMessageAsync(self, msg): # send message to wss
@@ -12919,6 +12888,71 @@ def configure_single_stream_recording(args):
     args.room_recording = False
     args.auto_turn = True
 
+
+def normalize_video_codec_preferences(args):
+    """Resolve codec flags without letting platform hints override explicit codecs."""
+    if any(
+        getattr(args, name, False)
+        for name in ("nvidia", "rpi", "x264", "openh264", "omx", "apple")
+    ):
+        args.h264 = True
+
+    if getattr(args, "vp8", False) or getattr(args, "vp9", False):
+        args.h264 = False
+
+    if getattr(args, "av1", False):
+        args.h264 = False
+
+    if getattr(args, "rtmp", None) and not args.h264:
+        args.h264 = True
+
+
+def should_default_pi5_to_x264(args):
+    """Use x264 on Pi 5 only when no explicit software/alternate codec was chosen."""
+    explicit_alternative = any(
+        getattr(args, name, False)
+        for name in (
+            "openh264",
+            "vp8",
+            "vp9",
+            "aom",
+            "av1",
+            "rav1e",
+            "qsv",
+            "h265",
+            "hevc",
+            "x265",
+        )
+    )
+    return not getattr(args, "x264", False) and not explicit_alternative
+
+
+def build_vp9_encoder_fragment(args, timestamp_overlay="", save_video=""):
+    """Build a portable, real-time VP9 software encoder fragment."""
+    if getattr(args, "nvidia", False):
+        converter = " ! nvvidconv ! video/x-raw,format=I420"
+    else:
+        converter = f" ! videoconvert{timestamp_overlay} ! video/x-raw,format=I420"
+
+    return (
+        f"{converter} ! queue max-size-buffers=10 "
+        f"! vp9enc deadline=1 cpu-used=8 target-bitrate={args.bitrate}000 name=\"encoder\" "
+        f"{save_video} ! rtpvp9pay "
+        "! application/x-rtp,media=video,encoding-name=VP9,payload=96"
+    )
+
+
+def build_openh264_encoder_fragment(args, timestamp_overlay=""):
+    """Build an OpenH264 fragment whose bitrate setting is actually enforced."""
+    bitrate_bps = args.bitrate * 1000
+    return (
+        f" ! videoconvert ! video/x-raw,format=I420{timestamp_overlay} "
+        "! queue max-size-buffers=10 ! openh264enc name=\"encoder\" "
+        f"bitrate={bitrate_bps} max-bitrate={bitrate_bps} "
+        "rate-control=bitrate enable-frame-skip=true complexity=0 "
+        "! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream"
+    )
+
 async def main():
 
     error = False
@@ -13359,8 +13393,9 @@ async def main():
             print("The Raspberry Pi 5 does not have hardware video encoding (no v4l2h264enc or omxh264enc).")
             print("Falling back to software encoding. This may impact performance.")
             print("Consider using --x264 or --openh264 for better software encoder control.\n")
-            # Force software encoding
-            args.x264 = True
+            # Default to x264 without overriding an explicitly requested codec.
+            if should_default_pi5_to_x264(args):
+                args.x264 = True
             # Don't disable args.rpi entirely as it may affect other pipeline choices
 
     if args.rpicam:
@@ -13508,17 +13543,11 @@ async def main():
         if args.zerolatency:
             args.novideo = True
 
-        if args.nvidia or args.rpi or args.x264 or args.openh264 or args.omx or args.apple:
-            args.h264 = True
+        normalize_video_codec_preferences(args)
 
-        if args.vp8:
-            args.h264 = False
-
-        if args.av1:
-            args.h264 = False
-            
-        if args.rtmp and not args.h264:
-            args.h264 = True
+        if args.vp9 and not check_plugins(["vp9enc", "rtpvp9pay"], True):
+            print("VP9 publishing requires the vp9enc and rtpvp9pay GStreamer elements")
+            sys.exit(1)
             
         if args.hevc:
             args.h265 = True
@@ -14069,8 +14098,11 @@ async def main():
                     # x264 is a system-memory encoder. Keeping conversion in system memory is
                     # both cheaper and more portable, and avoids V4L2 mem2mem negotiation bugs.
                     pipeline_video_input += f' ! videoconvert ! video/x-raw,format=I420{timestampOverlay} ! queue max-size-buffers=10 ! x264enc  name="encoder1" bitrate={args.bitrate} speed-preset=1 tune=zerolatency qos=true ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
-                elif h264 == "openh264enc" and args.rpi:
-                    pipeline_video_input += f' ! videoconvert ! video/x-raw,format=I420{timestampOverlay} ! queue max-size-buffers=10 ! openh264enc  name="encoder" bitrate={args.bitrate}000 complexity=0 ! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream'
+                elif h264 == "openh264enc":
+                    pipeline_video_input += build_openh264_encoder_fragment(
+                        args,
+                        timestampOverlay,
+                    )
                 elif h264 == "v4l2h264enc" and args.rpi and get_raspberry_pi_model() != 5:
                     if args.format in ["I420", "YV12", "NV12", "NV21", "RGB16", "RGB", "BGR", "RGBA", "BGRx", "BGRA", "YUY2", "YVYU", "UYVY"]:
                         pipeline_video_input += f' ! v4l2convert ! videorate ! video/x-raw{timestampOverlay} ! v4l2h264enc extra-controls="controls,video_bitrate={args.bitrate}000;" qos=true name="encoder2" ! video/x-h264,level=(string)4'
@@ -14120,6 +14152,12 @@ async def main():
                     pipeline_video_input += f' ! queue ! h265parse'
                 else:
                     pipeline_video_input += f' ! queue max-size-time=1000000000 max-size-bytes=10000000000 max-size-buffers=1000000 ! h265parse {saveVideo} ! rtph265pay config-interval=-1 ! application/x-rtp,media=video,encoding-name=H265,payload=96'
+            elif args.vp9:
+                pipeline_video_input += build_vp9_encoder_fragment(
+                    args,
+                    timestampOverlay,
+                    saveVideo,
+                )
             else:
                 if args.nvidia:
                     pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxvp8enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
