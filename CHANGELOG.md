@@ -1,5 +1,28 @@
 # Changelog
 
+# Release 23.1.0
+
+**Release Date:** 2026-08-10
+
+## ✨ Minor Release
+
+This release includes new features and improvements.
+
+### Commits
+
+- feat: add guided setup and release-gated compatibility tests (85f2be2)
+
+### Installation
+
+For installation instructions, please refer to the platform-specific guides:
+- [Raspberry Pi](./raspberry_pi/README.md)
+- [NVIDIA Jetson](./nvidia_jetson/README.md)
+- [Orange Pi](./orangepi/README.md)
+- [Ubuntu](./ubuntu/README.md)
+
+
+---
+
 # Release 23.0.0
 
 **Release Date:** 2026-08-10
