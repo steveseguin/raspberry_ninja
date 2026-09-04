@@ -142,6 +142,10 @@ H264_PROFILE_ALIASES = {
     "high-444": "f40032",
 }
 
+# avdec_h264 is the established viewer decoder and recovers cleanly from RTP
+# loss. Keep OpenH264 as a fallback for minimal images without gst-libav.
+H264_VIEWER_DECODER_FALLBACKS = ("avdec_h264", "openh264dec")
+
 def sanitize_profile_level_id(value: Optional[str]) -> Optional[str]:
     """Normalize a profile-level-id string to lowercase hex without 0x prefix."""
     if not value:
@@ -618,6 +622,59 @@ def request_pad_compat(element, template_name: str):
     if hasattr(element, "request_pad_simple"):
         return element.request_pad_simple(template_name)
     return element.get_request_pad(template_name)
+
+
+def configure_live_input_selector(selector) -> Dict[str, Any]:
+    """Configure an input-selector for live sources with unrelated timestamps.
+
+    Viewer idle sources start with the pipeline, while WebRTC sources are added
+    later and commonly begin with an earlier running time. The default
+    ``active-segment`` synchronization can therefore leave the newly selected
+    source behind the idle segment. Clock synchronization keeps inactive live
+    pads aligned so switching does not stall downstream elements such as
+    ``videorate``.
+
+    Properties are detected individually because older GStreamer releases do
+    not provide all of them (notably ``drop-backwards``).
+    """
+    requested = (
+        ("sync-streams", True),
+        ("sync-mode", "clock"),
+        ("cache-buffers", True),
+        ("drop-backwards", True),
+    )
+    applied: Dict[str, Any] = {}
+    for property_name, value in requested:
+        try:
+            if selector.find_property(property_name):
+                selector.set_property(property_name, value)
+                applied[property_name] = value
+        except Exception:
+            # Keep the selector usable on vendor or legacy plugin variants
+            # whose advertised properties reject newer values.
+            continue
+    return applied
+
+
+def build_v4l2sink_sink_description(
+    device: str,
+    io_mode: int,
+    caps: str,
+) -> str:
+    """Build the common sink after already-normalized selector inputs.
+
+    Each selector input has identical raw-video caps. Keeping a second
+    ``videorate`` after the selector makes its timestamp history span source
+    changes, which can suppress every frame after an idle-to-WebRTC switch.
+    """
+    return (
+        "queue max-size-buffers=2 leaky=downstream ! "
+        "videoconvert ! "
+        f"{caps} ! "
+        "identity name=viewer_v4l2sink_drop_allocation drop-allocation=true ! "
+        f"v4l2sink name=viewer_v4l2sink device={device} "
+        f"io-mode={io_mode} sync=false"
+    )
 
 
 def _run_v4l2_h264_encoder_probe() -> Tuple[bool, str]:
@@ -3329,6 +3386,7 @@ class WebRTCClient:
         self.v4l2sink_io_mode = clamp_int(getattr(params, "v4l2sink_io_mode", 0), 0, 5)
         self.v4l2sink_device = resolve_v4l2sink_device(self.v4l2sink) if self.v4l2sink else None
         self.v4l2sink_selector = None
+        self.v4l2sink_selector_kind = None
         self.v4l2sink_sink_bin = None
         self.v4l2sink_sources = {}
         self.v4l2sink_current_pad = None
@@ -4998,6 +5056,11 @@ class WebRTCClient:
 
     def _ensure_display_chain(self):
         """Ensure viewer display selector and sink are ready."""
+        # A V4L2 loopback receiver is an alternate output, not a second local
+        # preview. Building both chains wastes scarce Pi resources and can make
+        # the physical display sink compete with the loopback sink for frames.
+        if getattr(self, "v4l2sink_device", None):
+            return None
         if not self.pipe:
             return None
 
@@ -5189,17 +5252,43 @@ class WebRTCClient:
             self._v4l2sink_chain_unavailable_reason = reason
             return None
 
-        selector_factory_names = ("input-selector", "inputselector")
+        selector_factory_names = []
+        if gst_element_supports_property("compositor", "force-live"):
+            selector_factory_names.append("compositor")
+        selector_factory_names.extend(("input-selector", "inputselector"))
         for selector_factory in selector_factory_names:
-            selector = Gst.ElementFactory.make(selector_factory, selector_name)
+            if selector_factory == "compositor":
+                selector = None
+                try:
+                    factory = Gst.ElementFactory.find("compositor")
+                    create_with_properties = getattr(factory, "create_with_properties", None)
+                    if create_with_properties:
+                        selector = create_with_properties(
+                            ["name", "force-live"],
+                            [selector_name, True],
+                        )
+                except Exception:
+                    selector = None
+            else:
+                selector = Gst.ElementFactory.make(selector_factory, selector_name)
             if selector:
                 self.v4l2sink_selector = selector
+                self.v4l2sink_selector_kind = (
+                    "compositor" if selector_factory == "compositor" else "selector"
+                )
                 print(f"[v4l2sink] Using selector factory `{selector_factory}`")
-                try:
-                    if selector.find_property("cache-buffers"):
-                        selector.set_property("cache-buffers", True)
-                except Exception:
-                    pass
+                if self.v4l2sink_selector_kind == "compositor":
+                    for property_name, value in (
+                        ("background", "black"),
+                        ("ignore-inactive-pads", True),
+                    ):
+                        try:
+                            if selector.find_property(property_name):
+                                selector.set_property(property_name, value)
+                        except Exception:
+                            pass
+                else:
+                    configure_live_input_selector(selector)
                 break
 
         if not self.v4l2sink_selector:
@@ -5216,13 +5305,10 @@ class WebRTCClient:
             f"video/x-raw,format={self.v4l2sink_format},width=(int){self.v4l2sink_width},"
             f"height=(int){self.v4l2sink_height},framerate=(fraction){self.v4l2sink_fps}/1"
         )
-        sink_desc = (
-            "queue max-size-buffers=2 leaky=downstream ! "
-            "videorate ! videoscale ! videoconvert ! "
-            f"{caps} ! "
-            "identity name=viewer_v4l2sink_drop_allocation drop-allocation=true ! "
-            f"v4l2sink name=viewer_v4l2sink device={self.v4l2sink_device} "
-            f"io-mode={self.v4l2sink_io_mode} sync=false"
+        sink_desc = build_v4l2sink_sink_description(
+            self.v4l2sink_device,
+            self.v4l2sink_io_mode,
+            caps,
         )
         self.v4l2sink_sink_bin = Gst.parse_bin_from_description(sink_desc, True)
         self.v4l2sink_sink_bin.set_name("viewer_v4l2sink_sink_bin")
@@ -5249,6 +5335,8 @@ class WebRTCClient:
         """Create idle/blank sources for V4L2 sink output."""
         if not self.pipe or not self.v4l2sink_selector:
             return
+        if self.v4l2sink_selector_kind == "compositor":
+            return
 
         caps = (
             f"video/x-raw,format={self.v4l2sink_format},width=(int){self.v4l2sink_width},"
@@ -5269,7 +5357,12 @@ class WebRTCClient:
             except Exception as exc:
                 printwarn(f"Failed to initialize V4L2 sink blank source: {exc}")
 
-    def _link_v4l2sink_bin(self, bin_obj: Gst.Bin, label: str):
+    def _link_v4l2sink_bin(
+        self,
+        bin_obj: Gst.Bin,
+        label: str,
+        wait_until_ready: bool = False,
+    ):
         """Connect a bin's output to the V4L2 sink selector."""
         if not self.v4l2sink_selector:
             raise RuntimeError("V4L2 sink selector is unavailable")
@@ -5307,13 +5400,64 @@ class WebRTCClient:
             self.v4l2sink_selector.release_request_pad(selector_pad)
             raise RuntimeError(f"Failed to link V4L2 sink source '{label}': {link_result}")
 
-        self.v4l2sink_sources[label] = {
+        source_info = {
             "bin": bin_obj,
             "selector_pad": selector_pad,
             "src_pad": src_pad,
+            "ready": not wait_until_ready,
         }
+        self.v4l2sink_sources[label] = source_info
+
+        if self.v4l2sink_selector_kind == "compositor":
+            try:
+                selector_pad.set_property("zorder", 0 if label == "blank" else 1)
+                selector_pad.set_property("alpha", 1.0 if label == "blank" else 0.0)
+            except Exception as exc:
+                printwarn(f"Failed to configure V4L2 compositor pad '{label}': {exc}")
+
+        if wait_until_ready:
+            try:
+                source_info["ready_probe_id"] = src_pad.add_probe(
+                    Gst.PadProbeType.BUFFER,
+                    self._on_v4l2sink_source_buffer,
+                    (label, source_info),
+                )
+            except Exception as exc:
+                # A pad probe is available on all supported GStreamer versions,
+                # but retain the old immediate-switch behavior on vendor forks.
+                source_info["ready"] = True
+                printwarn(
+                    f"Could not wait for V4L2 sink source '{label}' to produce a frame: {exc}"
+                )
         bin_obj.sync_state_with_parent()
         return selector_pad
+
+    def _on_v4l2sink_source_buffer(self, pad, probe_info, user_data):
+        """Schedule a source switch after the remote branch produces a frame."""
+        label, source_info = user_data
+        source_info["ready_probe_id"] = None
+        print(f"[v4l2sink] Source '{label}' produced its first frame")
+        event_loop = getattr(self, "event_loop", None)
+        if event_loop and event_loop.is_running():
+            event_loop.call_soon_threadsafe(
+                self._mark_v4l2sink_source_ready,
+                label,
+                source_info,
+            )
+        else:
+            self._mark_v4l2sink_source_ready(label, source_info)
+        return Gst.PadProbeReturn.REMOVE
+
+    def _mark_v4l2sink_source_ready(self, label: str, source_info: Dict[str, Any]):
+        """Activate a pending source if it is still the registered generation."""
+        if self.v4l2sink_sources.get(label) is not source_info:
+            return False
+
+        source_info["ready"] = True
+        if source_info.pop("activate_when_ready", False):
+            if self._activate_v4l2sink_source(label):
+                self.v4l2sink_state = "remote"
+        return False
 
     def _activate_v4l2sink_source(self, label: str) -> bool:
         """Activate a registered source on the V4L2 sink selector."""
@@ -5327,7 +5471,13 @@ class WebRTCClient:
             return True
 
         try:
-            self.v4l2sink_selector.set_property("active-pad", pad)
+            if self.v4l2sink_selector_kind == "compositor":
+                for source_label, source_info in self.v4l2sink_sources.items():
+                    source_info["selector_pad"].set_property(
+                        "alpha", 1.0 if source_label == label else 0.0
+                    )
+            else:
+                self.v4l2sink_selector.set_property("active-pad", pad)
             self.v4l2sink_current_pad = pad
             print(f"[v4l2sink] Activated source '{label}'")
             return True
@@ -5338,11 +5488,25 @@ class WebRTCClient:
     def _set_v4l2sink_mode(self, mode: str, remote_label: Optional[str] = None):
         """Switch to the appropriate V4L2 sink source."""
         if mode == "remote" and remote_label:
-            if remote_label in self.v4l2sink_sources:
-                self._activate_v4l2sink_source(remote_label)
-                self.v4l2sink_state = "remote"
+            source = self.v4l2sink_sources.get(remote_label)
+            if source:
+                if not source.get("ready", True):
+                    source["activate_when_ready"] = True
+                    print(f"[v4l2sink] Waiting for source '{remote_label}' to produce a frame")
+                    return
+                if self._activate_v4l2sink_source(remote_label):
+                    self.v4l2sink_state = "remote"
                 return
             printwarn(f"V4L2 sink remote source '{remote_label}' not registered")
+        if self.v4l2sink_selector_kind == "compositor":
+            try:
+                for source in self.v4l2sink_sources.values():
+                    source["selector_pad"].set_property("alpha", 0.0)
+                self.v4l2sink_current_pad = None
+                self.v4l2sink_state = "idle"
+            except Exception as exc:
+                printwarn(f"Failed to blank V4L2 sink output: {exc}")
+            return
         if "blank" in self.v4l2sink_sources:
             self._activate_v4l2sink_source("blank")
             self.v4l2sink_state = "idle"
@@ -5367,6 +5531,14 @@ class WebRTCClient:
                 pass
 
         selector_pad = source.get("selector_pad")
+        src_pad = source.get("src_pad")
+        ready_probe_id = source.get("ready_probe_id")
+        if src_pad and ready_probe_id:
+            try:
+                src_pad.remove_probe(ready_probe_id)
+            except Exception:
+                pass
+
         if selector_pad:
             try:
                 self.v4l2sink_selector.release_request_pad(selector_pad)
@@ -5427,6 +5599,7 @@ class WebRTCClient:
                 pass
 
         self.v4l2sink_selector = None
+        self.v4l2sink_selector_kind = None
         self.v4l2sink_sink_bin = None
         self.v4l2sink_sources = {}
         self.v4l2sink_current_pad = None
@@ -5803,6 +5976,9 @@ class WebRTCClient:
 
     def _set_display_mode(self, mode: str, remote_label: Optional[str] = None):
         """Switch to the appropriate splash/remote source."""
+        if getattr(self, "v4l2sink_device", None):
+            self._set_v4l2sink_mode(mode, remote_label=remote_label)
+            return
         print(f"[display] Switching mode -> {mode} (remote={remote_label})")
         if self._display_direct_mode:
             if mode == "remote" and remote_label:
@@ -7063,7 +7239,9 @@ class WebRTCClient:
                 f"{build_v4l2sink_output_chain(using_hw_decoder)}"
             )
         elif codec_type == "H264":
-            decoder_desc, using_hw_decoder = get_v4l2sink_decoder("H264", ("openh264dec", "avdec_h264"))
+            decoder_desc, using_hw_decoder = get_v4l2sink_decoder(
+                "H264", H264_VIEWER_DECODER_FALLBACKS
+            )
             pipeline_desc = (
                 "queue ! rtph264depay ! h264parse ! "
                 f"{decoder_desc} ! "
@@ -7142,7 +7320,7 @@ class WebRTCClient:
 
         remote_label = f"remote_{pad.get_name()}"
         try:
-            self._link_v4l2sink_bin(out, remote_label)
+            self._link_v4l2sink_bin(out, remote_label, wait_until_ready=True)
             self.v4l2sink_remote_map[pad.get_name()] = remote_label
         except Exception as exc:
             printwarn(f"Failed to attach V4L2 sink video bin: {exc}")
@@ -9716,17 +9894,18 @@ class WebRTCClient:
             self.pipe.add(client['webrtc'])
             if self.view:
                 self._install_viewer_rtpbin_overrides(client['webrtc'])
-                try:
-                    self._ensure_display_chain()
-                    self._set_display_mode("idle")
-                except Exception as exc:
-                    printwarn(f"Display initialization failed: {exc}")
                 if self.v4l2sink_device:
                     try:
                         self._ensure_v4l2sink_chain()
                         self._set_v4l2sink_mode("idle")
                     except Exception as exc:
                         printwarn(f"V4L2 sink initialization failed: {exc}")
+                else:
+                    try:
+                        self._ensure_display_chain()
+                        self._set_display_mode("idle")
+                    except Exception as exc:
+                        printwarn(f"Display initialization failed: {exc}")
            
             if self.vp8 or self.vp9 or self.av1 or self.h264:
                 direction = GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY
@@ -10252,13 +10431,22 @@ class WebRTCClient:
                 
                 # Set pipeline to NULL after cleaning up elements
                 try:
-                    self._reset_display_chain_state()
-                    self._reset_v4l2sink_chain_state()
-                    self.pipe.set_state(Gst.State.NULL)
+                    if self.v4l2sink_device:
+                        # The primed idle output owns a v4l2loopback buffer pool.
+                        # Wait for the parent to close that device before a peer
+                        # pipeline opens it again, or the replacement pool can
+                        # stall while activating on its first frame.
+                        self.pipe.set_state(Gst.State.NULL)
+                        self.pipe.get_state(2 * Gst.SECOND)
+                        self._reset_display_chain_state()
+                        self._reset_v4l2sink_chain_state()
+                    else:
+                        self._reset_display_chain_state()
+                        self._reset_v4l2sink_chain_state()
+                        self.pipe.set_state(Gst.State.NULL)
                 except Exception as e:
                     printwarn(f"Failed to set pipeline to NULL: {e}")
                 self.pipe = None
-
             await self.createPeer(UUID)
 
     def stop_pipeline(self, UUID, wait=False, expected_client=None):
