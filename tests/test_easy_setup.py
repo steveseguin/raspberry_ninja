@@ -46,7 +46,50 @@ class EasySetupTests(unittest.TestCase):
             ]
         )
         camera = setup.discover_csi_camera(runner=lambda *_a, **_k: next(responses))
-        self.assertEqual(camera, ("csi:rpicam", "imx219"))
+        self.assertEqual(camera, ("csi:libcamera", "imx219"))
+
+    def test_csi_discovery_supports_tool_and_plugin_combinations(self):
+        for camera_tool in ("rpicam-hello", "libcamera-hello"):
+            for backend in ("libcamera", "rpicam"):
+                with self.subTest(tool=camera_tool, backend=backend):
+                    def runner(command, **_kwargs):
+                        if command == [camera_tool, "--list-cameras"]:
+                            return subprocess.CompletedProcess(
+                                command, 0, stdout="", stderr="0 : imx219 [sensor]"
+                            )
+                        if command == ["gst-inspect-1.0", backend + "src"]:
+                            return subprocess.CompletedProcess(command, 0)
+                        raise FileNotFoundError(command[0])
+
+                    self.assertEqual(
+                        setup.discover_csi_camera(runner=runner),
+                        ("csi:" + backend, "imx219"),
+                    )
+
+    def test_csi_discovery_rejects_failed_listing_and_missing_plugins(self):
+        for listing_code in (0, 1):
+            with self.subTest(listing_code=listing_code):
+                def runner(command, **_kwargs):
+                    if command[0] == "gst-inspect-1.0":
+                        self.assertEqual(listing_code, 0)
+                        return subprocess.CompletedProcess(command, 1)
+                    return subprocess.CompletedProcess(
+                        command, listing_code, stdout="0 : imx219 [sensor]", stderr=""
+                    )
+
+                self.assertIsNone(setup.discover_csi_camera(runner=runner))
+
+    def test_passwords_survive_argument_parsing_for_both_roles(self):
+        for password in ("--secret", " leading and trailing ", "a&b=c"):
+            for arguments in (
+                setup.build_receiver_arguments(Path("/opt/rn"), "test", password),
+                setup.build_sender_arguments(
+                    Path("/opt/rn"), "test", password, "csi:libcamera", None, None
+                ),
+            ):
+                with self.subTest(password=password, arguments=arguments):
+                    parsed = setup.install_unattended.create_parser().parse_args(arguments)
+                    self.assertEqual(parsed.password, password)
 
     def test_camera_probe_recognizes_common_driver_names(self):
         completed = subprocess.CompletedProcess(
@@ -119,7 +162,19 @@ class EasySetupTests(unittest.TestCase):
         arguments = install.call_args.args[0]
         self.assertIn("receiver", arguments)
         self.assertIn("living-room", arguments)
-        self.assertIn("secret", arguments)
+        self.assertIn("--password=secret", arguments)
+
+    @patch("tools.setup.display_connected", return_value=True)
+    @patch("tools.setup.install_unattended.main", return_value=0)
+    def test_receiver_flow_preserves_password_whitespace(self, install, _display):
+        answers = iter(["1", "living-room"])
+        with patch("builtins.print"):
+            setup.main(
+                input_fn=lambda _prompt: next(answers),
+                password_fn=lambda _prompt: " secret ",
+            )
+        parsed = setup.install_unattended.create_parser().parse_args(install.call_args.args[0])
+        self.assertEqual(parsed.password, " secret ")
 
     @patch("tools.setup.display_connected", return_value=True)
     @patch("tools.setup.install_unattended.main", side_effect=RuntimeError("service failed"))

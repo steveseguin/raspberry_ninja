@@ -117,10 +117,10 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
         config["rpicam"] = True
     else:
         config["v4l2"] = args.camera
-        if args.raw:
+        if args.raw or args.format in {"YUYV", "YUY2"}:
             config["raw"] = True
         if args.format:
-            config["format"] = args.format
+            config["format"] = "YUY2" if args.format == "YUYV" else args.format
     if args.audio_device:
         config["alsa"] = args.audio_device
         config["audiobitrate"] = args.audio_bitrate

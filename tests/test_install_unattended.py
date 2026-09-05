@@ -1,7 +1,7 @@
 import argparse
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -22,9 +22,9 @@ class InstallUnattendedTests(unittest.TestCase):
             service_name=args.service_name,
             description="Receiver",
             user="steve",
-            repo_dir=Path("/home/steve/raspberry ninja"),
-            config_path=Path("/etc/raspberry-ninja/viewer.json"),
-            python_path=Path("/usr/bin/python3"),
+            repo_dir=PurePosixPath("/home/steve/raspberry ninja"),
+            config_path=PurePosixPath("/etc/raspberry-ninja/viewer.json"),
+            python_path=PurePosixPath("/usr/bin/python3"),
         )
 
         self.assertEqual(config["view"], "illinois-tv")
@@ -89,6 +89,18 @@ class InstallUnattendedTests(unittest.TestCase):
         config = install_unattended.build_config(args)
         self.assertTrue(config["raw"])
         self.assertEqual(config["format"], "YUY2")
+
+    def test_raw_format_selects_raw_capture_without_hidden_flag(self):
+        for capture_format in ("YUYV", "YUY2"):
+            with self.subTest(capture_format=capture_format):
+                args = self.parse(
+                    "sender", "--stream-id", "raw-camera",
+                    "--camera", "/dev/video0", "--allow-missing-device",
+                    "--format", capture_format,
+                )
+                config = install_unattended.build_config(args)
+                self.assertTrue(config["raw"])
+                self.assertEqual(config["format"], "YUY2")
 
     def test_csi_sender_config_uses_selected_camera_stack(self):
         args = self.parse(

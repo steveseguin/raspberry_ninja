@@ -88,11 +88,9 @@ def discover_csi_camera(
     *,
     runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
 ) -> Optional[Tuple[str, str]]:
-    backends = (
-        ("rpicam", "rpicam-hello", "rpicamsrc"),
-        ("libcamera", "libcamera-hello", "libcamerasrc"),
-    )
-    for backend, camera_tool, source_element in backends:
+    # The camera applications were renamed; the libcamera GStreamer element
+    # was not. Probe the tools independently of the source plugin names.
+    for camera_tool in ("rpicam-hello", "libcamera-hello"):
         try:
             cameras = runner(
                 [camera_tool, "--list-cameras"],
@@ -103,20 +101,27 @@ def discover_csi_camera(
             )
             output = f"{cameras.stdout}\n{cameras.stderr}"
             camera_match = CSI_CAMERA_RE.search(output)
-            if not camera_match:
+            if cameras.returncode != 0 or not camera_match:
                 continue
-            plugin = runner(
-                ["gst-inspect-1.0", source_element],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=8,
-            )
         except (OSError, subprocess.TimeoutExpired):
             continue
-        if plugin.returncode == 0:
-            label = camera_match.group("label").split("[")[0].strip()
-            return (f"{CSI_SOURCE_PREFIX}{backend}", label or "Raspberry Pi Camera")
+        for backend, source_element in (
+            ("libcamera", "libcamerasrc"),
+            ("rpicam", "rpicamsrc"),
+        ):
+            try:
+                plugin = runner(
+                    ["gst-inspect-1.0", source_element],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=8,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if plugin.returncode == 0:
+                label = camera_match.group("label").split("[")[0].strip()
+                return (f"{CSI_SOURCE_PREFIX}{backend}", label or "Raspberry Pi Camera")
     return None
 
 
@@ -193,8 +198,7 @@ def build_receiver_arguments(repo: Path, stream_id: str, password: str) -> List[
     return [
         "--repo",
         str(repo),
-        "--password",
-        password,
+        f"--password={password}",
         "receiver",
         "--stream-id",
         stream_id,
@@ -219,8 +223,7 @@ def build_sender_arguments(
     arguments = [
         "--repo",
         str(repo),
-        "--password",
-        password,
+        f"--password={password}",
         "sender",
         "--stream-id",
         stream_id,
@@ -248,7 +251,7 @@ def main(
     input_fn: Callable[[str], str] = input,
     password_fn: Callable[[str], str] = getpass.getpass,
 ) -> int:
-    parser = argparse.ArgumentParser(add_help=False)
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inventory", action="store_true", help=argparse.SUPPRESS)
     options = parser.parse_args(list(argv or []))
     if options.inventory:
@@ -272,7 +275,7 @@ def main(
         input_fn=input_fn,
     )
     stream_id = ask_stream_id(input_fn=input_fn)
-    password = password_fn("Stream password: ").strip()
+    password = password_fn("Stream password: ")
     if not password:
         print("A password is required.", file=sys.stderr)
         return 2

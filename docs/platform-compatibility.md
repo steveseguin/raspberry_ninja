@@ -65,6 +65,10 @@ gst-inspect-1.0 libcamerasrc
 
 Use `--rpicam` only when `rpicamsrc` is present and its pipeline has been tested. Use `--libcamera --rpi` for the libcamera GStreamer path. Do not remove a working legacy path merely because a newer OS uses another name.
 
+The guided setup checks both camera-tool names and prefers `libcamerasrc` when
+available, including with `rpicam-hello`. The application rename does not imply
+that the GStreamer source was renamed to `rpicamsrc`; that is a separate backend.
+
 Official background: [Raspberry Pi camera software](https://www.raspberrypi.com/documentation/computers/camera_software.html).
 
 ## GStreamer version differences
