@@ -118,11 +118,13 @@ Forcing a failed encoder can hang or repeatedly restart a low-memory device. Pi 
 
 ## Receiver works headlessly but not on HDMI
 
-Prove receive/decode first:
+Start with a headless receiver:
 
 ```bash
 RN_FORCE_SINK=fakesink python3 -u publish.py --view STREAM_ID --password false --noaudio
 ```
+
+An incoming bitrate proves packet reception, not successful decoding. Check for decoder errors and verify moving video on the real display before calling playback successful.
 
 Then inspect the physical connector and sinks:
 
@@ -137,9 +139,27 @@ Boot with the display connected when its EDID is needed. Remove `RN_FORCE_SINK` 
 
 For Raspberry Pi HDMI receiver mode, use `--view STREAM_ID`; do not add `--framebuffer /dev/fb0`. `--framebuffer` is the raw-frame shared-memory mode and does not select HDMI. Modern KMS images may not expose `/dev/fb0`.
 
-If video opens in an OpenGL window on the computer running SSH, the session is probably forwarding X11. Check `echo "$DISPLAY"`; a value like `localhost:10.0` is forwarded. Run `unset DISPLAY WAYLAND_DISPLAY` and restart the receiver. With HDMI connected, Raspberry Ninja will prefer `kmssink` for direct Pi output.
+If video opens in an OpenGL window on the computer running SSH, the session is probably forwarding X11. Check `echo "$DISPLAY"`; a value like `localhost:10.0` is forwarded. On a console-only Pi, run `unset DISPLAY WAYLAND_DISPLAY` and restart the receiver. With HDMI connected, Raspberry Ninja will prefer `kmssink` for direct Pi output.
+
+## Desktop playback over SSH
+
+A running Wayland desktop (for example, labwc) already owns the Pi's display. Starting a direct `kmssink` receiver from SSH can fail with `failed to configure video mode`, even when HDMI is connected. Use the desktop's Wayland session, logged in as the same user:
+
+```bash
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+ls "$XDG_RUNTIME_DIR"/wayland-*
+# Use the socket name shown above; wayland-0 is an example.
+export WAYLAND_DISPLAY=wayland-0
+unset DISPLAY
+RN_FORCE_SINK="waylandsink sync=false" python3 -u publish.py \
+  --view STREAM_ID --password false --noaudio
+```
+
+Check `gst-inspect-1.0 waylandsink` first. This opens a window in the Pi's local desktop; it requires that desktop session to remain running. For a dedicated unattended receiver, use a console-only setup with direct KMS instead. Do not unset a valid local desktop display configuration just because the command is launched over SSH.
 
 ## Decoder instability
+
+The H.264 viewer prefers `avdec_h264` for software decoding and falls back to `openh264dec` when libav is unavailable. If packets arrive but H.264 video never advances, check `gst-inspect-1.0 avdec_h264`; Debian and Ubuntu provide it in `gstreamer1.0-libav`. Hardware decoder selection remains platform-specific.
 
 Force software decoding to distinguish a hardware decoder or memory-conversion problem:
 

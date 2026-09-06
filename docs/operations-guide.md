@@ -125,7 +125,7 @@ Publish into it from Chrome:
 https://vdo.ninja/?push=rn-receiver&password=false&h264
 ```
 
-For an attached HDMI display, remove `RN_FORCE_SINK`:
+For an attached HDMI display on a console-only system (no running graphical desktop), remove `RN_FORCE_SINK`:
 
 ```bash
 unset DISPLAY WAYLAND_DISPLAY
@@ -135,6 +135,8 @@ python3 -u publish.py \
 ```
 
 Do not add `--framebuffer /dev/fb0`; that option is the raw-frame shared-memory mode, not HDMI output. If SSH has set `DISPLAY` to a value such as `localhost:10.0`, unset it as above so an X11-forwarded OpenGL window cannot replace the Pi's local KMS output.
+
+If a desktop is already running on the Pi, use its display session instead. Direct KMS output can fail because the desktop owns the display. See [desktop playback over SSH](troubleshooting.md#desktop-playback-over-ssh) for a Wayland example.
 
 The default preserves aspect ratio on whatever mode the display advertises. Add `--stretch-display` only when intentional fill-to-screen distortion is preferable to black bars.
 

@@ -176,7 +176,7 @@ def _gst_hw_warning_log_hook(
     message,
     user_data,
 ):
-    if level < Gst.DebugLevel.WARNING:
+    if level not in (Gst.DebugLevel.WARNING, Gst.DebugLevel.ERROR):
         return
     text = ""
     try:
@@ -189,7 +189,7 @@ def _gst_hw_warning_log_hook(
         token in combined_lower for token in ("nvv4l2decoder", "gstbufferpool", "v4l2bufferpool")
     ):
         return
-    force = level >= Gst.DebugLevel.ERROR
+    force = level == Gst.DebugLevel.ERROR
     if bool(os.environ.get("RN_DEBUG_VIEWER")):
         print(
             f"[viewer] GST log hook captured hardware decoder warning (force={force}): {combined.strip()}"
@@ -217,6 +217,11 @@ def _ensure_gst_hw_warning_hook():
 
 
 def _register_hw_decoder_warning_listener(instance):
+    # This log callback supplements bus messages for NVIDIA's decoder only.
+    # Avoid marshalling unrelated native debug objects into Python on software
+    # viewers, including objects being finalized during pipeline teardown.
+    if getattr(instance, "disable_hw_decoder", False) or not gst_element_available("nvv4l2decoder"):
+        return
     _ensure_gst_hw_warning_hook()
     if getattr(instance, "_hw_decoder_warning_ref", None):
         return
@@ -6951,7 +6956,11 @@ class WebRTCClient:
                 f"identity name=view_identity_{pad.get_name()}"
             )
         elif codec_type == "H264":
-            fallback_decoder = "openh264dec"
+            fallback_decoder = next(
+                (candidate for candidate in H264_VIEWER_DECODER_FALLBACKS
+                 if gst_element_available(candidate)),
+                H264_VIEWER_DECODER_FALLBACKS[0],
+            )
             decoder_desc, using_hw_decoder = self._get_decoder_description("H264", fallback_decoder)
             if using_hw_decoder and needs_system_memory and not nvvidconv_has_nvbuf:
                 printwarn(
@@ -9963,7 +9972,10 @@ class WebRTCClient:
                     except Exception as exc:
                         printwarn(f"Display initialization failed: {exc}")
            
-            if self.vp8 or self.vp9 or self.av1 or self.h264:
+            # GStreamer 1.18 can crash applying an RTX answer when a generic
+            # receive transceiver was preallocated with NACK enabled. Let the
+            # offer create it on older builds; handle_offer still orders codecs.
+            if (self.vp8 or self.vp9 or self.av1 or self.h264) and Gst.version()[:2] >= (1, 20):
                 direction = GstWebRTC.WebRTCRTPTransceiverDirection.RECVONLY
                 codec_label = None
                 preferred_caps: List[str] = []

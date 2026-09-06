@@ -292,7 +292,7 @@ kmsprint -m 2>/dev/null || true
 aplay -l
 ```
 
-At least one HDMI status should say `connected`. Then run the real receiver without `RN_FORCE_SINK`:
+At least one HDMI status should say `connected`. On a console-only system with no running graphical desktop, run the real receiver without `RN_FORCE_SINK`:
 
 ```bash
 cd "$HOME/raspberry_ninja"
@@ -303,6 +303,8 @@ python3 -u publish.py \
 ```
 
 On a Pi 4, start with the micro-HDMI port closest to the USB-C power connector (HDMI 0). The Pi's HDMI connectors are outputs; a USB capture card is not required to display a received stream on a TV.
+
+If the Pi is running a graphical desktop, use its display session instead of direct KMS. See [desktop playback over SSH](troubleshooting.md#desktop-playback-over-ssh); the desktop may already own the display even when your SSH shell has no display environment variables.
 
 Do **not** add `--framebuffer /dev/fb0`. The `--framebuffer` option takes a VDO.Ninja stream ID and exposes decoded BGR frames through shared memory for another program; it does not select an HDMI output. Current Raspberry Pi OS KMS installations may not provide `/dev/fb0` at all.
 
