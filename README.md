@@ -811,6 +811,10 @@ python3 publish.py --view STREAMIDHERE --v4l2sink 0 \
 
 Notes:
 - `--v4l2sink` accepts a numeric index (`0`) or a full path (`/dev/video2`).
+- Select a writable video output such as a configured `v4l2loopback` device.
+  Raspberry Pi ISP and codec nodes are internal processing devices, not virtual
+  cameras, and are excluded from output discovery. If no suitable output exists,
+  configure a loopback device first and check it with `v4l2-ctl -d /dev/video2 -D`.
 - If the specified device is not writable, the first writable `/dev/video*` is used.
 - When no remote video is available, a blue frame is output to keep the device alive.
 - The V4L2 sink path drops upstream allocation queries before `v4l2sink` to avoid buffer-pool issues with some `v4l2loopback` versions. The default V4L2 sink I/O mode is GStreamer's auto mode (`--v4l2sink-io-mode 0`); use `--v4l2sink-io-mode 1` to force read/write mode.

@@ -16,17 +16,23 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence, Union
 
 
 SERVICE_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]+$")
 STREAM_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
-def systemd_quote(value: str) -> str:
-    """Quote one systemd command argument and disable percent expansion."""
+def systemd_quote(value: str, *, executable: bool = False) -> str:
+    """Quote a literal command path, accounting for systemd's expansions."""
+    if any(character in value for character in ("\n", "\r", "\0")):
+        raise ValueError("systemd paths cannot contain newlines or NUL bytes")
     escaped = value.replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"')
+    # Environment substitution applies to arguments, not the executable path.
+    if not executable:
+        escaped = escaped.replace("$", "$$")
     return f'"{escaped}"'
 
 
@@ -39,8 +45,8 @@ def systemd_setting_path(value: str) -> str:
         "\t": "\\x09",
         '"': "\\x22",
     }
-    if "\n" in value or "\r" in value:
-        raise ValueError("systemd paths cannot contain newlines")
+    if any(character in value for character in ("\n", "\r", "\0")):
+        raise ValueError("systemd paths cannot contain newlines or NUL bytes")
     return "".join(replacements.get(character, character) for character in value)
 
 
@@ -54,6 +60,10 @@ def render_service(
     python_path: Path,
 ) -> str:
     publish_path = repo_dir / "publish.py"
+    # systemd rejects executable paths containing slashes unless absolute.
+    # Preserve a venv's symlink path: resolving it can select system Python.
+    if not python_path.is_absolute():
+        python_path = Path(python_path).absolute()
     return f"""[Unit]
 Description={description}
 Wants=network-online.target
@@ -68,7 +78,7 @@ WorkingDirectory={systemd_setting_path(str(repo_dir))}
 Environment=PYTHONUNBUFFERED=1
 Environment=DISPLAY=
 Environment=WAYLAND_DISPLAY=
-ExecStart={systemd_quote(str(python_path))} {systemd_quote(str(publish_path))} --config {systemd_quote(str(config_path))}
+ExecStart={systemd_quote(str(python_path), executable=True)} {systemd_quote(str(publish_path))} --config {systemd_quote(str(config_path))}
 Restart=always
 RestartSec=5
 TimeoutStopSec=20
@@ -116,7 +126,9 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
     elif args.rpicam:
         config["rpicam"] = True
     else:
-        config["v4l2"] = args.camera
+        # The service runs from repo_dir, which may differ from the installer's
+        # working directory. Keep stable device symlinks rather than resolving.
+        config["v4l2"] = str(Path(args.camera).absolute())
         if args.raw or args.format in {"YUYV", "YUY2"}:
             config["raw"] = True
         if args.format:
@@ -139,17 +151,29 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         parser.error("--stream-id must contain 1-128 letters, numbers, underscores, or hyphens")
     if not SERVICE_NAME_RE.fullmatch(args.service_name):
         parser.error("--service-name contains unsupported characters")
+    if args.service_name.startswith(('-', '@')):
+        parser.error("--service-name must not start with '-' or '@'")
+    if len(args.service_name) > 247:
+        parser.error("--service-name must be at most 247 characters before the .service suffix")
+    if args.service_name.find('@') == len(args.service_name) - 1:
+        parser.error("--service-name must include an instance after '@', for example camera@front")
     if args.role == "receiver":
         _finite_non_negative(parser, args.viewer_retry_initial, "--viewer-retry-initial")
         _finite_non_negative(parser, args.viewer_retry_short, "--viewer-retry-short")
         _finite_non_negative(parser, args.viewer_retry_long, "--viewer-retry-long")
     elif not (args.test_source or args.libcamera or args.rpicam):
+        if not args.camera or not args.camera.strip():
+            parser.error("--camera must be a non-empty device path")
         camera = Path(args.camera)
+        if camera.is_dir():
+            parser.error("--camera must point to a device, not a directory")
         if not camera.exists() and not args.allow_missing_device:
             parser.error(
                 f"camera does not exist: {camera}; attach it or use --allow-missing-device"
             )
     if args.role == "sender":
+        if args.audio_device is not None and not args.audio_device.strip():
+            parser.error("--audio-device must be a non-empty ALSA device name; omit it to disable audio")
         for value, option in (
             (args.width, "--width"),
             (args.height, "--height"),
@@ -208,12 +232,25 @@ def create_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _write_atomic(path: Path, content: str, mode: int, uid: int, gid: int) -> None:
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(content, encoding="utf-8")
-    os.chmod(temporary, mode)
-    os.chown(temporary, uid, gid)
-    temporary.replace(path)
+def _write_atomic(path: Path, content: Union[str, bytes], mode: int, uid: int, gid: int) -> None:
+    # Exclusive creation avoids following stale symlinks or sharing staging
+    # files with another run. tempfile starts with mode 0600 before any secrets
+    # are written, regardless of the caller's umask.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=path.parent,
+            # Do not extend the destination name beyond the filesystem limit.
+            prefix=".raspberry-ninja-", suffix=".tmp", delete=False,
+        ) as staging:
+            temporary = Path(staging.name)
+            staging.write(content.encode("utf-8") if isinstance(content, str) else content)
+        os.chmod(temporary, mode)
+        os.chown(temporary, uid, gid)
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def verify_service_started(
@@ -257,9 +294,6 @@ def install(args: argparse.Namespace) -> None:
         raise RuntimeError(f"Python interpreter was not found: {args.python}")
 
     config_dir = Path("/etc/raspberry-ninja")
-    config_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
-    os.chmod(config_dir, 0o750)
-    os.chown(config_dir, 0, account.pw_gid)
     config_path = config_dir / f"{args.service_name}.json"
     unit_path = Path("/etc/systemd/system") / f"{args.service_name}.service"
     description = (
@@ -277,21 +311,49 @@ def install(args: argparse.Namespace) -> None:
         python_path=args.python,
     )
 
-    old_config: Optional[bytes] = config_path.read_bytes() if config_path.exists() else None
-    old_unit: Optional[bytes] = unit_path.read_bytes() if unit_path.exists() else None
+    previous = {
+        path: (path.read_bytes(), path.stat()) if path.exists() else None
+        for path in (config_path, unit_path)
+    }
+    directory_stat = config_dir.stat() if config_dir.exists() else None
+    written = []
     try:
+        # Services may run under different groups. Allow traversal of the shared
+        # directory without exposing its listing; each file restricts readers.
+        config_dir.mkdir(mode=0o711, parents=True, exist_ok=True)
+        os.chmod(config_dir, 0o711)
+        os.chown(config_dir, 0, 0)
         _write_atomic(config_path, config_text, 0o640, 0, account.pw_gid)
+        written.append(config_path)
         _write_atomic(unit_path, unit_text, 0o644, 0, 0)
+        written.append(unit_path)
         subprocess.run(["systemd-analyze", "verify", str(unit_path)], check=True)
-    except Exception:
-        if old_config is None:
-            config_path.unlink(missing_ok=True)
-        else:
-            config_path.write_bytes(old_config)
-        if old_unit is None:
-            unit_path.unlink(missing_ok=True)
-        else:
-            unit_path.write_bytes(old_unit)
+    except Exception as error:
+        rollback_errors = []
+        for path in reversed(written):
+            try:
+                saved = previous[path]
+                if saved is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    content, metadata = saved
+                    _write_atomic(path, content, metadata.st_mode & 0o7777,
+                                  metadata.st_uid, metadata.st_gid)
+            except Exception as rollback_error:
+                rollback_errors.append(f"{path}: {rollback_error}")
+        try:
+            if directory_stat is not None:
+                os.chown(config_dir, directory_stat.st_uid, directory_stat.st_gid)
+                os.chmod(config_dir, directory_stat.st_mode & 0o7777)
+            elif config_dir.exists():
+                config_dir.rmdir()
+        except Exception as rollback_error:
+            rollback_errors.append(f"{config_dir}: {rollback_error}")
+        if rollback_errors:
+            raise RuntimeError(
+                f"Installation failed: {error}; rollback incomplete: "
+                + "; ".join(rollback_errors)
+            ) from error
         raise
 
     subprocess.run(["systemctl", "daemon-reload"], check=True)
@@ -349,6 +411,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+    except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(1)

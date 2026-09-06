@@ -1,8 +1,38 @@
 # Recording guide
 
-Recording is a receive operation. `--record` and `--record-room` pull remote VDO.Ninja streams to disk; they do not publish the local camera.
+`--record` and `--record-room` pull remote VDO.Ninja streams to disk; they do not publish the local camera. To save a copy while publishing your own camera or test source, use `--save` instead.
+
+## Save the outgoing stream
+
+Add `--save` to the publishing command to write a timestamped `.mkv` file in the
+current directory. AV1 recording branches after `av1parse`, before RTP
+packetization, for AOM, rav1e, and Quick Sync encoders. The installed Matroska
+muxer and playback decoder must support the selected codec. Validate the file by
+decoding it; file size alone does not establish that recording succeeded.
+
+If automatic H.264 playback fails in `v4l2h264dec`, try a software decoder before
+concluding the file is damaged. For the local Matroska video track:
+
+```bash
+gst-launch-1.0 filesrc location=RECORDING.mkv ! matroskademux ! h264parse ! avdec_h264 ! fakesink
+```
+
+This checks video decoding only. Validate audio separately when present.
 
 ## Single-stream recording
+
+To publish an existing file without re-encoding video, use `--filesrc2 clip.mp4
+--noaudio` for H.264 in MP4, or `--filesrc2 clip.webm --vp8 --noaudio` (or
+`--vp9`) for WebM/Matroska. The codec flag must match the file. VP9 passthrough
+requires `rtpvp9pay`, but does not require `vp9enc`. This path does not forward
+the file's audio. Use `--filesrc` when video decoding and re-encoding are needed.
+
+H.264 MP4 passthrough also supports `--rtmp URL`. Add `--save` to write a local
+Matroska copy of the video while publishing, with either RTMP or WebRTC output.
+RTMP playback exits with status 0 at normal end-of-file, 1 on a pipeline error,
+and 130 on Ctrl+C.
+VP8 and VP9 file passthrough also support `--save` when publishing over WebRTC;
+the recording keeps the original video codec without re-encoding.
 
 ```bash
 python3 -u publish.py \

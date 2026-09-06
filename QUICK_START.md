@@ -48,6 +48,9 @@ selected service. Advanced service options are documented by
 
 ## Optional one-time test
 
+For reusable manual commands, see
+[JSON configuration and command-line overrides](docs/operations-guide.md#save-settings-in-a-json-configuration).
+
 To publish a small test pattern without changing the saved setup:
 
 ```bash

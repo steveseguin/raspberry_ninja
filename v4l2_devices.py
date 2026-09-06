@@ -20,8 +20,8 @@ V4L2_CAP_VIDEO_OUTPUT_MPLANE = 0x00002000
 V4L2_CAP_DEVICE_CAPS = 0x80000000
 
 # These Raspberry Pi nodes are transform/codec helpers in a media-controller
-# graph, not standalone camera inputs. Some ISP capture pads advertise
-# V4L2_CAP_VIDEO_CAPTURE, so capability flags alone are insufficient.
+# graph, not standalone camera inputs or video outputs. ISP pads advertise
+# capture/output flags, so capability flags alone are insufficient.
 _NON_CAMERA_DEVICE_NAME_PREFIXES = (
     "bcm2835-isp",
     "bcm2835-codec",
@@ -31,7 +31,8 @@ _NON_CAMERA_DEVICE_NAME_PREFIXES = (
 
 
 def get_v4l2_device_name(path: str) -> Optional[str]:
-    name_path = f"/sys/class/video4linux/{os.path.basename(path)}/name"
+    # Stable /dev/v4l/by-id and by-path links must receive the same checks.
+    name_path = f"/sys/class/video4linux/{os.path.basename(os.path.realpath(path))}/name"
     try:
         with open(name_path, "r", encoding="utf-8") as name_file:
             return name_file.read().strip()
@@ -83,7 +84,10 @@ def is_v4l2_output_device(path: str) -> bool:
     if capabilities is None:
         return False
     output_flags = V4L2_CAP_VIDEO_OUTPUT | V4L2_CAP_VIDEO_OUTPUT_MPLANE
-    return bool(capabilities & output_flags)
+    if not capabilities & output_flags:
+        return False
+    name = get_v4l2_device_name(path)
+    return not (name and name.lower().startswith(_NON_CAMERA_DEVICE_NAME_PREFIXES))
 
 
 def _device_sort_key(path: str) -> Tuple[int, str]:

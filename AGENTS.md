@@ -24,3 +24,14 @@ When changing installers, device discovery, camera handling, media pipelines, or
 - Add focused regression coverage for detection, selection, fallback, and version-specific behavior whenever practical.
 
 Treat broad support across these variations as a core product requirement rather than an optional enhancement.
+
+## Hardware and regression testing
+
+- Physical Raspberry Pi boards are available on the network. Use the sibling
+  `../raspberry_ninja_qa` repository's local inventory and SSH configuration to
+  discover and test reachable boards; do not assume hardware is unavailable.
+- Keep new hardware harnesses, integration regressions, scaffolding, and generated
+  reports in that QA repository. Keep the application repository lean; retain
+  existing focused tests and avoid duplicating the external harness here.
+- Read the QA repository's instructions before changing it. Keep credentials and
+  local device addresses out of committed documentation and reports.

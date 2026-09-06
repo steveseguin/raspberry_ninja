@@ -35,6 +35,7 @@ try:
 except Exception as e:
     pass
 
+np = None
 try:
     import numpy as np
     import multiprocessing
@@ -672,7 +673,7 @@ def build_v4l2sink_sink_description(
         "videoconvert ! "
         f"{caps} ! "
         "identity name=viewer_v4l2sink_drop_allocation drop-allocation=true ! "
-        f"v4l2sink name=viewer_v4l2sink device={device} "
+        f"v4l2sink name=viewer_v4l2sink device={quote_gst_string(device)} "
         f"io-mode={io_mode} sync=false"
     )
 
@@ -890,6 +891,11 @@ def select_preferred_decoder(
     return fallback, {}, False
 
 
+def quote_gst_string(value: str) -> str:
+    """Quote a literal string property for Gst.parse_launch."""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def clamp_int(value: Any, minimum: int, maximum: int) -> int:
     """Clamp a dynamic value to the inclusive integer range provided."""
     try:
@@ -1090,11 +1096,11 @@ def should_scan_rpi_video_devices(args) -> bool:
     """Return whether Pi camera auto-discovery is relevant to this source."""
     return bool(
         getattr(args, "rpi", False)
-        and not getattr(args, "test", False)
-        and not getattr(args, "v4l2", None)
-        and not getattr(args, "hdmi", False)
-        and not getattr(args, "rpicam", False)
-        and not getattr(args, "z1", False)
+        and not any(getattr(args, source, False) for source in (
+            "test", "v4l2", "hdmi", "rpicam", "z1", "z1passthru",
+            "video_pipeline", "pipeline", "filesrc", "filesrc2", "pipein",
+            "libcamera", "nvidiacsi", "camlink", "apple", "novideo", "streamin", "midi",
+        ))
     )
 
 
@@ -1107,126 +1113,90 @@ def normalize_stun_server_option(value) -> Tuple[Optional[str], bool]:
         return None, True
     return normalized or None, False
 
-def replace_ssrc_and_cleanup_sdp(sdp): ## fix for audio-only gstreamer -> chrome
-    def generate_ssrc():
-        return str(random.randint(0, 0xFFFFFFFF))
+def replace_ssrc_and_cleanup_sdp(sdp):
+    """Compatibility wrapper for the audio SSRC repair."""
+    return fix_audio_ssrc_for_ohttp_gstreamer(sdp)
 
-    lines = sdp.split('\r\n')
-
-    in_audio_section = False
-    new_ssrc = generate_ssrc()
-
-    for i in range(len(lines)):
-        if lines[i].startswith('m=audio '):
-            in_audio_section = True
-        elif lines[i].startswith('m=') and not lines[i].startswith('m=audio '):
-            in_audio_section = False
-        if in_audio_section and lines[i].startswith('a=ssrc:'):
-            lines[i] = re.sub(r'a=ssrc:\d+', f'a=ssrc:{new_ssrc}', lines[i])
-
-    return '\r\n'.join(lines)
 
 def fix_audio_ssrc_for_ohttp_gstreamer(sdp):
-    """Fix audio SSRC issues for GStreamer 1.18 and earlier.
+    """Repair legacy audio SSRCs without merging sources or changing video."""
+    lines = sdp.splitlines(keepends=True)
 
-    GStreamer 1.18 has bugs where:
-    1. ssrc=-1 in rtpopuspay becomes 0xFFFFFFFF (4294967295) in SDP
-    2. RTX SSRCs may also have invalid values
-    3. ssrc-group:FID may have mismatched SSRCs
+    def references(line):
+        if line.startswith('a=ssrc:'):
+            match = re.match(r'a=ssrc:(\d+)', line)
+            return [match.group(1)] if match else []
+        if line.startswith('a=ssrc-group:'):
+            return line.split()[1:]
+        return []
 
-    This function replaces all audio SSRCs with valid unique values.
-    """
-    def generate_valid_ssrc():
-        # Generate SSRC that's not 0 and not 0xFFFFFFFF (-1)
-        while True:
-            ssrc = random.randint(1, 0xFFFFFFFE)
-            return str(ssrc)
-
-    lines = sdp.split('\r\n')
-    in_audio_section = False
-    audio_ssrc_map = {}  # old_ssrc -> new_ssrc
-
-    # First pass: collect all audio SSRCs and generate replacements
+    used = {int(value) for line in lines for value in references(line) if value.isdecimal()}
+    mappings = {}
+    media_index = -1
+    in_audio = False
     for line in lines:
-        if line.startswith('m=audio '):
-            in_audio_section = True
-        elif line.startswith('m=') and not line.startswith('m=audio '):
-            in_audio_section = False
+        if line.startswith('m='):
+            media_index += 1
+            in_audio = line.startswith('m=audio ')
+        if not in_audio:
+            continue
+        for old in references(line):
+            key = (media_index, old)
+            if not old.isdecimal() or key in mappings:
+                continue
+            candidate = random.randint(1, 0xFFFFFFFE)
+            while candidate in used:
+                candidate = candidate % 0xFFFFFFFE + 1
+            used.add(candidate)
+            mappings[key] = str(candidate)
 
-        if in_audio_section:
-            # Find SSRCs in a=ssrc: lines
+    result = []
+    media_index = -1
+    in_audio = False
+    for line in lines:
+        if line.startswith('m='):
+            media_index += 1
+            in_audio = line.startswith('m=audio ')
+        if in_audio:
             if line.startswith('a=ssrc:'):
-                match = re.match(r'a=ssrc:(\d+)', line)
-                if match:
-                    old_ssrc = match.group(1)
-                    if old_ssrc not in audio_ssrc_map:
-                        audio_ssrc_map[old_ssrc] = generate_valid_ssrc()
+                line = re.sub(r'^(a=ssrc:)(\d+)',
+                              lambda match: match[1] + mappings[(media_index, match[2])], line)
+            elif line.startswith('a=ssrc-group:'):
+                header, separator, values = line.partition(' ')
+                values = re.sub(r'\b\d+\b',
+                                lambda match: mappings.get((media_index, match[0]), match[0]), values)
+                line = header + separator + values
+        result.append(line)
+    return ''.join(result)
 
-            # Find SSRCs in a=ssrc-group:FID lines
-            if line.startswith('a=ssrc-group:FID'):
-                ssrcs = re.findall(r'\d+', line.split('FID')[1] if 'FID' in line else '')
-                for old_ssrc in ssrcs:
-                    if old_ssrc not in audio_ssrc_map:
-                        audio_ssrc_map[old_ssrc] = generate_valid_ssrc()
-
-    # Second pass: replace all SSRCs consistently
-    result_lines = []
-    in_audio_section = False
-
-    for line in lines:
-        if line.startswith('m=audio '):
-            in_audio_section = True
-        elif line.startswith('m=') and not line.startswith('m=audio '):
-            in_audio_section = False
-
-        if in_audio_section:
-            new_line = line
-            for old_ssrc, new_ssrc in audio_ssrc_map.items():
-                # Replace in a=ssrc: lines
-                new_line = re.sub(f'a=ssrc:{old_ssrc}\\b', f'a=ssrc:{new_ssrc}', new_line)
-                # Replace in a=ssrc-group:FID lines
-                new_line = re.sub(f'\\b{old_ssrc}\\b', new_ssrc, new_line) if 'ssrc-group' in new_line else new_line
-            result_lines.append(new_line)
-        else:
-            result_lines.append(line)
-
-    return '\r\n'.join(result_lines)
 
 def strip_audio_from_sdp(sdp):
-    """Remove the audio media section from SDP.
+    """Remove phantom audio sections and their actual BUNDLE MID references."""
+    retained = []
+    audio_mids = set()
+    in_audio = False
+    for line in sdp.splitlines(keepends=True):
+        if line.startswith('m='):
+            in_audio = line.split()[0] == 'm=audio'
+        if in_audio:
+            if line.startswith('a=mid:'):
+                audio_mids.add(line[len('a=mid:'):].strip())
+        else:
+            retained.append(line)
 
-    GStreamer 1.18 creates phantom audio transceivers even when no audio
-    pipeline is present. This can confuse Chrome which waits for audio data.
-    """
-    lines = sdp.split('\r\n')
-    result_lines = []
-    in_audio_section = False
-    bundle_line_idx = None
+    result = []
+    for line in retained:
+        tokens = line.split()
+        if tokens and tokens[0] == 'a=group:BUNDLE':
+            mids = [mid for mid in tokens[1:] if mid not in audio_mids]
+            if mids != tokens[1:]:
+                if not mids:
+                    continue
+                ending = '\r\n' if line.endswith('\r\n') else ('\n' if line.endswith('\n') else '')
+                line = 'a=group:BUNDLE ' + ' '.join(mids) + ending
+        result.append(line)
+    return ''.join(result)
 
-    for i, line in enumerate(lines):
-        if line.startswith('m=audio'):
-            in_audio_section = True
-            continue
-        elif line.startswith('m=') and in_audio_section:
-            in_audio_section = False
-
-        if in_audio_section:
-            continue
-
-        # Track the BUNDLE line for later modification
-        if line.startswith('a=group:BUNDLE'):
-            bundle_line_idx = len(result_lines)
-
-        result_lines.append(line)
-
-    # Remove audio1 from BUNDLE group
-    if bundle_line_idx is not None:
-        bundle_line = result_lines[bundle_line_idx]
-        # Remove audio1 from "a=group:BUNDLE video0 audio1 application2"
-        bundle_line = re.sub(r'\s+audio\d+', '', bundle_line)
-        result_lines[bundle_line_idx] = bundle_line
-
-    return '\r\n'.join(result_lines)
 
 def fix_audio_rtcp_fb_for_gstreamer(sdp):
     """Remove video-specific RTCP feedback attributes from audio section.
@@ -1235,7 +1205,7 @@ def fix_audio_rtcp_fb_for_gstreamer(sdp):
     to audio sections. These are video-specific (for packet loss/keyframe requests)
     and cause some WebRTC stacks to reject the audio description.
     """
-    lines = sdp.split('\r\n')
+    lines = sdp.splitlines(keepends=True)
     result_lines = []
     in_audio_section = False
 
@@ -1252,7 +1222,7 @@ def fix_audio_rtcp_fb_for_gstreamer(sdp):
 
         result_lines.append(line)
 
-    return '\r\n'.join(result_lines)
+    return ''.join(result_lines)
 
 def strip_audio_rtx_from_sdp(sdp: str) -> str:
     """Strip RTX from the audio m= section.
@@ -1264,10 +1234,9 @@ def strip_audio_rtx_from_sdp(sdp: str) -> str:
     if not sdp or "m=audio" not in sdp:
         return sdp
 
-    ends_with_crlf = sdp.endswith("\r\n")
-    lines = sdp.split("\r\n")
-    if ends_with_crlf and lines and lines[-1] == "":
-        lines = lines[:-1]
+    line_ending = "\r\n" if "\r\n" in sdp else "\n"
+    ends_with_newline = sdp.endswith("\n")
+    lines = sdp.splitlines()
 
     session_lines: List[str] = []
     media_sections: List[List[str]] = []
@@ -1384,9 +1353,9 @@ def strip_audio_rtx_from_sdp(sdp: str) -> str:
     for section in updated_sections:
         output_lines.extend(section)
 
-    out = "\r\n".join(output_lines)
-    if ends_with_crlf:
-        out += "\r\n"
+    out = line_ending.join(output_lines)
+    if ends_with_newline:
+        out += line_ending
     return out
 
 def generateHash(input_str, length=None):
@@ -3450,6 +3419,7 @@ class WebRTCClient:
         self._viewer_restart_enabled = not disable_auto_retry
         self._viewer_restart_pending = False
         self._viewer_restart_timer = None
+        self._viewer_restart_lock = threading.RLock()
         self._viewer_restart_attempts = 0
         self._viewer_last_play_request = 0.0
         self._viewer_last_disconnect = 0.0
@@ -4000,6 +3970,9 @@ class WebRTCClient:
                 "F70",
             )
         
+        # A closed socket may still be referenced after loop() returns. It must
+        # not make a failed reconnect look successful and bypass retry backoff.
+        self.conn = None
         last_exception = None
         for context_type, connect_url, ssl_context in connection_attempts:
             try:
@@ -4083,13 +4056,24 @@ class WebRTCClient:
         if video_m_index is None:
             return sdp_text
 
+        # Payload numbers are local to a media section. Restrict every lookup
+        # and insertion below to the selected video, preserving audio and any
+        # subsequent media descriptions even when they reuse payload numbers.
+        video_end = next(
+            (i for i in range(video_m_index + 1, len(lines)) if lines[i].startswith("m=")),
+            len(lines),
+        )
+        before_video, after_video = lines[:video_m_index], lines[video_end:]
+        lines = lines[video_m_index:video_end]
+        video_m_index = 0
+
         # Gather payload IDs from the m=video line
         video_parts = lines[video_m_index].split()
         payload_ids = [p for p in video_parts[3:] if p.isdigit()]
 
         # Inject or update bandwidth lines
         insert_idx = video_m_index + 1
-        while insert_idx < len(lines) and lines[insert_idx].startswith("i="):
+        while insert_idx < len(lines) and lines[insert_idx].startswith(("i=", "c=")):
             insert_idx += 1
 
         cursor = insert_idx
@@ -4123,7 +4107,7 @@ class WebRTCClient:
             cursor += 1
 
         # Update / append fmtp line with x-google bitrate hints for each primary payload
-        min_kbps = max(150, min(target_kbps, int(target_kbps * 0.6)))
+        min_kbps = min(target_kbps, max(150, int(target_kbps * 0.6)))
         primary_payloads: List[str] = []
         for payload in payload_ids:
             rtpmap_prefix = f"a=rtpmap:{payload} "
@@ -4144,7 +4128,11 @@ class WebRTCClient:
 
         for payload in primary_payloads:
             fmtp_prefix = f"a=fmtp:{payload}"
-            fmtp_index = next((i for i, line in enumerate(lines) if line.startswith(fmtp_prefix)), None)
+            fmtp_index = next(
+                (i for i, line in enumerate(lines)
+                 if line == fmtp_prefix or line.startswith(fmtp_prefix + " ")),
+                None,
+            )
             fmtp_header = fmtp_prefix
             fmtp_params: List[str] = []
 
@@ -4171,7 +4159,7 @@ class WebRTCClient:
                 insert_pos = rtpmap_index + 1 if rtpmap_index is not None else cursor
                 lines.insert(insert_pos, fmtp_line)
 
-        modified = "\r\n".join(lines)
+        modified = "\r\n".join(before_video + lines + after_video)
         if not modified.endswith("\r\n"):
             modified += "\r\n"
 
@@ -4186,7 +4174,7 @@ class WebRTCClient:
 
         lines = sdp_text.splitlines()
         video_payloads: Set[str] = set()
-        for raw_line in lines:
+        for index, raw_line in enumerate(lines):
             line = raw_line.strip()
             if not line:
                 continue
@@ -4194,6 +4182,11 @@ class WebRTCClient:
                 parts = line.split()
                 if len(parts) > 3:
                     video_payloads = {p for p in parts[3:] if p.isdigit()}
+                end = next(
+                    (i for i in range(index + 1, len(lines)) if lines[i].strip().startswith("m=")),
+                    len(lines),
+                )
+                lines = lines[index:end]
                 break
 
         if not video_payloads:
@@ -4268,10 +4261,16 @@ class WebRTCClient:
         lines = sdp_text.splitlines()
         ends_with_crlf = sdp_text.endswith("\r\n")
 
-        h264_payloads: Set[str] = set()
+        # Payload numbers may be reused by unrelated media descriptions.
+        h264_payloads: Set[Tuple[int, str]] = set()
+        media_index = -1
+        is_video = False
         for raw_line in lines:
             line = raw_line.strip()
-            if not line.startswith("a=rtpmap:"):
+            if line.startswith("m="):
+                media_index += 1
+                is_video = line.split()[0] == "m=video"
+            if not is_video or not line.startswith("a=rtpmap:"):
                 continue
             try:
                 prefix, codec_info = line.split(None, 1)
@@ -4280,21 +4279,23 @@ class WebRTCClient:
             payload = prefix.split(":")[1]
             codec_name = codec_info.split("/")[0].upper()
             if codec_name == "H264":
-                h264_payloads.add(payload)
+                h264_payloads.add((media_index, payload))
 
         if not h264_payloads:
             return sdp_text
 
         changed = False
-
+        media_index = -1
         for idx, raw_line in enumerate(lines):
             line = raw_line.strip()
+            if line.startswith("m="):
+                media_index += 1
             if not line.startswith("a=fmtp:"):
                 continue
             header_and_payload = raw_line.split(" ", 1)
             header = header_and_payload[0]
             payload = header.split(":")[1]
-            if payload not in h264_payloads:
+            if (media_index, payload) not in h264_payloads:
                 continue
             params_str = header_and_payload[1] if len(header_and_payload) == 2 else ""
             params = [p.strip() for p in params_str.split(";") if p.strip()]
@@ -4372,6 +4373,10 @@ class WebRTCClient:
             if not line:
                 continue
             if line.startswith("m="):
+                # Payload IDs belong to one media section. Later tracks must
+                # neither suppress this repair nor become its rewrite target.
+                if current_media == "video":
+                    break
                 parts = line.split()
                 if len(parts) >= 4:
                     current_media = parts[0][2:]
@@ -4464,12 +4469,16 @@ class WebRTCClient:
             printwarn("Signaling loop unavailable; dropping outbound message")
             return None
 
+        coroutine = None
         try:
+            coroutine = self.sendMessageAsync(dict(msg))
             return asyncio.run_coroutine_threadsafe(
-                self.sendMessageAsync(dict(msg)),
+                coroutine,
                 loop,
             )
         except Exception as e:
+            if coroutine is not None:
+                coroutine.close()
             printwarn(f"Unable to schedule signaling message: {get_exception_info(e)}")
             return None
                 
@@ -4811,20 +4820,32 @@ class WebRTCClient:
         self._publisher_fec_probe_pad = None
         self._publisher_fec_probe_counts = {}
 
+    @staticmethod
+    def _pipeline_message_source(message):
+        """Keep source identity available even when debug text is omitted."""
+        name = ""
+        factory_name = ""
+        try:
+            name = message.src.get_name() or ""
+        except Exception:
+            pass
+        try:
+            factory = message.src.get_factory()
+            factory_name = factory.get_name() if factory else ""
+        except Exception:
+            pass  # Bins and other GstObjects need not have an element factory.
+        return name, factory_name
+
     def _on_pipeline_warning(self, bus, message):
         try:
             warning, debug = message.parse_warning()
         except Exception:
             return
-        src_name = ""
-        try:
-            src_name = message.src.get_name()
-        except Exception:
-            pass
+        src_name, factory_name = self._pipeline_message_source(message)
         combined_text = " ".join(
             filter(
                 None,
-                (str(warning) if warning else "", debug if debug else "", src_name),
+                (str(warning) if warning else "", debug if debug else "", src_name, factory_name),
             )
         ).lower()
         matches_hw = "nvv4l2decoder" in combined_text or "bug in this gstbufferpool subclass" in combined_text
@@ -4840,16 +4861,11 @@ class WebRTCClient:
             err, debug = message.parse_error()
         except Exception:
             return
-        combined = " ".join(filter(None, (str(err), debug))).lower()
+        src_name, factory_name = self._pipeline_message_source(message)
+        combined = " ".join(filter(None, (str(err), debug, src_name, factory_name))).lower()
         if "nvv4l2decoder" in combined:
             self._handle_hw_decoder_warning(str(err), debug, force_trigger=True)
             return
-
-        src_name = ""
-        try:
-            src_name = message.src.get_name()
-        except Exception:
-            src_name = ""
 
         if (
             "jetson_display_sink" in combined
@@ -6055,7 +6071,10 @@ class WebRTCClient:
         else:
             min_gap = long_delay
 
-        elapsed = (now - last_request) if last_request else float("inf")
+        # Before the first retry, the disconnect is the timing anchor. Treating
+        # an absent previous request as infinite elapsed time skips the user's
+        # initial retry delay entirely.
+        elapsed = now - (last_request if last_request else last_disconnect)
         if elapsed < min_gap:
             remaining = max(1.0, min_gap - elapsed)
             if bool(os.environ.get("RN_DEBUG_DISPLAY")):
@@ -6065,7 +6084,9 @@ class WebRTCClient:
 
         stream_id = f"{base_stream}{self.hashcode or ''}"
         try:
-            self.sendMessage({"request": "play", "streamID": stream_id})
+            scheduled = self.sendMessage({"request": "play", "streamID": stream_id})
+            if scheduled is None:
+                raise RuntimeError("signaling message could not be scheduled")
             if bool(os.environ.get("RN_DEBUG_DISPLAY")):
                 print(f"[display] Re-requested stream playback for '{stream_id}' (attempt {attempts + 1})")
         except Exception as exc:
@@ -6082,16 +6103,24 @@ class WebRTCClient:
         self._schedule_viewer_restart_retry(next_delay)
 
     def _cancel_viewer_restart_timer(self):
+        with self._viewer_restart_lock:
+            self._cancel_viewer_restart_timer_locked()
+
+    def _cancel_viewer_restart_timer_locked(self):
         timer = getattr(self, "_viewer_restart_timer", None)
+        self._viewer_restart_timer = None
+        self._viewer_restart_pending = False
         if timer is not None:
             try:
                 timer.cancel()
             except Exception:
                 pass
-        self._viewer_restart_timer = None
-        self._viewer_restart_pending = False
 
     def _schedule_viewer_restart_retry(self, delay: Optional[float] = None):
+        with self._viewer_restart_lock:
+            self._schedule_viewer_restart_retry_locked(delay)
+
+    def _schedule_viewer_restart_retry_locked(self, delay: Optional[float] = None):
         if getattr(self, "_shutdown_requested", False):
             return
         if not getattr(self, "_viewer_restart_enabled", True):
@@ -6109,15 +6138,20 @@ class WebRTCClient:
         self._cancel_viewer_restart_timer()
 
         def _retry(scheduled_delay=delay):
-            self._viewer_restart_timer = None
-            if getattr(self, "_shutdown_requested", False):
-                return
-            if not getattr(self, "_viewer_restart_enabled", True):
-                return
-            self._viewer_restart_pending = False
-            if bool(os.environ.get("RN_DEBUG_DISPLAY")):
-                print(f"[display] Viewer restart timer fired after {scheduled_delay:.1f}s; retrying play request")
-            self._request_view_stream_restart()
+            with self._viewer_restart_lock:
+                # A dispatched Timer callback can outlive cancel(). Only the
+                # current timer may clear state or issue the next play request.
+                if self._viewer_restart_timer is not timer:
+                    return
+                self._viewer_restart_timer = None
+                self._viewer_restart_pending = False
+                if getattr(self, "_shutdown_requested", False):
+                    return
+                if not getattr(self, "_viewer_restart_enabled", True):
+                    return
+                if bool(os.environ.get("RN_DEBUG_DISPLAY")):
+                    print(f"[display] Viewer restart timer fired after {scheduled_delay:.1f}s; retrying play request")
+                self._request_view_stream_restart()
 
         timer = threading.Timer(delay, _retry)
         timer.daemon = True
@@ -6416,7 +6450,9 @@ class WebRTCClient:
             if not line:
                 continue
             if line.startswith("m="):
-                in_video = line.lower().startswith("m=video")
+                if in_video:
+                    break
+                in_video = line.split()[0].lower() == "m=video"
                 continue
             if not in_video:
                 continue
@@ -6442,7 +6478,7 @@ class WebRTCClient:
         if red_pt_key and red_pt_key in fmtp_map:
             fmtp_value = fmtp_map[red_pt_key]
             payload_tokens: List[int] = []
-            for token in re.split(r"[\\s/;,]+", fmtp_value):
+            for token in re.split(r"[\s/;,]+", fmtp_value):
                 if not token:
                     continue
                 if "=" in token:
@@ -6474,7 +6510,7 @@ class WebRTCClient:
                 if info["ulpfec_pt"] is not None:
                     summary += f", ULPFEC payload {info['ulpfec_pt']}"
                 printc(summary, "0AF")
-        elif info["red_pt"] and not info["primary_codec"]:
+        if info["red_pt"] is not None and not info["primary_codec"]:
             printwarn(
                 "Viewer SDP includes RED/ULPFEC but no usable primary payload was detected; "
                 "fallback may disable redundancy."
@@ -8045,7 +8081,7 @@ class WebRTCClient:
                                     "queue ! "
                                     "rtpvp8depay ! "
                                     "matroskamux name=mux1 streamable=true ! "
-                                    f"filesink name=filesink location={filename}", True)
+                                    f"filesink name=filesink location={quote_gst_string(filename)}", True)
                                 printc(f"   📁 Output: {filename}", "77F")
 
                         elif "H264" in name:
@@ -8087,7 +8123,7 @@ class WebRTCClient:
                                 filename = f"./{self.streamin}_{str(int(time.time()))}.mp4"
                                 out = Gst.parse_bin_from_description(
                                     "queue ! rtph264depay ! h264parse ! mp4mux name=mux1 ! "
-                                    f"filesink name=filesink location={filename}", True)
+                                    f"filesink name=filesink location={quote_gst_string(filename)}", True)
                                 printc(f"   📁 Output: {filename}", "77F")
 
                         self.pipe.add(out)
@@ -8241,7 +8277,7 @@ class WebRTCClient:
                                 out = Gst.parse_bin_from_description(
                                     "queue ! rtpopusdepay ! opusparse ! "
                                     "webmmux ! "
-                                    f"filesink name=filesinkaudio location={filename}", True)
+                                    f"filesink name=filesinkaudio location={quote_gst_string(filename)}", True)
                                 printc(f"   📁 Output: {filename}", "77F")
 
                         self.pipe.add(out)
@@ -8406,6 +8442,17 @@ class WebRTCClient:
         # Keep the Python reference alive for already-queued GStreamer callbacks.
         # The client generation is detached from self.clients before it can be reused.
 
+    def _create_multiviewer_queue(self, name):
+        """Keep a stalled viewer from blocking the shared live media tee."""
+        queue = Gst.ElementFactory.make('queue', name)
+        if queue is not None:
+            # Retain the bounded core queue defaults. Drop old buffers only when
+            # full so a stalled peer cannot stop capture or the other viewers.
+            # These are RTP buffers: the affected peer may need a keyframe after
+            # congestion clears, but healthy peers keep their complete stream.
+            queue.set_property('leaky', 2)  # downstream, supported by legacy Gst
+        return queue
+
     def _add_multiviewer_element(self, client, key, element, description):
         """Add and immediately track a dynamic element so failures remain recoverable."""
         if element is None:
@@ -8552,11 +8599,20 @@ class WebRTCClient:
             # Offer created, sending to peer
             if not self._client_is_current(client):
                 return
-            promise.wait()
+            result = promise.wait()
             if not self._client_is_current(client):
                 return
+            if result != Gst.PromiseResult.REPLIED:
+                printwarn("Offer creation did not complete; ignoring its promise")
+                return
             reply = promise.get_reply()
+            if reply is None:
+                printwarn("Offer creation returned no reply")
+                return
             offer = reply.get_value('offer')
+            if not offer:
+                printwarn("Offer creation returned no offer")
+                return
             printc("📤 Sending connection offer...", "77F")
             original_text = offer.sdp.as_text()
             text = original_text
@@ -8573,10 +8629,6 @@ class WebRTCClient:
                 text = text.replace("a=rtpmap:96 rtx/90000\r\na=fmtp:96 apt=96\r\n","")
 
             gst_ver = Gst.version()
-            if self.novideo and not self.noaudio and gst_ver.major == 1 and gst_ver.minor < 20: # impacts audio and video as well, but chrome / firefox seems to handle it
-                printc("Patching SDP due to Gstreamer webRTC bug - audio-only issue", "A6F") # just chrome doesn't handle this
-                text = replace_ssrc_and_cleanup_sdp(text)
-
             # Fix audio SDP issues for GStreamer < 1.20 (1.18 has known SDP bugs Chrome rejects)
             if not self.noaudio and gst_ver.major == 1 and gst_ver.minor < 20:
                 if 'm=audio' in text:
@@ -8999,10 +9051,14 @@ class WebRTCClient:
         def on_stats(promise, abin, data):
             if not self._client_is_current(client):
                 return
-            promise.wait()
+            result = promise.wait()
             if not self._client_is_current(client):
                 return
+            if result != Gst.PromiseResult.REPLIED:
+                return
             stats_reply = promise.get_reply()
+            if stats_reply is None:
+                return
             stats_text = stats_reply.to_string()
             stats_text = stats_text.replace("\\", "")
 
@@ -9995,7 +10051,7 @@ class WebRTCClient:
 
             if vtee is not None:
                 qv_name = f"qv-{uuid}"
-                qv = Gst.ElementFactory.make('queue', qv_name)
+                qv = self._create_multiviewer_queue(qv_name)
                 if not self._add_multiviewer_element(client, 'qv', qv, f"video queue {qv_name}"):
                     self._cleanup_multiviewer_client_elements(client)
                     return
@@ -10009,7 +10065,7 @@ class WebRTCClient:
 
             if atee is not None:
                 qa_name = f"qa-{uuid}"
-                qa = Gst.ElementFactory.make('queue', qa_name)
+                qa = self._create_multiviewer_queue(qa_name)
                 if not self._add_multiviewer_element(client, 'qa', qa, f"audio queue {qa_name}"):
                     self._cleanup_multiviewer_client_elements(client)
                     return
@@ -10112,6 +10168,8 @@ class WebRTCClient:
         """Set up proper recording pipeline for incoming stream"""
         print("RECORDING MODE ACTIVATED")
         timestamp = str(int(time.time()))
+        recording_bin = None
+        recording_ready = False
         
         try:
             # Determine codec and create appropriate pipeline
@@ -10126,7 +10184,7 @@ class WebRTCClient:
                     "video/x-raw,width=1280,height=720 ! "
                     "vp8enc deadline=1 cpu-used=4 ! "
                     "matroskamux name=mux streamable=true ! "
-                    f"filesink location={filename}"
+                    f"filesink location={quote_gst_string(filename)}"
                 )
                 print(f"Recording VP8 to: {filename} (flexible resolution)")
                 
@@ -10138,7 +10196,7 @@ class WebRTCClient:
                     "rtph264depay ! "
                     "h264parse ! "
                     "mpegtsmux ! "
-                    f"filesink location={filename}"
+                    f"filesink location={quote_gst_string(filename)}"
                 )
                 print(f"Recording H264 to: {filename}")
                 
@@ -10149,7 +10207,7 @@ class WebRTCClient:
                     "queue name=rec_queue ! "
                     "rtpvp9depay ! "
                     "matroskamux ! "
-                    f"filesink location={filename}"
+                    f"filesink location={quote_gst_string(filename)}"
                 )
                 print(f"Recording VP9 to: {filename}")
                 
@@ -10163,9 +10221,6 @@ class WebRTCClient:
             # Add to pipeline
             self.pipe.add(recording_bin)
             
-            # Sync state
-            recording_bin.sync_state_with_parent()
-            
             # Link pad to recording bin
             sink_pad = recording_bin.get_static_pad('sink')
             if not sink_pad:
@@ -10177,12 +10232,15 @@ class WebRTCClient:
                 print(f"Failed to link pad: {link_result}")
                 return False
             
-            # Track recording file
-            self.recording_files.append(filename)
-            print(f"Recording pipeline set up successfully")
+            # Activate only once linked; failed attempts must not retain bins.
+            if not recording_bin.sync_state_with_parent():
+                raise RuntimeError("Failed to activate recording bin")
             
             # Set up status monitoring
-            self.setup_recording_monitor(filename)
+            self.setup_recording_monitor(filename, recording_bin)
+            self.recording_files.append(filename)
+            recording_ready = True
+            print(f"Recording pipeline set up successfully")
             
             return True
             
@@ -10191,34 +10249,70 @@ class WebRTCClient:
             import traceback
             traceback.print_exc()
             return False
+        finally:
+            if recording_bin is not None and not recording_ready:
+                recording_bin.set_state(Gst.State.NULL)
+                if recording_bin.get_parent() == self.pipe:
+                    self.pipe.remove(recording_bin)
     
-    def setup_recording_monitor(self, filename):
+    def setup_recording_monitor(self, filename, recording_bin=None):
         """Monitor recording progress"""
+        pipeline = self.pipe
+
         def check_file():
-            if os.path.exists(filename):
-                size = os.path.getsize(filename)
-                print(f"Recording progress: {filename} ({size:,} bytes)")
+            if pipeline is None or self.pipe != pipeline:
+                return False
+            if pipeline.get_state(0)[1] == Gst.State.NULL:
+                return False
+            if recording_bin is not None and (
+                recording_bin.get_parent() != pipeline
+                or recording_bin.get_state(0)[1] == Gst.State.NULL
+            ):
+                return False
+            try:
+                size = os.stat(filename).st_size
+            except FileNotFoundError:
+                return True
+            except OSError as exc:
+                printwarn(f"Unable to read recording progress for {filename}: {exc}")
+                return True
+            print(f"Recording progress: {filename} ({size:,} bytes)")
             return True  # Continue monitoring
         
         # Check file size periodically
         GLib.timeout_add_seconds(5, check_file)
 
     def handle_sdp_ice(self, msg, UUID):
-        client = self.clients[UUID]
-        if not client or not client['webrtc']:
+        client = self.clients.get(UUID)
+        if not client or not client.get('webrtc'):
             print("! CLIENT NOT FOUND OR INVALID")
             return
+        if not isinstance(msg, dict):
+            printwarn("Ignoring malformed SDP/ICE message: expected an object")
+            return
         if 'sdp' in msg:
-            print("INCOMING ANSWER SDP TYPE: "+msg['type'])
-            assert(msg['type'] == 'answer')
             sdp = msg['sdp']
+            if msg.get('type') != 'answer' or not isinstance(sdp, str) or not sdp.strip():
+                printwarn("Ignoring malformed SDP answer: expected type 'answer' and non-empty SDP text")
+                return
+            print("INCOMING ANSWER SDP TYPE: answer")
             if self.view:
                 try:
                     sdp = self._apply_bitrate_constraints_to_sdp(sdp, context="incoming answer")
                 except Exception as exc:
                     printwarn(f"Failed to apply bitrate constraints to remote SDP: {exc}")
             res, sdpmsg = GstSdp.SDPMessage.new()
-            GstSdp.sdp_message_parse_buffer(bytes(sdp.encode()), sdpmsg)
+            if res != GstSdp.SDPResult.OK:
+                printwarn("Unable to allocate an SDP answer message")
+                return
+            try:
+                encoded_sdp = sdp.encode('utf-8')
+            except UnicodeError:
+                printwarn("Ignoring SDP answer with invalid Unicode text")
+                return
+            if GstSdp.sdp_message_parse_buffer(encoded_sdp, sdpmsg) != GstSdp.SDPResult.OK:
+                printwarn("Ignoring SDP answer rejected by the GStreamer parser")
+                return
             answer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.ANSWER, sdpmsg)
             promise = Gst.Promise.new()
             client['webrtc'].emit('set-remote-description', answer, promise)
@@ -10226,7 +10320,14 @@ class WebRTCClient:
         elif 'candidate' in msg:
             # Silently handle ICE candidates
             candidate = msg['candidate']
-            sdpmlineindex = msg['sdpMLineIndex']
+            sdpmlineindex = msg.get('sdpMLineIndex')
+            if (
+                type(sdpmlineindex) is not int
+                or not 0 <= sdpmlineindex <= 0xFFFFFFFF
+                or (candidate is not None and not isinstance(candidate, str))
+            ):
+                printwarn("Ignoring malformed ICE candidate: expected a string and unsigned media-line index")
+                return
             client['webrtc'].emit('add-ice-candidate', sdpmlineindex, candidate)
         else:
             print(msg)
@@ -10235,10 +10336,16 @@ class WebRTCClient:
     def on_answer_created(self, promise, _, client):
         if not self._client_is_current(client):
             return
-        promise.wait()
+        result = promise.wait()
         if not self._client_is_current(client):
             return
+        if result != Gst.PromiseResult.REPLIED:
+            printwarn("Answer creation did not complete; ignoring its promise")
+            return
         reply = promise.get_reply()
+        if reply is None:
+            printwarn("Answer creation returned no reply")
+            return
         answer = reply.get_value('answer')
         if not answer:
             print("Not answer created?")
@@ -10280,69 +10387,62 @@ class WebRTCClient:
         self.sendMessage(msg)
 
     def prefer_codec(self, sdp: str, codec: str = 'h264') -> str:
-        """Reorder codecs in SDP to prefer a specific codec"""
-        if self.use_hls and codec == 'h264':
-            printc("   🔄 Reordering SDP to prefer H264 codec", "0F0")
-        
-        lines = sdp.split('\n')
-        video_line_index = -1
-        video_codecs = []
-        
-        # Find video m= line
-        for i, line in enumerate(lines):
-            if line.startswith('m=video'):
-                video_line_index = i
-                parts = line.split()
-                if len(parts) > 3:
-                    video_codecs = parts[3:]  # Get codec numbers
-                break
-        
-        if video_line_index < 0 or not video_codecs:
+        """Prefer a codec in the first video section without reordering its profiles."""
+        lines = sdp.splitlines(keepends=True)
+        video_index = next(
+            (i for i, line in enumerate(lines) if line.startswith('m=video ')), None
+        )
+        if video_index is None:
             return sdp
-            
-        # Find codec details from rtpmap lines
-        codec_map = {}
-        for line in lines:
-            if line.startswith('a=rtpmap:'):
-                parts = line.split()
-                if len(parts) >= 2:
-                    codec_num = parts[0].split(':')[1]
-                    codec_details = parts[1]
-                    if 'VP8/90000' in codec_details:
-                        codec_map['vp8'] = codec_num
-                    elif 'VP9/90000' in codec_details:
-                        codec_map['vp9'] = codec_num
-                    elif 'H264/90000' in codec_details:
-                        codec_map['h264'] = codec_num
-                    elif 'AV1/90000' in codec_details or 'AV1X/90000' in codec_details:
-                        codec_map['av1'] = codec_num
-        
-        # If we found the video line and the preferred codec
-        if video_line_index >= 0 and codec.lower() in codec_map and video_codecs:
-            preferred_codec = codec_map[codec.lower()]
-            
-            # Reorder codecs to put preferred first
-            if preferred_codec in video_codecs:
-                video_codecs.remove(preferred_codec)
-                video_codecs.insert(0, preferred_codec)
-                
-                # Rebuild the m= line
-                m_parts = lines[video_line_index].split()
-                m_parts[3:] = video_codecs
-                lines[video_line_index] = ' '.join(m_parts)
-                
-                if self.use_hls:
-                    printc(f"   ✅ H264 codec moved to preferred position", "0F0")
-        
-        return '\n'.join(lines)
+        parts = lines[video_index].split()
+        if len(parts) <= 3:
+            return sdp
+        end = next(
+            (i for i in range(video_index + 1, len(lines)) if lines[i].startswith('m=')),
+            len(lines),
+        )
+        payload_codecs = {}
+        for line in lines[video_index + 1:end]:
+            if not line.startswith('a=rtpmap:'):
+                continue
+            mapping = line.split()
+            if len(mapping) < 2:
+                continue
+            payload = mapping[0].split(':', 1)[1]
+            codec_name = mapping[1].split('/', 1)[0].lower()
+            payload_codecs[payload] = 'av1' if codec_name == 'av1x' else codec_name
+
+        requested = codec.lower()
+        preferred = [payload for payload in parts[3:] if payload_codecs.get(payload) == requested]
+        if not preferred:
+            return sdp
+        reordered = preferred + [payload for payload in parts[3:] if payload not in preferred]
+        if reordered == parts[3:]:
+            return sdp
+        original = lines[video_index]
+        ending = original[len(original.rstrip('\r\n')):]
+        lines[video_index] = ' '.join(parts[:3] + reordered) + ending
+        if self.use_hls:
+            printc(f"   Preferred video codec: {codec.upper()}", "0F0")
+        return ''.join(lines)
 
     def handle_offer(self, msg, UUID):
-        client = self.clients[UUID]
-        if not client or not client['webrtc']:
+        client = self.clients.get(UUID)
+        if not client or not client.get('webrtc'):
+            return
+        if not isinstance(msg, dict):
+            printwarn("Ignoring malformed SDP offer: expected an object")
             return
         if 'sdp' in msg:
-            assert(msg['type'] == 'offer')
             sdp = msg['sdp']
+            if msg.get('type') != 'offer' or not isinstance(sdp, str) or not sdp.strip():
+                printwarn("Ignoring malformed SDP offer: expected type 'offer' and non-empty SDP text")
+                return
+            try:
+                sdp.encode('utf-8')
+            except UnicodeError:
+                printwarn("Ignoring SDP offer with invalid Unicode text")
+                return
 
             try:
                 sdp = self._apply_bitrate_constraints_to_sdp(sdp, context="incoming offer")
@@ -10364,6 +10464,13 @@ class WebRTCClient:
 
             if preferred_codec:
                 sdp = self.prefer_codec(sdp, preferred_codec)
+            res, sdpmsg = GstSdp.SDPMessage.new()
+            if res != GstSdp.SDPResult.OK:
+                printwarn("Unable to allocate an SDP offer message")
+                return
+            if GstSdp.sdp_message_parse_buffer(sdp.encode('utf-8'), sdpmsg) != GstSdp.SDPResult.OK:
+                printwarn("Ignoring SDP offer rejected by the GStreamer parser")
+                return
             if self.view:
                 self._capture_remote_video_profiles(sdp)
                 try:
@@ -10371,8 +10478,6 @@ class WebRTCClient:
                 except Exception as exc:
                     printwarn(f"Failed to parse redundancy info from remote SDP: {exc}")
             
-            res, sdpmsg = GstSdp.SDPMessage.new()
-            GstSdp.sdp_message_parse_buffer(bytes(sdp.encode()), sdpmsg)
             offer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.OFFER, sdpmsg)
             promise = Gst.Promise.new()
             client['webrtc'].emit('set-remote-description', offer, promise)
@@ -10841,19 +10946,19 @@ class WebRTCClient:
         """Set up recording pipeline for a room stream"""
         if recorder['recording']:
             return
-            
+
         stream_id = recorder['stream_id']
-        
+
         # Generate filename
         timestamp = int(time.time())
-        
+
         # Create recording pipeline using parse_bin_from_description (like single-stream does)
         if encoding_name == 'H264':
             recording_file = f"{self.record}_{stream_id}_{timestamp}.ts"
             # Match single-stream H264 recording pattern
             pipeline_str = (
                 f"queue ! rtph264depay ! h264parse ! mpegtsmux ! "
-                f"filesink name=filesink_{stream_id} location={recording_file}"
+                f"filesink name=filesink_{stream_id} location={quote_gst_string(recording_file)}"
             )
             printc(f"[{stream_id}] 🎥 ROOM VIDEO RECORDING [{encoding_name}]", "0F0")
             printc(f"[{stream_id}]    📦 Direct copy (no transcoding)", "0F0")
@@ -10870,7 +10975,7 @@ class WebRTCClient:
                 f"video/x-raw,width=1280,height=720 ! "
                 f"vp8enc deadline=1 cpu-used=4 ! "
                 f"matroskamux streamable=true ! "
-                f"filesink name=filesink_{stream_id} location={recording_file}"
+                f"filesink name=filesink_{stream_id} location={quote_gst_string(recording_file)}"
             )
             printc(f"[{stream_id}] 🎥 ROOM VIDEO RECORDING [{encoding_name}]", "0F0")
             printc(f"[{stream_id}]    🔄 Transcoding VP8 → VP8 (for resolution stability)", "FF0")
@@ -10881,7 +10986,7 @@ class WebRTCClient:
             recording_file = f"{self.record}_{stream_id}_{timestamp}.mkv"
             pipeline_str = (
                 f"queue ! rtpvp9depay ! matroskamux ! "
-                f"filesink name=filesink_{stream_id} location={recording_file}"
+                f"filesink name=filesink_{stream_id} location={quote_gst_string(recording_file)}"
             )
             printc(f"[{stream_id}] 🎥 ROOM VIDEO RECORDING [{encoding_name}]", "0F0")
             printc(f"[{stream_id}]    📦 Direct copy (no transcoding)", "0F0")
@@ -10890,7 +10995,7 @@ class WebRTCClient:
         else:
             printc(f"[{stream_id}] Unknown codec: {encoding_name}", "F00")
             return
-        
+
         # Create bin from description
         try:
             out = Gst.parse_bin_from_description(pipeline_str, True)
@@ -10900,51 +11005,55 @@ class WebRTCClient:
         except Exception as e:
             printc(f"[{stream_id}] ❌ Error creating recording bin: {e}", "F00")
             return
-            
-        # Add to pipeline
+
         pipe = recorder['pipe']
-        pipe.add(out)
-        out.sync_state_with_parent()
-        
-        # Get the sink pad from the bin
-        sink = out.get_static_pad('sink')
-        if not sink:
-            printc(f"[{stream_id}] ❌ Failed to get sink pad from recording bin", "F00")
+        recording_ready = False
+        try:
+            pipe.add(out)
+            sink = out.get_static_pad('sink')
+            if not sink:
+                printc(f"[{stream_id}] Failed to get sink pad from recording bin", "F00")
+                return
+            if pad.is_linked():
+                printc(f"[{stream_id}] Pad already linked", "FF0")
+                return
+            link_result = pad.link(sink)
+            if link_result != Gst.PadLinkReturn.OK:
+                printc(f"[{stream_id}] Failed to link recording pipeline: {link_result}", "F00")
+                return
+            if not out.sync_state_with_parent():
+                printc(f"[{stream_id}] Failed to activate recording bin", "F00")
+                return
+            recording_ready = True
+        except Exception as exc:
+            printc(f"[{stream_id}] Failed to set up recording: {exc}", "F00")
             return
-            
-        # Check if pad is already linked
-        if pad.is_linked():
-            printc(f"[{stream_id}] ⚠️  Pad already linked", "FF0")
-            return
-            
-        # Link pad to bin
-        link_result = pad.link(sink)
-        
-        if link_result == Gst.PadLinkReturn.OK:
-            recorder['recording'] = True
-            recorder['recording_file'] = recording_file
-            recorder['filesink'] = pipe.get_by_name(f'filesink_{stream_id}')
-            recorder['start_time'] = time.time()
-            printc(f"[{stream_id}] ✅ Recording active - writing to disk", "0F0")
-            
-            # Update room_streams to show recording status
-            async def update_status():
-                async with self.room_streams_lock:
-                    for uuid, stream_info in self.room_streams.items():
-                        if stream_info.get('streamID') == stream_id:
-                            stream_info['recording'] = True
-                            break
-            asyncio.create_task(update_status())
-        else:
-            printc(f"[{stream_id}] ❌ Failed to link recording pipeline: {link_result}", "F00")
-            # Debug info
-            pad_caps = pad.get_current_caps()
-            sink_caps = sink.get_pad_template_caps()
-            printc(f"[{stream_id}] Pad caps: {pad_caps.to_string() if pad_caps else 'None'}", "F00")
-            printc(f"[{stream_id}] Sink caps: {sink_caps.to_string() if sink_caps else 'None'}", "F00")
-    
+        finally:
+            if not recording_ready:
+                out.set_state(Gst.State.NULL)
+                if out.get_parent() == pipe:
+                    pipe.remove(out)
+
+        recorder['recording'] = True
+        recorder['recording_file'] = recording_file
+        recorder['filesink'] = pipe.get_by_name(f'filesink_{stream_id}')
+        recorder['start_time'] = time.time()
+        printc(f"[{stream_id}] ✅ Recording active - writing to disk", "0F0")
+
+        # Update room_streams to show recording status
+        async def update_status():
+            async with self.room_streams_lock:
+                for uuid, stream_info in self.room_streams.items():
+                    if stream_info.get('streamID') == stream_id:
+                        stream_info['recording'] = True
+                        break
+        asyncio.create_task(update_status())
+
     async def _cleanup_room_stream(self, stream_id):
         """Clean up a disconnected room stream"""
+        for session, routed_stream in list(self.room_sessions.items()):
+            if routed_stream == stream_id:
+                del self.room_sessions[session]
         printc(f"[{stream_id}] 🧹 Cleaning up disconnected stream", "F77")
         
         # Remove from room_recorders
@@ -10979,9 +11088,13 @@ class WebRTCClient:
             try:
                 stream_id, session_id, candidate, mlineindex = await self.ice_queue.get()
                 
-                # If no session yet, get it from recorder
-                if not session_id and stream_id in self.room_recorders:
-                    session_id = self.room_recorders[stream_id].get('session_id')
+                recorder = self.room_recorders.get(stream_id)
+                if not recorder:
+                    continue
+                current_session = recorder.get('session_id')
+                if session_id and current_session and session_id != current_session:
+                    continue
+                session_id = session_id or current_session
                 
                 if session_id:  # Only send if we have a session
                     await self.sendMessageAsync({
@@ -10998,7 +11111,8 @@ class WebRTCClient:
                     # Re-queue if no session yet
                     printc(f"[{stream_id}] No session yet, re-queueing ICE candidate", "FF0")
                     await asyncio.sleep(0.1)
-                    await self.ice_queue.put((stream_id, session_id, candidate, mlineindex))
+                    if self.room_recorders.get(stream_id) is recorder:
+                        await self.ice_queue.put((stream_id, session_id, candidate, mlineindex))
                     
             except asyncio.CancelledError:
                 break
@@ -11141,17 +11255,22 @@ class WebRTCClient:
             printc(f"[{stream_id}] No recorder found for offer", "F00")
             return None
             
-        recorder['session_id'] = session_id
-        self.room_sessions[session_id] = stream_id
-        
-        webrtc = recorder['webrtc']
+        webrtc = recorder.get('webrtc')
         if not webrtc:
             return None
             
         printc(f"[{stream_id}] Setting remote description", "77F")
         
-        # Parse SDP
-        res, sdp_msg = GstSdp.SDPMessage.new_from_text(offer_sdp)
+        if not isinstance(offer_sdp, str) or not offer_sdp.strip():
+            printc(f"[{stream_id}] Invalid room offer: expected non-empty SDP text", "F00")
+            return None
+        # Parse before changing session routing or invalidating an active answer.
+        try:
+            offer_sdp.encode('utf-8')
+            res, sdp_msg = GstSdp.SDPMessage.new_from_text(offer_sdp)
+        except (UnicodeError, ValueError) as exc:
+            printc(f"[{stream_id}] Invalid room offer text: {exc}", "F00")
+            return None
         if res != GstSdp.SDPResult.OK:
             printc(f"[{stream_id}] ERROR: Failed to parse SDP", "F00")
             return None
@@ -11161,6 +11280,9 @@ class WebRTCClient:
             sdp_msg
         )
         
+        recorder['session_id'] = session_id
+        self.room_sessions[session_id] = stream_id
+
         # Ensure pipeline is playing before negotiation
         pipe = recorder.get('pipe')
         if pipe:
@@ -11168,6 +11290,10 @@ class WebRTCClient:
             if state != Gst.State.PLAYING:
                 printc(f"[{stream_id}] WARNING: Pipeline not in PLAYING state before negotiation: {state.value_name}", "FF0")
         
+        # A session can renegotiate without replacing its recorder.
+        answer_generation = object()
+        recorder['_answer_generation'] = answer_generation
+
         # Set remote description (match main handler pattern)
         promise = Gst.Promise.new()
         webrtc.emit('set-remote-description', offer, promise)
@@ -11175,36 +11301,61 @@ class WebRTCClient:
         
         # Create answer with callback
         answer_ready = asyncio.Event()
+        answer_loop = asyncio.get_running_loop()
         answer_sdp = None
-        
+        answer_cancelled = False
+
+        def answer_is_current():
+            return (
+                not answer_cancelled
+                and self.room_recorders.get(stream_id) is recorder
+                and recorder.get('session_id') == session_id
+                and recorder.get('_answer_generation') is answer_generation
+            )
+
         def on_answer_ready(promise, webrtc):
             nonlocal answer_sdp
-            promise.wait()
-            reply = promise.get_reply()
-            if reply:
-                answer = reply.get_value('answer')
-                if answer:
-                    # Set local description
-                    promise2 = Gst.Promise.new()
-                    webrtc.emit('set-local-description', answer, promise2)
-                    promise2.interrupt()
-                    
-                    answer_sdp = answer.sdp.as_text()
-                    printc(f"[{stream_id}] Answer created successfully", "0F0")
-                else:
-                    printc(f"[{stream_id}] ERROR: No answer in reply", "F00")
-            else:
-                printc(f"[{stream_id}] ERROR: No reply when creating answer", "F00")
-            answer_ready.set()
-        
+            try:
+                if not answer_is_current():
+                    return
+                if promise.wait() != Gst.PromiseResult.REPLIED:
+                    printc(f"[{stream_id}] Answer creation did not complete", "F00")
+                    return
+                reply = promise.get_reply()
+                answer = reply.get_value('answer') if reply is not None else None
+                if not answer:
+                    printc(f"[{stream_id}] No answer in reply", "F00")
+                    return
+                if not answer_is_current():
+                    return
+                promise2 = Gst.Promise.new()
+                webrtc.emit('set-local-description', answer, promise2)
+                promise2.interrupt()
+                answer_sdp = answer.sdp.as_text()
+                printc(f"[{stream_id}] Answer created successfully", "0F0")
+            except Exception as exc:
+                answer_sdp = None
+                printc(f"[{stream_id}] Failed to apply room answer: {exc}", "F00")
+            finally:
+                try:
+                    answer_loop.call_soon_threadsafe(answer_ready.set)
+                except RuntimeError:
+                    # The owning event loop may already have shut down.
+                    pass
+
         # Create answer with callback
         promise = Gst.Promise.new_with_change_func(on_answer_ready, webrtc)
         webrtc.emit('create-answer', None, promise)
         
         # Wait for answer to be ready
-        await answer_ready.wait()
+        try:
+            await answer_ready.wait()
+        except asyncio.CancelledError:
+            answer_cancelled = True
+            promise.interrupt()
+            raise
         
-        if not answer_sdp:
+        if not answer_sdp or not answer_is_current():
             return None
         
         # Send any pending ICE candidates now that we have a session
@@ -12005,17 +12156,20 @@ class WebRTCClient:
             if not caps:
                 printc(f"No caps available for pad yet", "F77")
                 return
-            name = caps.get_structure(0).get_name()
+            structure = caps.get_structure(0)
+            name = structure.get_name()
+            media = structure.get_string('media') or name.split('/', 1)[0]
+            encoding = structure.get_string('encoding-name') or name
             print(f"New stream pad for {client.get('streamID', 'unknown')}: {name}")
             
             if self.room_ndi:
                 # Setup NDI output for this stream
-                self.setup_room_ndi(client, pad, name)
-            elif "video" in name:
-                self.setup_room_video_recording(client, pad, name)
-            elif "audio" in name:
+                self.setup_room_ndi(client, pad, media, encoding)
+            elif media == "video":
+                self.setup_room_video_recording(client, pad, encoding)
+            elif media == "audio":
                 if not self.noaudio:
-                    self.setup_room_audio_recording(client, pad, name)
+                    self.setup_room_audio_recording(client, pad, encoding)
         except Exception as e:
             printc(f"Error handling new stream pad: {e}", "F00")
             import traceback
@@ -12034,29 +12188,48 @@ class WebRTCClient:
             pipeline_str = (
                 f"queue ! rtph264depay ! h264parse ! "
                 f"mpegtsmux name=mux_{client['UUID']} ! "
-                f"filesink location={filename}"
+                f"filesink location={quote_gst_string(filename)}"
             )
             printc(f"Recording H264 video to: {filename}", "7F7")
         elif "vp8" in name.lower():
-            # Direct mux VP8 to MPEG-TS
+            # Direct mux VP8 to WebM
             # Add counter to prevent file collisions
-            filename = f"{self.room_name}_{stream_id}_{timestamp}_{client['UUID'][:8]}.ts"
+            filename = f"{self.room_name}_{stream_id}_{timestamp}_{client['UUID'][:8]}.webm"
             pipeline_str = (
                 f"queue ! rtpvp8depay ! "
-                f"mpegtsmux name=mux_{client['UUID']} ! "
-                f"filesink location={filename}"
+                f"webmmux name=mux_{client['UUID']} ! "
+                f"filesink location={quote_gst_string(filename)}"
             )
             printc(f"Recording VP8 video to: {filename}", "7F7")
         else:
             printc(f"Unknown video codec: {name}", "F00")
             return
             
-        out = Gst.parse_bin_from_description(pipeline_str, True)
-        self.pipe.add(out)
-        out.sync_state_with_parent()
-        sink = out.get_static_pad('sink')
-        pad.link(sink)
-        
+        out = None
+        recording_ready = False
+        try:
+            out = Gst.parse_bin_from_description(pipeline_str, True)
+            self.pipe.add(out)
+            sink = out.get_static_pad('sink')
+            if not sink or pad.is_linked():
+                printc(f"[{stream_id}] Recording input is unavailable or already linked", "F00")
+                return
+            if pad.link(sink) != Gst.PadLinkReturn.OK:
+                printc(f"[{stream_id}] Failed to link recording input", "F00")
+                return
+            if not out.sync_state_with_parent():
+                printc(f"[{stream_id}] Failed to activate recording bin", "F00")
+                return
+            recording_ready = True
+        except Exception as exc:
+            printc(f"[{stream_id}] Failed to set up recording: {exc}", "F00")
+            return
+        finally:
+            if out is not None and not recording_ready:
+                out.set_state(Gst.State.NULL)
+                if out.get_parent() == self.pipe:
+                    self.pipe.remove(out)
+
         client['video_recording'] = True
         # Update room stream status (no async context in sync function)
         # This is OK since GStreamer callbacks are serialized
@@ -12073,23 +12246,68 @@ class WebRTCClient:
             
             if mux:
                 # Add audio to existing mux
-                pipeline_str = "queue ! rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,rate=48000"
-                out = Gst.parse_bin_from_description(pipeline_str, True)
-                self.pipe.add(out)
-                out.sync_state_with_parent()
-                
-                # Get source pad from the audio pipeline
-                src_pad = out.get_static_pad('src')
-                # Get audio sink pad from mux
-                audio_pad = mux.get_request_pad('sink_%d')
-                if audio_pad:
-                    src_pad.link(audio_pad)
-                    # Link incoming pad to our pipeline
+                pipeline_str = 'queue ! rtpopusdepay ! opusparse ! capsfilter caps="audio/x-opus,channel-mapping-family=0,rate=48000"'
+                out = None
+                mux_pad = None
+                release_mux_pad = False
+                ghost_pads = []
+                recording_ready = False
+                try:
+                    out = Gst.parse_bin_from_description(pipeline_str, True)
+                    self.pipe.add(out)
                     sink = out.get_static_pad('sink')
-                    pad.link(sink)
-                else:
-                    printc(f"Failed to get audio pad from mux for stream {client['streamID']}", "F00")
+                    if not sink or pad.is_linked():
+                        raise RuntimeError('audio input is unavailable or already linked')
+                    if pad.link(sink) != Gst.PadLinkReturn.OK:
+                        raise RuntimeError('failed to link audio input')
+                    source = out.get_static_pad('src')
+                    audio_caps = source.query_caps(None)
+                    # Factory templates avoid exposing class-owned PadTemplate
+                    # objects through older GStreamer introspection bindings.
+                    for template in mux.get_factory().get_static_pad_templates():
+                        if (template.direction == Gst.PadDirection.SINK
+                                and template.presence == Gst.PadPresence.REQUEST
+                                and template.get_caps().can_intersect(audio_caps)):
+                            mux_pad = mux.get_request_pad(template.name_template)
+                            if mux_pad is not None:
+                                break
+                    if mux_pad is None:
+                        raise RuntimeError('mux has no compatible audio pad')
+                    release_mux_pad = True
+                    # Expose the mux pad through each enclosing recording bin.
+                    # Own these pads explicitly so failed setup can release them.
+                    target = mux_pad
+                    parent = mux.get_parent()
+                    while parent != self.pipe:
+                        if parent is None:
+                            raise RuntimeError('mux is outside the recording pipeline')
+                        ghost = Gst.GhostPad.new(None, target)
+                        if ghost is None or not parent.add_pad(ghost):
+                            raise RuntimeError('failed to expose mux audio pad')
+                        ghost_pads.append((parent, ghost))
+                        if not ghost.set_active(True):
+                            raise RuntimeError('failed to activate mux audio pad')
+                        target = ghost
+                        parent = parent.get_parent()
+                    if source.link(target) != Gst.PadLinkReturn.OK:
+                        raise RuntimeError('failed to link audio to mux')
+                    if not out.sync_state_with_parent():
+                        raise RuntimeError('failed to activate audio recording bin')
+                    recording_ready = True
+                except Exception as exc:
+                    printc(f"Failed to add audio for stream {client['streamID']}: {exc}", "F00")
                     return
+                finally:
+                    if not recording_ready:
+                        if out is not None:
+                            out.set_state(Gst.State.NULL)
+                            if out.get_parent() == self.pipe:
+                                self.pipe.remove(out)
+                        for parent, ghost in reversed(ghost_pads):
+                            ghost.set_active(False)
+                            parent.remove_pad(ghost)
+                        if mux_pad is not None and release_mux_pad:
+                            mux.release_request_pad(mux_pad)
                 printc(f"Added audio to recording for stream {client['streamID']}", "7F7")
             else:
                 # Create standalone audio recording
@@ -12099,18 +12317,38 @@ class WebRTCClient:
                 filename = f"{self.room_name}_{stream_id}_{timestamp}_{client['UUID'][:8]}_audio.ts"
                 pipeline_str = (
                     f"queue ! rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,rate=48000 ! "
-                    f"mpegtsmux ! filesink location={filename}"
+                    f"mpegtsmux ! filesink location={quote_gst_string(filename)}"
                 )
-                out = Gst.parse_bin_from_description(pipeline_str, True)
-                self.pipe.add(out)
-                out.sync_state_with_parent()
-                sink = out.get_static_pad('sink')
-                pad.link(sink)
+                out = None
+                recording_ready = False
+                try:
+                    out = Gst.parse_bin_from_description(pipeline_str, True)
+                    self.pipe.add(out)
+                    sink = out.get_static_pad('sink')
+                    if not sink or pad.is_linked():
+                        printc(f"[{stream_id}] Audio recording input is unavailable or already linked", "F00")
+                        return
+                    if pad.link(sink) != Gst.PadLinkReturn.OK:
+                        printc(f"[{stream_id}] Failed to link audio recording input", "F00")
+                        return
+                    if not out.sync_state_with_parent():
+                        printc(f"[{stream_id}] Failed to activate audio recording bin", "F00")
+                        return
+                    recording_ready = True
+                except Exception as exc:
+                    printc(f"[{stream_id}] Failed to set up audio recording: {exc}", "F00")
+                    return
+                finally:
+                    if out is not None and not recording_ready:
+                        out.set_state(Gst.State.NULL)
+                        if out.get_parent() == self.pipe:
+                            self.pipe.remove(out)
                 printc(f"Recording audio only for stream {client['streamID']}", "7F7")
     
-    def setup_room_ndi(self, client, pad, name):
+    def setup_room_ndi(self, client, pad, name, encoding):
         """Setup NDI output for a room stream"""
         stream_id = client['streamID']
+        encoding = encoding.upper()
         
         # Check if we should use direct mode (default) or combiner mode
         use_direct_ndi = not (hasattr(self.args, 'ndi_combine') and self.args.ndi_combine)
@@ -12177,14 +12415,14 @@ class WebRTCClient:
         # Process video
         if "video" in name:
             # Detect video codec
-            if "H264" in name:
+            if encoding == "H264":
                 pipeline_str = "queue ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! videoscale ! videorate ! capsfilter name=vcaps"
-            elif "VP8" in name:
+            elif encoding == "VP8":
                 pipeline_str = "queue ! rtpvp8depay ! vp8dec ! videoconvert ! videoscale ! videorate ! capsfilter name=vcaps"
-            elif "VP9" in name:
+            elif encoding == "VP9":
                 pipeline_str = "queue ! rtpvp9depay ! vp9dec ! videoconvert ! videoscale ! videorate ! capsfilter name=vcaps"
             else:
-                printc(f"Unknown video codec for NDI: {name}", "F00")
+                printc(f"Unknown video codec for NDI: {encoding}", "F00")
                 return
             
             out = Gst.parse_bin_from_description(pipeline_str, True)
@@ -12215,10 +12453,10 @@ class WebRTCClient:
             
         elif "audio" in name and not self.noaudio:
             # Process audio
-            if "OPUS" in name:
+            if encoding == "OPUS":
                 pipeline_str = "queue ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! capsfilter name=acaps"
             else:
-                printc(f"Unknown audio codec for NDI: {name}", "F00")
+                printc(f"Unknown audio codec for NDI: {encoding}", "F00")
                 return
             
             out = Gst.parse_bin_from_description(pipeline_str, True)
@@ -12564,26 +12802,35 @@ def on_message(bus: Gst.Bus, message: Gst.Message, loop):
     return True
 
 def supports_resolution_and_format(device, width, height, framerate=None):
-    supported_formats = []
-    if framerate is not None:
-        framerate = str(framerate)+"/1"
+    """Return formats supported at the requested mode using native caps matching."""
+    from fractions import Fraction
 
-    if device and device.get_caps():
-        for structure in device.get_caps().to_string().split(';'):
-            if 'video/x-raw' in structure and 'width=(int)' + str(width) in structure and 'height=(int)' + str(height) in structure:
-                if framerate and 'framerate=' in structure:
-                    if framerate in structure:
-                        format_type = structure.split('format=(string)')[1].split(',')[0]  # Extract the format
-                        supported_formats.append(format_type)
-                else:
-                    format_type = structure.split('format=(string)')[1].split(',')[0]  # Extract the format
-                    supported_formats.append(format_type)
-            elif 'jpeg' in structure:
-                 supported_formats.append('JPEG')
-            elif '264' in structure:
-                 supported_formats.append('H264')
-    priority_order = ['JPEG', 'I420', 'YVYU','YUY2','NV12', 'NV21', 'UYVY', 'RGB', 'BGR', 'BGRx', 'RGBx']
+    if device is None:
+        return []
+    caps = device.get_caps()
+    if caps is None:
+        return []
+    mode = f"width=(int){int(width)},height=(int){int(height)}"
+    if framerate is not None:
+        rate = Fraction(str(framerate)).limit_denominator(1_000_000)
+        mode += f",framerate=(fraction){rate.numerator}/{rate.denominator}"
+    requested = Gst.Caps.from_string(";".join(
+        f"{media}(ANY),{mode}" for media in ("video/x-raw", "image/jpeg", "video/x-h264")
+    ))
+    matching = caps.intersect_full(requested, Gst.CapsIntersectMode.FIRST).normalize()
+    supported_formats = []
+    for index in range(matching.get_size()):
+        structure = matching.get_structure(index)
+        media = structure.get_name()
+        if media == "video/x-raw":
+            value = structure.get_string("format")
+        else:
+            value = {"image/jpeg": "JPEG", "video/x-h264": "H264"}.get(media)
+        if value and value not in supported_formats:
+            supported_formats.append(value)
+    priority_order = ['JPEG', 'I420', 'YVYU', 'YUY2', 'NV12', 'NV21', 'UYVY', 'RGB', 'BGR', 'BGRx', 'RGBx']
     return sorted(supported_formats, key=lambda x: priority_order.index(x) if x in priority_order else len(priority_order))
+
 
 class WHIPClient:
     def __init__(self, pipeline_desc, args):
@@ -12736,16 +12983,20 @@ def detect_best_formats(device):
     Detects the best formats available on the device for efficient encoding.
     Returns a list of preferred formats in order of efficiency.
     """
-    # Get device capabilities
-    properties = device.get_properties()
-    
     # Check if this is a known Rockchip device (like Orange Pi 5 Plus)
-    is_rockchip = False
+    bus_path = ""
+    display_name = ""
     try:
-        if 'rockchip' in properties.get_value("device.bus_path").lower() or 'rk_' in device.get_display_name().lower():
-            is_rockchip = True
-    except:
+        properties = device.get_properties()
+        if properties is not None and properties.has_field("device.bus_path"):
+            bus_path = str(properties.get_value("device.bus_path") or "").lower()
+    except Exception:
         pass
+    try:
+        display_name = (device.get_display_name() or "").lower()
+    except Exception:
+        pass
+    is_rockchip = 'rockchip' in bus_path or 'rk_' in display_name
 
     # Preferred format order for various platforms
     if is_rockchip and check_plugins('rockchipmpp'):
@@ -12756,47 +13007,32 @@ def detect_best_formats(device):
         return ["I420", "NV12", "YUY2", "UYVY", "NV16", "NV24", "BGR", "RGB"]
 
 def get_supported_formats(device, width, height, framerate):
-    """
-    Gets a list of formats that are supported by the device at given resolution.
-    """
+    """Return raw formats whose native caps intersect the requested mode."""
     try:
+        from fractions import Fraction
+
+        rate = Fraction(str(framerate)).limit_denominator(1_000_000)
+        if int(width) <= 0 or int(height) <= 0 or rate <= 0:
+            return []
         caps = device.get_caps()
+        if caps is None:
+            return []
+        # Let GStreamer handle lists, stepped ranges, and fractions natively.
+        # Reading those values via GI is unsupported on some older bindings.
+        # ANY features preserve hardware-memory formats for converter selection.
+        requested = Gst.Caps.from_string(
+            f"video/x-raw(ANY),width=(int){int(width)},height=(int){int(height)},"
+            f"framerate=(fraction){rate.numerator}/{rate.denominator}"
+        )
+        matching = caps.intersect_full(requested, Gst.CapsIntersectMode.FIRST).normalize()
         supported_formats = []
-        
-        # Iterate through all caps structures
-        for i in range(caps.get_size()):
-            structure = caps.get_structure(i)
-            name = structure.get_name()
-            
-            # Only look at raw video formats
-            if not name.startswith('video/x-raw'):
-                continue
-                
-            # Check if format is specified
-            if structure.has_field('format'):
-                format_value = structure.get_value('format')
-                
-                # Check if width/height match or are flexible
-                width_match = structure.has_field('width') and check_resolution_match(structure, 'width', width)
-                height_match = structure.has_field('height') and check_resolution_match(structure, 'height', height)
-                framerate_match = structure.has_field('framerate') and check_framerate_match(structure, 'framerate', framerate)
-                
-                if width_match and height_match and framerate_match:
-                    # If it's a string, add it directly
-                    if isinstance(format_value, str):
-                        supported_formats.append(format_value)
-                    # If it's a list of options (like from a GstValueList)
-                    else:
-                        try:
-                            for j in range(format_value.n_values()):
-                                supported_formats.append(format_value.get_string(j))
-                        except:
-                            # If we can't iterate, try to convert to string
-                            supported_formats.append(str(format_value))
-        
+        for index in range(matching.get_size()):
+            value = matching.get_structure(index).get_string('format')
+            if value and value not in supported_formats:
+                supported_formats.append(value)
         return supported_formats
-    except Exception as e:
-        print(f"Error getting supported formats: {e}")
+    except Exception as exc:
+        print(f"Error getting supported formats: {exc}")
         return []
 
 def check_resolution_match(structure, field, target_value):
@@ -12949,7 +13185,7 @@ def optimize_pipeline_for_device(device, width, height, framerate, iomode, forma
             best_format = "I420"  # Generic fallback
     
     # Create source pipeline segment with specific format
-    input_pipeline = f'v4l2src device={device} io-mode={str(iomode)} ! queue max-size-buffers=2 leaky=upstream ! video/x-raw,format={best_format},width=(int){width},height=(int){height},framerate=(fraction){framerate}/1'
+    input_pipeline = f'v4l2src device={quote_gst_string(device)} io-mode={str(iomode)} ! queue max-size-buffers=2 leaky=upstream ! video/x-raw,format={best_format},width=(int){width},height=(int){height},framerate=(fraction){framerate}/1'
     
     # Create conversion pipeline segment if needed
     target_format = "NV12"  # Most hardware encoders prefer NV12
@@ -13044,17 +13280,24 @@ def build_v4l2_h264_passthrough_pipeline(
     framerate: float,
     constrain_rate: bool = True,
     save_fragment: str = "",
+    *,
+    rtmp: bool = False,
 ) -> str:
     """Build a native H.264 UVC capture pipeline without decoding/re-encoding."""
     source_caps = f"video/x-h264,width=(int){width},height=(int){height}"
     if constrain_rate:
         source_caps += f",framerate=(fraction){framerate}/1"
-    return (
-        f"v4l2src device={device} io-mode={iomode} ! {source_caps} "
+    pipeline = (
+        f"v4l2src device={quote_gst_string(device)} io-mode={iomode} ! {source_caps} "
         "! queue max-size-buffers=4 leaky=downstream ! h264parse"
-        f"{save_fragment} ! rtph264pay config-interval=-1 aggregate-mode=zero-latency "
-        "! application/x-rtp,media=video,encoding-name=H264,payload=96"
+        f"{save_fragment}"
     )
+    if not rtmp:
+        pipeline += (
+            " ! rtph264pay config-interval=-1 aggregate-mode=zero-latency "
+            "! application/x-rtp,media=video,encoding-name=H264,payload=96"
+        )
+    return pipeline
 
 
 def resolve_v4l2sink_device(device: Optional[str], default_index: int = 0) -> Optional[str]:
@@ -13079,6 +13322,11 @@ def configure_single_stream_recording(args):
 
 def normalize_video_codec_preferences(args):
     """Resolve codec flags without letting platform hints override explicit codecs."""
+    if any(getattr(args, name, False) for name in ("aom", "rav1e", "qsv")):
+        args.av1 = True
+    if any(getattr(args, name, False) for name in ("hevc", "x265")):
+        args.h265 = True
+
     if any(
         getattr(args, name, False)
         for name in ("nvidia", "rpi", "x264", "openh264", "omx", "apple")
@@ -13088,7 +13336,7 @@ def normalize_video_codec_preferences(args):
     if getattr(args, "vp8", False) or getattr(args, "vp9", False):
         args.h264 = False
 
-    if getattr(args, "av1", False):
+    if getattr(args, "av1", False) or getattr(args, "h265", False):
         args.h264 = False
 
     if getattr(args, "rtmp", None) and not args.h264:
@@ -13162,7 +13410,7 @@ async def main():
     parser.add_argument('--camlink', action='store_true', help='Try to setup an Elgato Cam Link')
     parser.add_argument('--z1', action='store_true', help='Try to setup a Theta Z1 360 camera')
     parser.add_argument('--z1passthru', action='store_true', help='Try to setup a Theta Z1 360 camera, but do not transcode')
-    parser.add_argument('--apple', type=str, action=None, help='Sets Apple Video Foundation media device; takes a device index value (0,1,2,3,etc)')
+    parser.add_argument('--apple', type=str, action=None, help='Select Apple Video Foundation camera by device index (0,1,2,...) or case-insensitive name substring')
     parser.add_argument('--v4l2', type=str, default=None, help='Sets the V4L2 input device.')
     parser.add_argument('--iomode', type=int, default=2, help='Sets a custom V4L2 I/O Mode')
     parser.add_argument('--libcamera', action='store_true',  help='Use libcamera as the input source')
@@ -13432,8 +13680,7 @@ async def main():
         args.streamin = args.socketout
     elif args.framebuffer:
         if not np:
-            print("You must install Numpy for this to work.\npip3 install numpy")
-            sys.exit()
+            parser.error("Framebuffer mode requires numpy; install it for the Python interpreter running publish.py")
         
         # Check for GStreamer 1.18 bug with framebuffer mode
         gst_version = Gst.version()
@@ -13507,47 +13754,35 @@ async def main():
     if not hasattr(args, 'stream_filter'):
         args.stream_filter = None
 
-    audiodevices = []
-    if not (args.test or args.noaudio or args.streamin):
+    if not (args.alsa or args.pulse or args.test or args.noaudio or args.pipein
+            or args.streamin or args.audio_pipeline):
         monitor = Gst.DeviceMonitor.new()
         monitor.add_filter("Audio/Source", None)
         audiodevices = monitor.get_devices()
-
-    if not args.alsa and not args.noaudio and not args.pulse and not args.test and not args.pipein and not args.streamin:
-        default = [d for d in audiodevices if d.get_properties().get_value("is-default") is True]
-        args.alsa = "default"
-        aname = "default"
-
-        if len(default) > 0:
-            device = default[0]
-            args.alsa = 'hw:'+str(device.get_properties().get_value("alsa.card"))+',0'
-            print(" >> Default audio device selected: %s, via '%s'" % (device.get_display_name(), 'alsasrc device="hw:'+str(device.get_properties().get_value("alsa.card"))+',0"'))
-        elif len(audiodevices)==0:
-            args.noaudio = True
-            print("\nNo microphone or audio source found; disabling audio.")
-        else:
+        candidates = []
+        for device in audiodevices:
             try:
-                print("\nDetected audio sources:")
-                for i, d in enumerate(audiodevices):
-                    print("  - ",audiodevices[i].get_display_name(), audiodevices[i].get_property("internal-name"), audiodevices[i].get_properties().get_value("alsa.card"), audiodevices[i].get_properties().get_value("is-default"))
-                    args.alsa = 'hw:'+str(audiodevices[i].get_properties().get_value("alsa.card"))+',0'
-                print()
-                default = None
-                for d in audiodevices:
-                    props = d.get_properties()
-                    for e in range(int(props.n_fields())):
-                        if (props.nth_field_name(e) == "device.api" and props.get_value(props.nth_field_name(e)) == "alsa"):
-                            default = d
-                            break
-                    if default:
-                        print(" >> Selected the audio device: %s, via '%s'" % (default.get_display_name(), 'alsasrc device="hw:'+str(default.get_properties().get_value("alsa.card"))+',0"'))
-                        args.alsa = 'hw:'+str(default.get_properties().get_value("alsa.card"))+',0'
-                        break
-                if not default:
-                    args.noaudio = True
-                    print("\nNo audio source selected; disabling audio.")
-            except Exception as e:
-                print(f"Error accessing properties for audio device {i}: {e}")
+                props = device.get_properties()
+                if props is None or not props.has_field("alsa.card"):
+                    continue
+                card = props.get_value("alsa.card")
+                if card is None or str(card).strip() == "":
+                    continue
+                is_default = (props.has_field("is-default")
+                              and props.get_value("is-default") is True)
+                candidates.append((is_default, str(card), device.get_display_name()))
+            except Exception as exc:
+                printwarn(f"Could not inspect an audio source: {exc}")
+        if candidates:
+            # A default PulseAudio source need not expose an ALSA card. Only
+            # construct an ALSA device string from an advertised card value.
+            _, card, name = next((item for item in candidates if item[0]), candidates[0])
+            args.alsa = f"hw:{card},0"
+            print(f" >> Selected audio device: {name}, via alsasrc device={args.alsa}")
+        else:
+            args.noaudio = True
+            print("No ALSA capture source found; disabling audio. "
+                  "Use --alsa DEVICE, --pulse DEVICE, or --audio-pipeline for an explicit source.")
         print()
 
     if check_plugins("rpicamsrc"):
@@ -13595,55 +13830,59 @@ async def main():
             args.rpi = True
             args.rpicam = False
 
-    if args.aom:
-        if not check_plugins(['aom','videoparsersbad','rsrtp'], True):
-            print("You'll probably need to install gst-plugins-rs to use AV1 (av1enc, av1parse, av1pay)")
-            print("ie: https://github.com/steveseguin/raspberry_ninja/blob/6873b97af02f720b9dc2e5c3ae2e9f02d486ba52/raspberry_pi/installer.sh#L347")
-            sys.exit()
+    if not args.streamin and not args.novideo and (args.av1 or args.aom or args.rav1e or args.qsv):
+        # A plugin may load without exposing an encoder for this hardware.
+        # Check the actual elements used by the generated pipeline.
+        if not check_plugins(['av1parse', 'rtpav1pay'], True):
+            parser.error("AV1 publishing requires av1parse and rtpav1pay; "
+                         "check them with gst-inspect-1.0 and install the missing elements")
+        av1_encoders = [('aom', 'av1enc'), ('rav1e', 'rav1enc'), ('qsv', 'qsvav1enc')]
+        explicit_encoder = next(((flag, element) for flag, element in av1_encoders
+                                 if getattr(args, flag)), None)
+        if explicit_encoder:
+            flag, element = explicit_encoder
+            if not check_plugins(element, True):
+                parser.error(f"Requested AV1 encoder {element} is unavailable "
+                             f"({Gst.version_string()}); check gst-inspect-1.0 {element}")
         else:
-            args.av1 = True
+            selected = next(((flag, element) for flag, element in
+                             [('qsv', 'qsvav1enc'), ('aom', 'av1enc'), ('rav1e', 'rav1enc')]
+                             if check_plugins(element)), None)
+            if selected is None:
+                parser.error(f"No AV1 encoder is available ({Gst.version_string()}); "
+                             "install av1enc, rav1enc, or a usable qsvav1enc")
+            flag, element = selected
+        for encoder_flag, _ in av1_encoders:
+            setattr(args, encoder_flag, encoder_flag == flag)
+        args.av1 = True
+        print(f"AV1 encoder selected: {element}")
         if args.rpi:
-            print("A Raspberry Pi 4 can only handle like 640x360 @ 2 fps when using AV1; not recommended")
-    elif args.av1:
-        if args.rpi:
-            print("A Raspberry Pi 4 can only handle like 640x360 @ 2 fps when using AV1; not recommended")
-        if check_plugins(['qsv','videoparsersbad','rsrtp']):
-            args.qsv = True
-            print("Intel Quick Sync AV1 encoder selected")
-        elif check_plugins(['aom','videoparsersbad','rsrtp']):
-            args.aom = True
-            print("AOM AV1 encoder selected")
-        elif check_plugins(['rav1e','videoparsersbad','rsrtp']):
-            args.rav1e = True
-            print("rav1e AV1 encoder selected; see: https://github.com/xiph/rav1e")
-        elif not check_plugins(['videoparsersbad','rsrtp'], True):
-            print("You'll probably need to install gst-plugins-rs to use AV1 (av1parse, av1pay)")
-            print("ie: https://github.com/steveseguin/raspberry_ninja/blob/6873b97af02f720b9dc2e5c3ae2e9f02d486ba52/raspberry_pi/installer.sh#L347")
-            sys.exit()
-        else:
-            print("No AV1 encoder found")
-            sys.exit()
+            print("AV1 software encoding can be slow on Raspberry Pi; test a low resolution and frame rate")
 
     if args.apple:
         if not check_plugins(['applemedia'], True):
-            print("Required media source plugin, applemedia, was not found")
-            sys.exit()
+            parser.error("Required media source plugin applemedia was not found; check gst-inspect-1.0 applemedia")
 
-        monitor = Gst.DeviceMonitor.new()
-        monitor.add_filter("Video/Source", None)
-        devices = monitor.get_devices()
-        index = -1
-        camlook = args.apple.lower()
-        appleidx = -1
         appledev = None
-        for d in devices:
-            index += 1
-            cam = d.get_display_name().lower()
-            if camlook in cam:
-                print("Video device found: "+cam)
-                appleidx = index
-                appledev = d
-                break
+        if args.apple.isdecimal():
+            # Numeric input is avfvideosrc's device-index, not a name filter.
+            appleidx = int(args.apple)
+        else:
+            monitor = Gst.DeviceMonitor.new()
+            monitor.add_filter("Video/Source", None)
+            devices = monitor.get_devices()
+            camlook = args.apple.lower()
+            appleidx = -1
+            for index, device in enumerate(devices):
+                cam = device.get_display_name()
+                if camlook in cam.lower():
+                    print("Video device found: " + cam)
+                    appleidx = index
+                    appledev = device
+                    break
+            if appledev is None:
+                parser.error(f"No Apple video device matches {args.apple!r}; "
+                             "use --apple INDEX or a matching camera name")
         print("")
 
     elif should_scan_rpi_video_devices(args):
@@ -13705,9 +13944,8 @@ async def main():
     elif args.midi:
         try:
             import rtmidi
-        except:
-            print("You must install RTMIDI first; pip3 install python-rtmidi")
-            sys.exit()
+        except ImportError:
+            parser.error("MIDI mode requires python-rtmidi; install it for the Python interpreter running publish.py")
         args.multiviewer = True
         pass
     else:
@@ -13733,15 +13971,36 @@ async def main():
 
         normalize_video_codec_preferences(args)
 
-        if args.vp9 and not check_plugins(["vp9enc", "rtpvp9pay"], True):
-            print("VP9 publishing requires the vp9enc and rtpvp9pay GStreamer elements")
-            sys.exit(1)
+        if not args.streamin and not args.novideo and args.vp9:
+            vp9_elements = ["rtpvp9pay"] if args.filesrc2 else ["vp9enc", "rtpvp9pay"]
+            if not check_plugins(vp9_elements, True):
+                print("VP9 publishing requires the " + " and ".join(vp9_elements) + " GStreamer elements")
+                sys.exit(1)
             
         if args.hevc:
             args.h265 = True
 
         if args.x265:
             args.h265 = True
+
+        # Resolve H.265 fallback before selecting an H.264 encoder.
+        h265 = None
+        if args.h265 and not args.streamin and not args.novideo:
+            if args.x265 and check_plugins('x265enc'):
+                h265 = 'x265enc'
+            elif check_plugins('mpph265enc'):
+                h265 = 'mpph265enc'
+            elif check_plugins('x265enc'):
+                h265 = 'x265enc'
+            else:
+                print("Couldn't find an h265 encoder, falling back to h264")
+                args.h264 = True
+                args.h265 = False
+                args.hevc = False
+                args.x265 = False
+
+            if h265:
+                print("H265 encoder that we will try to use: "+h265)
 
         native_v4l2_h264_requested = bool(
             args.v4l2
@@ -13751,17 +14010,17 @@ async def main():
         )
 
         h264 = None
-        if args.omx and check_plugins('omxh264enc'):
-            h264 = 'omxh264enc'
         if args.omx and check_plugins('avenc_h264_omx'):
             h264 = 'avenc_h264_omx'
+        elif args.omx and check_plugins('omxh264enc'):
+            h264 = 'omxh264enc'
         elif args.x264 and check_plugins('x264enc'):
             h264 = 'x264enc'
         elif args.openh264 and check_plugins('openh264enc'):
             h264 = 'openh264enc'
         elif args.apple and check_plugins('vtenc_h264_hw'):
             h264 = 'vtenc_h264_hw'
-        elif args.h264:
+        elif args.h264 and not args.streamin and not args.novideo:
             if not native_v4l2_h264_requested and v4l2_h264_encoder_usable():
                 h264 = 'v4l2h264enc'
             elif check_plugins('mpph264enc'):
@@ -13784,21 +14043,6 @@ async def main():
         if h264 and not native_v4l2_h264_requested:
             print("H264 encoder that we will try to use: "+h264)
        
-        h265 = None
-        if args.h265:
-            if args.x265 and check_plugins('x265enc'):
-                h265 = 'x265enc'
-            elif check_plugins('mpph265enc'):
-                h265 = 'mpph265enc'
-            elif check_plugins('x265enc'):
-                h265 = 'x265enc'
-            else:
-                print("Couldn't find an h265 encoder, falling back to h264")
-                args.h264 = True  # Fallback to h264 if no h265 encoder found
-            
-            if h265:
-                print("H265 encoder that we will try to use: "+h265)
-                
         if args.hdmi:
             args.alsa = 'hw:MS2109'
             
@@ -13920,7 +14164,7 @@ async def main():
                     args.v4l2 = '/dev/video0'
                     print(f"Falling back to default: {args.v4l2}")
 
-        if args.save:
+        if args.save and not args.rtmp:
             args.multiviewer = True
 
         saveAudio = ""
@@ -13929,7 +14173,7 @@ async def main():
             saveAudio = ' ! tee name=saveaudiotee ! queue ! mux.audio_0 saveaudiotee.'
             saveVideo = ' ! tee name=savevideotee ! queue ! mux.video_0 savevideotee.'
 
-        if not args.novideo:
+        if not args.novideo and not args.streamin:
 
             if args.rpicam:
                 needed += ['rpicamsrc']
@@ -13954,14 +14198,17 @@ async def main():
                 else:
                     pipeline_video_input = f'videotestsrc ! video/x-raw,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
             elif args.filesrc:
-                pipeline_video_input = f'filesrc location="{args.filesrc}" ! decodebin'
+                pipeline_video_input = f'filesrc location={quote_gst_string(args.filesrc)} ! decodebin'
             elif args.filesrc2:
                 if args.vp9:
-                    pipeline_video_input = f'filesrc location="{args.filesrc2}" ! matroskademux ! rtpvp9pay'
+                    pipeline_video_input = f'filesrc location={quote_gst_string(args.filesrc2)} ! matroskademux {saveVideo} ! rtpvp9pay'
                 elif args.vp8:
-                    pipeline_video_input = f'filesrc location="{args.filesrc2}" ! matroskademux ! rtpvp8pay'
+                    pipeline_video_input = f'filesrc location={quote_gst_string(args.filesrc2)} ! matroskademux {saveVideo} ! rtpvp8pay'
                 else:
-                    pipeline_video_input = f'filesrc location="{args.filesrc2}" ! qtdemux ! h264parse ! rtph264pay'
+                    args.h264 = True
+                    pipeline_video_input = f'filesrc location={quote_gst_string(args.filesrc2)} ! qtdemux ! h264parse {saveVideo}'
+                    if not args.rtmp:
+                        pipeline_video_input += ' ! rtph264pay'
             elif args.z1:
                 needed += ['thetauvc']
                 if args.width>1920 or args.height>960:
@@ -13993,9 +14240,9 @@ async def main():
             elif args.camlink:
                 needed += ['video4linux2']
                 if args.rpi:
-                    pipeline_video_input = f'v4l2src device={args.v4l2} io-mode={str(args.iomode)} ! videorate max-rate=30 ! capssetter caps="video/x-raw,format={args.format or "YUY2"},colorimetry=(string)2:4:5:4"'
+                    pipeline_video_input = f'v4l2src device={quote_gst_string(args.v4l2)} io-mode={str(args.iomode)} ! videorate max-rate=30 ! capssetter caps="video/x-raw,format={args.format or "YUY2"},colorimetry=(string)2:4:5:4"'
                 else:
-                    pipeline_video_input = f'v4l2src device={args.v4l2} io-mode={str(args.iomode)} ! capssetter caps="video/x-raw,format={args.format or "YUY2"},colorimetry=(string)2:4:5:4"'
+                    pipeline_video_input = f'v4l2src device={quote_gst_string(args.v4l2)} io-mode={str(args.iomode)} ! capssetter caps="video/x-raw,format={args.format or "YUY2"},colorimetry=(string)2:4:5:4"'
 
             elif args.rpicam:
                 needed += ['rpicamsrc']
@@ -14171,7 +14418,7 @@ async def main():
                                 printc("Auto-enabled --soft-jpeg for MacroSilicon/MS2109 capture device (GStreamer < 1.20)", "FA0")
 
                 if error:
-                    pipeline_video_input = f'v4l2src device={args.v4l2} io-mode={str(args.iomode)}'
+                    pipeline_video_input = f'v4l2src device={quote_gst_string(args.v4l2)} io-mode={str(args.iomode)}'
                     pipeline_video_converter = ""  # Add this line
                 elif args.raw:
                     # Determine encoder type based on arguments
@@ -14202,12 +14449,12 @@ async def main():
                         else:
                             # Fallback if optimization failed
                             print("Format detection failed, using default pipeline")
-                            pipeline_video_input = f'v4l2src device={args.v4l2} io-mode={str(args.iomode)} ! video/x-raw,width=(int){args.width},height=(int){args.height},framerate=(fraction){args.framerate}/1'
+                            pipeline_video_input = f'v4l2src device={quote_gst_string(args.v4l2)} io-mode={str(args.iomode)} ! video/x-raw,width=(int){args.width},height=(int){args.height},framerate=(fraction){args.framerate}/1'
                             pipeline_video_converter = f' ! videoconvert{timestampOverlay} ! video/x-raw,format={args.format or "NV12"}'
                     except Exception as e:
                         print(f"Error during pipeline optimization: {e}")
                         # Fallback with generic pipeline
-                        pipeline_video_input = f'v4l2src device={args.v4l2} io-mode={str(args.iomode)} ! video/x-raw,width=(int){args.width},height=(int){args.height},framerate=(fraction){args.framerate}/1'
+                        pipeline_video_input = f'v4l2src device={quote_gst_string(args.v4l2)} io-mode={str(args.iomode)} ! video/x-raw,width=(int){args.width},height=(int){args.height},framerate=(fraction){args.framerate}/1'
                         pipeline_video_converter = f' ! videoconvert{timestampOverlay} ! video/x-raw,format={args.format or "NV12"}'
                 else:
                     if v4l2_h264_passthrough:
@@ -14224,6 +14471,7 @@ async def main():
                             args.framerate,
                             v4l2_source_rate_supported,
                             saveVideo,
+                            rtmp=bool(args.rtmp),
                         )
                         pipeline_video_converter = ""
                         printc(
@@ -14237,7 +14485,7 @@ async def main():
                         if v4l2_source_rate_supported:
                             source_caps += f',framerate=(fraction){args.framerate}/1'
                         pipeline_video_input = (
-                            f'v4l2src device={args.v4l2} io-mode={str(args.iomode)} ! {source_caps}'
+                            f'v4l2src device={quote_gst_string(args.v4l2)} io-mode={str(args.iomode)} ! {source_caps}'
                         )
                         pipeline_video_converter = ""  # Add this line
                         if args.nvidia:
@@ -14268,9 +14516,18 @@ async def main():
             elif args.pipein and args.pipein != "auto" and args.pipein != "raw": # We are doing a pass-thru with this pip # We are doing a pass-thru with this pipee
                 pass
             elif args.h264:
+                # Encoded passthrough paths above do not need an encoder.
+                # NVIDIA and rpicamsrc build their own platform-specific path.
+                if h264 is None and not args.nvidia and not args.rpicam:
+                    parser.error(
+                        "No usable H.264 encoder was found for raw video "
+                        f"({Gst.version_string()}). Install a supported encoder "
+                        "such as x264enc or openh264enc, or choose another codec. "
+                        "Check availability with gst-inspect-1.0 x264enc."
+                    )
                 print("h264 preferred codec is ", h264)
                 if h264 == "vtenc_h264_hw":
-                    pipeline_video_input += f'{pipeline_video_converter} ! autovideoconvert ! vtenc_h264_hw name="encoder" qos=true bitrate={args.bitrate}realtime=true allow-frame-reordering=false ! video/x-h264'
+                    pipeline_video_input += f'{pipeline_video_converter} ! autovideoconvert ! vtenc_h264_hw name="encoder" qos=true bitrate={args.bitrate} realtime=true allow-frame-reordering=false ! video/x-h264'
                 elif args.nvidia:
                     pipeline_video_input += f'{pipeline_video_converter} ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! video/x-h264,stream-format=(string)byte-stream'
                 elif args.rpicam:
@@ -14316,16 +14573,16 @@ async def main():
                         pipeline_video_input += f' ! videoconvert{timestampOverlay} ! video/x-raw,format=I420 ! {h264} name="encoder" bitrate={args.bitrate}000 ! video/x-h264,stream-format=(string)byte-stream' ## Good for a RPI Zero I guess?
                     
                 if args.rtmp:
-                    pipeline_video_input += f' ! queue ! h264parse'
+                    pipeline_video_input += f' ! queue ! h264parse {saveVideo}'
                 else:
                     pipeline_video_input += f' ! queue max-size-time=1000000000  max-size-bytes=10000000000 max-size-buffers=1000000 ! h264parse {saveVideo} ! rtph264pay config-interval=-1 aggregate-mode=zero-latency ! application/x-rtp,media=video,encoding-name=H264,payload=96'
 
             elif args.aom:
-                pipeline_video_input += f' ! videoconvert{timestampOverlay} ! av1enc cpu-used=8 target-bitrate={args.bitrate} name="encoder" usage-profile=realtime qos=true ! av1parse ! rtpav1pay'
+                pipeline_video_input += f' ! videoconvert{timestampOverlay} ! av1enc cpu-used=8 target-bitrate={args.bitrate} name="encoder" usage-profile=realtime qos=true ! av1parse {saveVideo} ! rtpav1pay'
             elif args.rav1e:
-                pipeline_video_input += f' ! videoconvert{timestampOverlay} ! rav1enc bitrate={args.bitrate}000 name="encoder" low-latency=true error-resilient=true speed-preset=10 qos=true ! av1parse ! rtpav1pay'
+                pipeline_video_input += f' ! videoconvert{timestampOverlay} ! rav1enc bitrate={args.bitrate}000 name="encoder" low-latency=true error-resilient=true speed-preset=10 qos=true ! av1parse {saveVideo} ! rtpav1pay'
             elif args.qsv:
-                pipeline_video_input += f' ! videoconvert{timestampOverlay} ! qsvav1enc gop-size=60 bitrate={args.bitrate} name="encoder1" ! av1parse ! rtpav1pay'
+                pipeline_video_input += f' ! videoconvert{timestampOverlay} ! qsvav1enc gop-size=60 bitrate={args.bitrate} name="encoder1" ! av1parse {saveVideo} ! rtpav1pay'
             elif args.h265 and h265:
                 if h265 == "mpph265enc":
                     # mpph265enc uses bps (bits per second) instead of bitrate
@@ -14374,7 +14631,7 @@ async def main():
                     )
                 pipeline_video_input += redundancy_fragment
 
-            if args.multiviewer:
+            if args.multiviewer and not args.rtmp:
                 pipeline_video_input += ' ! tee name=videotee '
             else:
                 if args.lowlatency:
@@ -14388,7 +14645,7 @@ async def main():
         gst_major, gst_minor = args.gst_version[0], args.gst_version[1]
         audio_ssrc_param = " ssrc=-1" if (gst_major > 1 or (gst_major == 1 and gst_minor >= 20)) else ""
 
-        if not args.noaudio:
+        if not args.noaudio and not args.streamin:
             if args.audio_pipeline:
                 pipeline_audio_input = args.audio_pipeline
             elif args.pipein:
@@ -14399,19 +14656,19 @@ async def main():
 
             elif args.pulse:
                 needed += ['pulseaudio']
-                pipeline_audio_input += f'pulsesrc device={args.pulse}'
+                pipeline_audio_input += f'pulsesrc device={quote_gst_string(args.pulse)}'
 
             else:
                 needed += ['alsa']
-                pipeline_audio_input += f'alsasrc device={args.alsa} use-driver-timestamps=TRUE'
+                pipeline_audio_input += f'alsasrc device={quote_gst_string(args.alsa)} use-driver-timestamps=TRUE'
 
             if args.rtmp:
                if check_plugins('fdkaacenc'):
-                  pipeline_audio_input += f' ! queue ! audioconvert dithering=0 ! audio/x-raw,rate=48000,channel=1 ! fdkaacenc bitrate=65536 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
+                  pipeline_audio_input += f' ! queue ! audioconvert dithering=0 ! audioresample ! audio/x-raw,rate=48000,channels=1 ! fdkaacenc bitrate=65536 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
                elif check_plugins('voaacenc'):
-                  pipeline_audio_input += f' ! queue ! audioconvert dithering=0 ! audio/x-raw,rate=48000,channel=1 ! voaacenc bitrate=65536 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
+                  pipeline_audio_input += f' ! queue ! audioconvert dithering=0 ! audioresample ! audio/x-raw,rate=48000,channels=1 ! voaacenc bitrate=65536 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
                elif check_plugins('avenc_aac'):
-                  pipeline_audio_input += f' ! queue ! audioconvert dithering=0 ! audio/x-raw,rate=48000,channel=1 ! avenc_aac bitrate=65536 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
+                  pipeline_audio_input += f' ! queue ! audioconvert dithering=0 ! audioresample ! audio/x-raw,rate=48000,channels=1 ! avenc_aac bitrate=65536 {saveAudio} ! audio/mpeg ! aacparse ! audio/mpeg, mpegversion=4 '
                else:
                   pipeline_audio_input = ""
                   printwarn("No AAC encoder found. Will not be encoding audio")
@@ -14422,7 +14679,7 @@ async def main():
             else:
                pipeline_audio_input += f' ! queue ! audioconvert ! audioresample quality=0 resample-method=0 ! opusenc bitrate-type=1 bitrate={args.audiobitrate}000 inband-fec=true {saveAudio} ! rtpopuspay pt=100{audio_ssrc_param} ! application/x-rtp,media=audio,encoding-name=OPUS,payload=100'
 
-            if args.multiviewer: # a 'tee' element may use more CPU or cause extra stuttering, so by default not enabled, but needed to support multiple viewers
+            if args.multiviewer and not args.rtmp: # RTMP always connects directly to its muxer.
                 pipeline_audio_input += ' ! tee name=audiotee '
             else:
                 pipeline_audio_input += ' ! queue ! sendrecv. '
@@ -14433,17 +14690,11 @@ async def main():
 
         pipeline_rtmp = ""
         if args.rtmp:
-        
-            if args.save:
-                pipeline_video_input += 'tee name=videotee ! queue ! sendrecv. videotee. ! queue ! '
-                saveVideo = f'matroskamux name=mux ! filesink location=saved_video_{int(time.time())}.mkv '
-
-                if not args.noaudio:
-                    pipeline_audio_input += 'tee name=audiotee ! queue ! sendrecv. audiotee. ! queue ! mux. '
-
-                
-            pipeline_rtmp = "flvmux name=sendrecv ! rtmpsink location='"+args.rtmp+" live=1'"
-            PIPELINE_DESC = f'{pipeline_video_input} {pipeline_audio_input} {pipeline_rtmp}'
+            # Gst.parse_launch uses double quotes for string properties. Single
+            # quotes are retained in the URL passed to librtmp.
+            rtmp_location = quote_gst_string(args.rtmp + " live=1")
+            pipeline_rtmp = f'flvmux name=sendrecv ! rtmpsink location={rtmp_location}'
+            PIPELINE_DESC = f'{pipeline_video_input} {pipeline_audio_input} {pipeline_save} {pipeline_rtmp}'
             print('gst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'))
             pipe = Gst.parse_launch(PIPELINE_DESC)
 
@@ -14451,21 +14702,34 @@ async def main():
 
             bus.add_signal_watch()
 
-            pipe.set_state(Gst.State.PLAYING)
-
             try:
                 loop = GLib.MainLoop()
             except:
                 loop = GObject.MainLoop()
 
-            bus.connect("message", on_message, loop)
-            try:
-                loop.run()
-            except:
-                loop.quit()
+            exit_status = 1
 
-            pipe.set_state(Gst.State.NULL)
-            sys.exit(1)
+            def on_rtmp_message(bus, message, loop):
+                nonlocal exit_status
+                if message.type == Gst.MessageType.EOS:
+                    exit_status = 0
+                elif message.type == Gst.MessageType.ERROR:
+                    exit_status = 1
+                on_message(bus, message, loop)
+
+            message_handler = bus.connect("message", on_rtmp_message, loop)
+            try:
+                pipe.set_state(Gst.State.PLAYING)
+                loop.run()
+            except KeyboardInterrupt:
+                exit_status = 130
+            finally:
+                loop.quit()
+                pipe.set_state(Gst.State.NULL)
+                bus.disconnect(message_handler)
+                bus.remove_signal_watch()
+
+            sys.exit(exit_status)
         elif args.whip:
             # Build video and audio pipeline segments
             pipeline_segments = []

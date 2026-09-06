@@ -52,7 +52,7 @@ class V4L2SinkSwitchingTests(unittest.TestCase):
         self.assertIn("videoconvert", description)
         self.assertIn(caps, description)
         self.assertIn("drop-allocation=true", description)
-        self.assertIn("device=/dev/video17", description)
+        self.assertIn('device="/dev/video17"', description)
         self.assertIn("io-mode=0", description)
 
     def test_h264_v4l2_output_prefers_resilient_viewer_decoder(self):

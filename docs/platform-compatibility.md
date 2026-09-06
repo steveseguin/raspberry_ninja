@@ -2,6 +2,24 @@
 
 Raspberry Ninja supports multiple boards and Linux generations. Media support is selected from runtime capabilities; a board name or installed plugin is not enough to prove a working path.
 
+Raw-video format selection uses GStreamer's native capability intersection for
+resolution ranges, format lists, and fractional frame rates. This avoids relying
+on Python bindings to unpack range/list values, which varies across installations.
+Matching advertised capabilities is only a selection check: capture and encoding
+still need a frame test on the actual device and driver.
+
+Platform hints such as `--rpi` do not override an explicitly selected video codec.
+`--h265`, `--hevc`, and `--x265` select H.265; `--aom`, `--rav1e`, and `--qsv`
+identify AV1 encoders. The selected backend still needs its plugins and, where
+applicable, compatible hardware. RTMP retains its existing H.264 requirement.
+Confirm the encoder and RTP payloader in the printed pipeline when diagnosing a
+codec mismatch; a platform flag alone does not prove hardware acceleration.
+
+If no supported H.265 encoder is installed, startup falls back to H.264 and runs
+the normal H.264 encoder selection before constructing the pipeline. Check the
+printed fallback message and final encoder: the requested H.265 codec is no longer
+the active codec in that case. The fallback still requires a working H.264 backend.
+
 ## Support model
 
 Treat a combination as a distinct platform when any of these differ:
@@ -94,7 +112,42 @@ Orange Pi 5-class images may provide Rockchip MPP elements such as `mpph264enc`,
 
 See the [Orange Pi installer notes](../installers/orangepi/README.md). Treat their dated tested-image reference as a known baseline, not a requirement for every Orange Pi.
 
+Rockchip format-priority detection checks bus metadata and the device name
+independently; a missing bus-path property does not suppress name detection.
+The MPP preference is applied only when the Rockchip MPP plugin is available.
+
 ## Source and encoder selection rules
+
+Legacy GStreamer audio SDP repair preserves distinct audio sources and their
+SSRC-group references. Replacement IDs avoid collisions with every existing
+audio/video SSRC; video IDs are unchanged.
+
+Camera mode matching uses GStreamer's native caps intersection for raw, JPEG,
+and H.264 modes. Format lists, dimension ranges, fractional frame rates, and
+hardware-memory features are matched as capabilities; compressed modes must
+also support the requested dimensions and rate.
+
+Pi camera auto-discovery runs only when a camera source still needs to be
+selected. Explicit files, custom pipelines, pipe input, named camera backends,
+and receive/audio-only modes bypass that discovery. A detected camera should
+not change the encoder or source of an explicitly supplied pipeline.
+
+On macOS, `--apple 0` selects AVFoundation device index 0. A nonnumeric value
+such as `--apple "External Camera"` selects the first case-insensitive name
+match. An unmatched name stops startup rather than opening the default camera.
+Numeric index availability is checked by the native source when it opens.
+
+AV1 publishing requires the `av1parse` and `rtpav1pay` elements plus an encoder.
+`--av1` tries `qsvav1enc`, `av1enc`, then `rav1enc`, based on element availability.
+`--qsv`, `--aom`, and `--rav1e` explicitly select their respective encoder and
+report an error if it is missing. Adding `--av1` does not override that selection.
+An installed plugin alone does not guarantee that it exposes the required
+encoder on the current hardware; inspect the element with `gst-inspect-1.0`.
+
+An explicit `--omx` request selects an available OMX encoder before automatic
+H.264 detection (`avenc_h264_omx`, then `omxh264enc`). If neither is installed,
+normal H.264 detection supplies the fallback. Selecting a plugin does not prove
+that its hardware backend works; test it with frames on the target device.
 
 Use this order when diagnosing or extending support:
 
