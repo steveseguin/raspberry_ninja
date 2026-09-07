@@ -218,6 +218,21 @@ invocation, not the JSON file or an already-running service.
 
 ## Run unattended with systemd
 
+For a portable Pi with a UVC camera, use a stable `/dev/v4l/by-id/` capture
+path and validate its advertised formats before installing the service. Start
+with 640x360 at 15 fps and 500 kbps, then tune against the actual uplink and
+encoder load. Audio and transport overhead also need upload capacity.
+If a selected `by-id` or `by-path` camera disappears, startup fails and the
+service retries that selection. It does not substitute another camera.
+
+The asyncio runtime services GLib events so media bus errors and queued decoder
+fallbacks are delivered. Unhandled terminal media errors log the failing element and GStreamer
+details, then exit with status 1. Shutdown has an independent eight-second
+deadline in case a camera driver blocks during cleanup. Existing Jetson decoder
+and display fallback handlers still run first. A direct CLI invocation exits;
+automatic process recovery requires a supervisor such as the service below.
+This detects reported media errors, not every possible silent camera freeze.
+
 First prove the exact command interactively. Then use `tools/install_unattended.py` to create a validated receiver or sender unit whose user and working directory match the installed clone. Complete examples are in the [Pi Zero 2 W guide](pi-zero-2-w-unattended-webrtc.md#8-make-the-receiver-start-on-boot).
 
 Useful service commands:
@@ -230,6 +245,31 @@ journalctl -u raspberry-ninja-viewer.service -f
 ```
 
 The helper uses `Restart=always`, a small `RestartSec`, unbuffered Python output, and `network-online.target`. It stores credentials in a restricted JSON config instead of the unit command. Running the installer again validates the replacement unit and restarts the existing service so new settings take effect.
+
+Newly generated units retry every five seconds without a start-rate limit, so
+a camera missing for several minutes does not permanently disable the service.
+Reinstall an existing unit to apply this policy. Retries also continue for
+configuration errors; inspect the journal and stop the service while correcting
+them. Ordinary signaling reconnection continues inside the running application.
+
+For USB camera/microphone recovery, select the camera under `/dev/v4l/by-id/`
+and pass the microphone's `/dev/snd/by-id/` symlink to `--audio-device` (installer)
+or `--alsa` (publisher). `/dev/v4l/by-path/` and `/dev/snd/by-path/` select a port
+instead. The publisher resolves the sound-card symlink on every launch and new capture pipeline, opening
+PCM device zero of that card even if its numeric card index has changed. A missing
+explicit microphone is a startup error; the service retries instead of disabling
+audio or selecting another microphone. Existing ALSA names remain supported;
+use one when the required PCM device is not zero. Automatic audio discovery can
+still disable audio when no mic is present, so use an explicit device unattended.
+
+The WebRTC publisher monitors buffers from `v4l2src`, `alsasrc`, and `pulsesrc`.
+If an active capture source produces no buffers for 30 seconds, it exits for
+supervised recovery. `--capture-timeout SECONDS` adjusts the timeout (`0` disables
+it). This also covers a source that never produces its first buffer. Paused/idle
+pipelines do not expire, and quiet audio still counts as healthy capture when
+buffers continue. Other camera backends retain their existing behavior. Capture
+failure restarts the whole publisher, so removing the mic can also interrupt video.
+This requires a service supervisor; the standalone script does not relaunch itself.
 
 `--service-name` accepts up to 247 letters, digits, underscores, dots, hyphens,
 or `@` characters before the generated `.service` suffix. It must not start with
@@ -301,6 +341,18 @@ These are starting points, not guaranteed limits:
 Increase one dimension at a time: resolution, then frame rate, then bitrate, then audio. Record CPU, resident memory, temperature, throttling, actual received frame rate, and packet loss at each step.
 
 ## Stability checks
+
+For mobile connections, peer negotiation is limited to 60 seconds by default.
+A stalled attempt is released so the viewer's existing reconnect schedule can
+request a fresh connection. Use `--peer-connect-timeout SECONDS` to adjust this
+window (`0` disables it). Established connections are not expired by this timer.
+
+To exercise relay-only operation, configure `--ice-transport-policy relay` and
+`--turn-server` (or the equivalent configuration-file keys). Startup rejects
+missing or invalid TURN configuration, and applying the relay policy must succeed
+before ICE servers are configured. TURN credentials are hidden in setup logs.
+Test both signaling reconnection and actual TURN transport outages: a working
+WebSocket alone does not demonstrate that video has recovered.
 
 Run at least a short sender-off/sender-on recovery test and a longer steady-state soak before unattended deployment:
 

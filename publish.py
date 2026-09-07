@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, Set, List
 from functools import lru_cache
 from config_loader import apply_config_overrides, load_config_file
+from audio_devices import resolve_alsa_device
 from signaling_utils import handshake_server_requires_puuid
 from v4l2_devices import resolve_v4l2_input_device, resolve_v4l2_output_device
 try:
@@ -80,6 +81,46 @@ def env_flag(name: str) -> bool:
     if value is None:
         return False
     return value.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+def normalize_turn_server_url(value, username=None, password=None):
+    """Accept TURN URI and GStreamer URL spelling without duplicating slashes."""
+    from urllib.parse import urlsplit, quote
+    text = str(value).strip()
+    match = re.match(r'^(turns?):(?:/{2})?(.*)$', text, re.IGNORECASE)
+    if not match:
+        raise ValueError('TURN server must use turn: or turns:.')
+    text = match.group(1).lower() + '://' + match.group(2)
+    try:
+        parsed = urlsplit(text)
+        if not parsed.hostname or parsed.path or parsed.fragment:
+            raise ValueError()
+        if parsed.port is not None and not 1 <= parsed.port <= 65535:
+            raise ValueError()
+    except ValueError:
+        raise ValueError('Invalid TURN server URL.') from None
+    if username is not None or password is not None:
+        if not username or not password:
+            raise ValueError('TURN username and password must both be provided.')
+        if '@' not in parsed.netloc:
+            text = (parsed.scheme + '://' + quote(str(username), safe='') + ':'
+                    + quote(str(password), safe='') + '@' + parsed.netloc
+                    + ('?' + parsed.query if parsed.query else ''))
+    return text
+
+
+async def dispatch_gstreamer_events(on_tick=None):
+    """Service bus watches and idle callbacks alongside the asyncio main loop."""
+    context = GLib.MainContext.default()
+    while True:
+        # Bound each batch so noisy pipelines cannot starve signaling/shutdown.
+        for _ in range(16):
+            if not context.pending():
+                break
+            context.iteration(False)
+        if on_tick is not None:
+            on_tick()
+        await asyncio.sleep(0.05)
 
 
 def build_signaling_connection_attempts(server_url: str, allow_insecure: bool = False):
@@ -3347,6 +3388,8 @@ class WebRTCClient:
         self.stretch_display = getattr(params, 'stretch_display', False)
         self.cleanup_lock = asyncio.Lock()  # Prevent concurrent cleanup
         self.pipeline_lock = threading.Lock()  # Thread-safe pipeline operations
+        self._incoming_pad_lock = threading.Lock()
+        self._incoming_pads_in_progress = set()
         self._shutdown_requested = False  # Initialize shutdown flag
         self.record = params.record
         self.streamin = params.streamin
@@ -3429,6 +3472,7 @@ class WebRTCClient:
         self._viewer_last_play_request = 0.0
         self._viewer_last_disconnect = 0.0
         initial_delay = float(getattr(params, "viewer_retry_initial", 15.0))
+        self._peer_connect_timeout = float(getattr(params, "peer_connect_timeout", 60.0))
         short_delay = float(getattr(params, "viewer_retry_short", 45.0))
         long_delay = float(getattr(params, "viewer_retry_long", 180.0))
         # Ensure a monotonic progression of retry windows.
@@ -3568,6 +3612,8 @@ class WebRTCClient:
             
         if self.save_file:
             self.pipe = Gst.parse_launch(self.pipeline)
+            self._apply_capture_device_identity()
+            self._install_pipeline_bus_watch()
             self.setup_ice_servers(self.pipe.get_by_name('sendrecv'))
             self.pipe.set_state(Gst.State.PLAYING)
             print("RECORDING TO DISK STARTED")
@@ -3829,76 +3875,45 @@ class WebRTCClient:
         return " ".join(parts), using_hw
             
     def setup_ice_servers(self, webrtc):
-        """Configure ICE servers including default VDO.Ninja TURN servers"""
+        """Apply transport policy before servers; never silently allow direct ICE."""
+        policy = getattr(self, 'ice_transport_policy', None) or 'all'
+        # Do not swallow this failure: relay-only must not degrade to direct ICE.
         try:
-            # STUN servers
+            webrtc.set_property('ice-transport-policy', policy)
+        except (TypeError, AttributeError):
+            if policy != 'all':
+                raise
+            printwarn('ICE transport policy property unavailable; retaining default all-candidate policy.')
+        turn_url = getattr(self, 'turn_server', None)
+        if turn_url and str(turn_url).strip().lower() in ('0', 'false', 'off', 'none', 'null'):
+            turn_url = None
+        elif not turn_url and getattr(self, 'auto_turn', False):
+            default = self._get_default_turn_server()
+            if default:
+                turn_url = normalize_turn_server_url(default['url'], default['user'], default['pass'])
+        if turn_url:
+            turn_url = normalize_turn_server_url(turn_url,
+                getattr(self, 'turn_user', None), getattr(self, 'turn_pass', None))
+        if policy == 'relay' and not turn_url:
+            raise ValueError('Relay-only ICE requires a TURN server; set --turn-server.')
+        try:
             if getattr(self, 'no_stun', False):
                 webrtc.set_property('stun-server', None)
-            elif hasattr(self, 'stun_server') and self.stun_server:
-                webrtc.set_property('stun-server', self.stun_server)
             else:
-                # Default STUN servers
-                webrtc.set_property('stun-server', 'stun://stun.l.google.com:19302')
-                    
-            # TURN servers
-            turn_url = None
-            
-            if hasattr(self, 'turn_server') and self.turn_server:
-                # User-specified TURN server
-                turn_url = self.turn_server
-                # If credentials provided, format the URL properly
-                if hasattr(self, 'turn_user') and self.turn_user and hasattr(self, 'turn_pass') and self.turn_pass:
-                    # Parse and add credentials to URL if not already present
-                    if '@' not in turn_url:
-                        # TURN URLs use format: turn:host:port or turns:host:port
-                        if turn_url.startswith('turn:') or turn_url.startswith('turns:'):
-                            # Extract protocol and server parts
-                            if turn_url.startswith('turns:'):
-                                protocol = 'turns://'
-                                server_part = turn_url[6:]  # Remove 'turns:'
-                            else:
-                                protocol = 'turn://'
-                                server_part = turn_url[5:]  # Remove 'turn:'
-                            # Format: turn://username:password@host:port
-                            turn_url = f"{protocol}{self.turn_user}:{self.turn_pass}@{server_part}"
-                printc(f"Using custom TURN server: {turn_url}", "77F")
-            elif hasattr(self, 'auto_turn') and self.auto_turn:
-                # Use VDO.Ninja's default TURN servers when auto_turn is enabled
-                default_turn = self._get_default_turn_server()
-                if default_turn:
-                    # Format with credentials
-                    turn_url = default_turn['url']
-                    if '@' not in turn_url:
-                        # TURN URLs use format: turn:host:port or turns:host:port
-                        if turn_url.startswith('turn:') or turn_url.startswith('turns:'):
-                            # Extract protocol and server parts
-                            if turn_url.startswith('turns:'):
-                                protocol = 'turns://'
-                                server_part = turn_url[6:]  # Remove 'turns:'
-                            else:
-                                protocol = 'turn://'
-                                server_part = turn_url[5:]  # Remove 'turn:'
-                            # Format: turn://username:password@host:port
-                            turn_url = f"{protocol}{default_turn['user']}:{default_turn['pass']}@{server_part}"
-                    printc(f"Using VDO.Ninja TURN: {turn_url} (auto-enabled for room recording)", "77F")
-            
+                webrtc.set_property('stun-server', getattr(self, 'stun_server', None)
+                                    or 'stun://stun.l.google.com:19302')
             if turn_url:
-                # Try both methods - property and signal
+                # The property and add-turn-server both register a server. Use
+                # the property once and check that GStreamer accepted the URL.
                 webrtc.set_property('turn-server', turn_url)
-                try:
-                    # Also emit add-turn-server signal for better compatibility
-                    webrtc.emit('add-turn-server', turn_url)
-                    printc(f"DEBUG: Set TURN server via property and signal: {turn_url}", "0FF")
-                except Exception as e:
-                    printc(f"DEBUG: Set TURN server via property only: {turn_url} (signal failed: {e})", "0FF")
-                
-            if hasattr(self, 'ice_transport_policy') and self.ice_transport_policy:
-                webrtc.set_property('ice-transport-policy', self.ice_transport_policy)
-                printc(f"DEBUG: Set ICE transport policy: {self.ice_transport_policy}", "0FF")
-                
-        except Exception as E:
-            printwarn(get_exception_info(E))
-            
+                if webrtc.get_property('turn-server') != turn_url:
+                    raise ValueError('TURN URL was rejected')
+                printc('TURN server configured (credentials hidden)', '77F')
+        except Exception:
+            # Native error strings can contain the supplied credential-bearing URL.
+            raise RuntimeError('Unable to configure ICE servers; check TURN URL and installed GStreamer support.') from None
+        printc(f'ICE transport policy: {policy}', '0FF')
+
     def _get_default_turn_server(self):
         """Get default VDO.Ninja TURN server based on location/preference"""
         # VDO.Ninja's public TURN servers from the backup list
@@ -4672,17 +4687,24 @@ class WebRTCClient:
         if hasattr(self, "_active_hw_decoder_streams"):
             self._active_hw_decoder_streams.clear()
 
-        if hasattr(self, "_pipeline_bus_watch_installed"):
-            self._pipeline_bus_watch_installed = False
-        if hasattr(self, "_pipeline_bus_watch_id") and getattr(self, "_pipeline_bus_watch_id", 0):
-            try:
-                if self.pipe:
-                    bus = self.pipe.get_bus()
-                    if bus:
-                        bus.remove_watch()
-            except Exception:
-                pass
-            self._pipeline_bus_watch_id = 0
+    def _apply_capture_device_identity(self):
+        device = getattr(getattr(self, 'params', None), '_alsa_persistent_device', None)
+        if not device:
+            return
+        # ALSA card indexes can change while the publisher is idle. Resolve the
+        # selected USB identity before EVERY new pipeline opens capture.
+        resolved = resolve_alsa_device(device)
+        iterator = self.pipe.iterate_recurse()
+        while True:
+            result, element = iterator.next()
+            if result == Gst.IteratorResult.RESYNC:
+                iterator.resync()
+                continue
+            if result != Gst.IteratorResult.OK:
+                break
+            factory = element.get_factory()
+            if factory and factory.get_name() == 'alsasrc':
+                element.set_property('device', resolved)
 
     def _ensure_main_pipeline(self, log: bool = True) -> bool:
         """Ensure the primary Gst.Pipeline exists. Returns True if a new pipeline was created."""
@@ -4699,9 +4721,15 @@ class WebRTCClient:
                 self.pipe = Gst.parse_launch(pipeline_desc)
             else:
                 self.pipe = Gst.Pipeline.new("data-only-pipeline")
+            self._apply_capture_device_identity()
         except Exception as exc:
             printwarn(f"Failed to initialize base pipeline: {exc}")
+            if self.pipe:
+                self.pipe.set_state(Gst.State.NULL)
             self.pipe = None
+            shutdown = getattr(self, '_fatal_media_shutdown', None)
+            if shutdown and getattr(getattr(self, 'params', None), '_alsa_persistent_device', None):
+                shutdown()
             return False
 
         if self.pipe and log:
@@ -4717,28 +4745,112 @@ class WebRTCClient:
                 printwarn(f"Failed to install TX FEC probe: {exc}")
         return bool(self.pipe)
 
+    def _remove_pipeline_bus_watch(self):
+        bus = getattr(self, '_pipeline_bus', None)
+        handlers = getattr(self, '_pipeline_bus_handlers', [])
+        self._pipeline_bus = None
+        self._pipeline_bus_handlers = []
+        self._pipeline_bus_watch_installed = False
+        self._capture_watch = None
+        if bus is not None:
+            for handler in handlers:
+                bus.disconnect(handler)
+            # add_signal_watch owns a GLib source even after the pipeline is NULL.
+            bus.remove_signal_watch()
+
     def _install_pipeline_bus_watch(self):
-        """Listen for pipeline warnings so we can auto-fallback unstable decoders."""
-        if getattr(self, "_pipeline_bus_watch_installed", False):
-            return
+        """Own exactly one signal watch for the current pipeline bus."""
         if not self.pipe:
             return
-        try:
-            bus = self.pipe.get_bus()
-        except Exception:
-            bus = None
-        if not bus:
+        bus = self.pipe.get_bus()
+        if bus is None or bus == getattr(self, '_pipeline_bus', None):
             return
+        self._remove_pipeline_bus_watch()
+        bus.add_signal_watch()
+        self._pipeline_bus = bus
+        self._pipeline_bus_handlers = []
         try:
-            bus.add_signal_watch()
+            for signal_name, handler in (('message::warning', self._on_pipeline_warning),
+                                         ('message::error', self._on_pipeline_error)):
+                self._pipeline_bus_handlers.append(bus.connect(signal_name, handler))
         except Exception:
-            pass
-        try:
-            bus.connect("message::warning", self._on_pipeline_warning)
-            bus.connect("message::error", self._on_pipeline_error)
-        except Exception:
-            return
+            self._remove_pipeline_bus_watch()
+            raise
         self._pipeline_bus_watch_installed = True
+        try:
+            self._install_capture_watchdog()
+        except Exception as exc:
+            printwarn(f'Could not install capture watchdog: {exc}')
+
+    def _install_capture_watchdog(self):
+        """Watch native capture buffers, independently of ICE and received media."""
+        self._capture_watch = None
+        timeout = float(getattr(getattr(self, 'params', None), 'capture_timeout', 30.0))
+        if timeout <= 0 or getattr(self, 'view', False):
+            return
+        watch = {'pipe': self.pipe, 'timeout': timeout, 'started': None,
+                 'sources': {}, 'fired': False, 'next_check': 0.0}
+        iterator = self.pipe.iterate_recurse()
+        while True:
+            result, source = iterator.next()
+            if result == Gst.IteratorResult.DONE:
+                break
+            if result == Gst.IteratorResult.RESYNC:
+                iterator.resync()
+                continue
+            if result != Gst.IteratorResult.OK:
+                break
+            factory = source.get_factory()
+            if not factory or factory.get_name() not in ('v4l2src', 'alsasrc', 'pulsesrc'):
+                continue
+            pad = source.get_static_pad('src')
+            if pad is None:
+                continue
+            name = source.get_name()
+            if name in watch['sources']:
+                continue
+            state = {'last': None}
+            watch['sources'][name] = state
+
+            def buffer_seen(pad, info, state=state):
+                state['last'] = time.monotonic()
+                return Gst.PadProbeReturn.OK
+
+            pad.add_probe(Gst.PadProbeType.BUFFER | Gst.PadProbeType.BUFFER_LIST, buffer_seen)
+        if watch['sources']:
+            self._capture_watch = watch
+            printc('Capture watchdog enabled for ' + ', '.join(watch['sources'])
+                   + f" ({timeout:g}s timeout)", '77F')
+
+    def _check_capture_watchdog(self):
+        watch = getattr(self, '_capture_watch', None)
+        if (not watch or watch['pipe'] is not self.pipe or watch['fired']
+                or getattr(self, '_shutdown_requested', False)):
+            return
+        now = time.monotonic()
+        if now < watch['next_check']:
+            return
+        watch['next_check'] = now + 1.0
+        pipe = watch['pipe']
+        _, current, pending = pipe.get_state(0)
+        if self.pipe is not pipe:
+            return
+        # Pending PLAYING also covers capture stuck before its first buffer.
+        if current != Gst.State.PLAYING and pending != Gst.State.PLAYING:
+            watch['started'] = None
+            return
+        if watch['started'] is None:
+            watch['started'] = now
+        for name, state in watch['sources'].items():
+            last = max(watch['started'], state['last'] or watch['started'])
+            if now - last >= watch['timeout']:
+                watch['fired'] = True
+                printwarn(f'Capture stalled at {name}: no buffers for {now - last:.1f}s; '
+                          'restarting is required to reopen the camera/microphone.')
+                shutdown = getattr(self, '_fatal_media_shutdown', None)
+                if shutdown:
+                    shutdown()
+                return
 
     def _install_publisher_fec_probe(self):
         """Attach a pad probe that records outgoing payload types when tracing is enabled."""
@@ -4862,6 +4974,11 @@ class WebRTCClient:
             self._handle_hw_decoder_warning(str(warning), debug)
 
     def _on_pipeline_error(self, bus, message):
+        # Ignore queued errors from a pipeline that has already been replaced.
+        if not self.pipe or bus != self.pipe.get_bus():
+            return
+        if getattr(self, "_shutdown_requested", False):
+            return
         try:
             err, debug = message.parse_error()
         except Exception:
@@ -4879,6 +4996,18 @@ class WebRTCClient:
         ):
             if "insufficient resources" in combined or "component in error state" in combined:
                 self._handle_display_sink_error(str(err), debug)
+                return
+
+        printwarn(f"Media pipeline failed at {src_name or factory_name or 'unknown element'}: {err}")
+        if debug:
+            printwarn(f"GStreamer details: {debug}")
+        # A terminal stream error cannot be repaired by reconnecting signaling.
+        # Let the service supervisor recreate capture, encoders and peers together.
+        shutdown = getattr(self, "_fatal_media_shutdown", None)
+        if shutdown:
+            shutdown()
+        else:
+            printwarn("Media has stopped; restart the publisher after checking the camera and pipeline.")
 
     def _handle_hw_decoder_warning(
         self,
@@ -7505,6 +7634,20 @@ class WebRTCClient:
             self._set_display_mode("idle")
 
     def on_incoming_stream(self, webrtc, pad):
+        # pad-added and the GLib existing-pad scan can observe the same pad,
+        # including concurrently during reconnection. Never build it twice or
+        # turn an already working display blank after a WAS_LINKED error.
+        with self._incoming_pad_lock:
+            if pad in self._incoming_pads_in_progress or pad.is_linked():
+                return
+            self._incoming_pads_in_progress.add(pad)
+        try:
+            self._on_incoming_stream(webrtc, pad)
+        finally:
+            with self._incoming_pad_lock:
+                self._incoming_pads_in_progress.discard(pad)
+
+    def _on_incoming_stream(self, webrtc, pad):
         global time  # Ensure time refers to the global module
         try:
             if Gst.PadDirection.SRC != pad.direction:
@@ -8484,6 +8627,34 @@ class WebRTCClient:
         uuid = client.get('UUID')
         return bool(uuid) and self.clients.get(uuid) is client
 
+    def _cancel_peer_connect_timeout(self, client):
+        timer = client.pop('_connect_timer', None)
+        if timer is not None:
+            timer.cancel()
+
+    def _arm_peer_connect_timeout(self, client):
+        timeout = getattr(self, '_peer_connect_timeout', 60.0)
+        if timeout <= 0 or not self._client_is_current(client):
+            return
+        if client.get('_connect_timer') is not None:
+            return
+
+        def expired():
+            if (getattr(self, '_shutdown_requested', False)
+                    or not self._client_is_current(client)
+                    or client.get('_connect_timer') is not timer):
+                return
+            client.pop('_connect_timer', None)
+            if client['webrtc'].get_property('connection-state') == 2:
+                return
+            printwarn('Peer connection timed out; releasing it for reconnection')
+            self.stop_pipeline(client['UUID'], expected_client=client)
+
+        timer = threading.Timer(timeout, expired)
+        timer.daemon = True
+        client['_connect_timer'] = timer
+        timer.start()
+
     def _replace_multiviewer_client_record(self, UUID):
         """Start a fresh callback generation when a viewer UUID reconnects."""
         with self.pipeline_lock:
@@ -8506,6 +8677,7 @@ class WebRTCClient:
             self.clients[UUID] = client
 
             if previous:
+                self._cancel_peer_connect_timeout(previous)
                 timer = previous.get('timer')
                 if timer is not None:
                     try:
@@ -8732,6 +8904,7 @@ class WebRTCClient:
             state = client['webrtc'].get_property(p2.name)
             
             if state == 2: # connected
+                self._cancel_peer_connect_timeout(client)
                 printc("\n🎬 Peer connection established!", "0F0")
                 printc("   └─ Viewer connected successfully\n", "0F0")
                 self._loss_hint_shown = False
@@ -8761,6 +8934,7 @@ class WebRTCClient:
                         printwarn(f"Failed to update display state: {exc}")
                 self.stop_pipeline(client['UUID'], expected_client=client)
             elif state == 1:
+                self._arm_peer_connect_timeout(client)
                 printc("🔄 Connecting to peer...", "77F")
                 if self.view:
                     try:
@@ -10127,7 +10301,10 @@ class WebRTCClient:
                 self.on_incoming_stream(webrtc_element, pad)
 
             client['webrtc'].connect('pad-added', _on_pad_added)
-            client['webrtc'].connect('pad-removed', self.on_remote_pad_removed)
+            def _on_pad_removed(webrtc_element, pad):
+                if self._client_is_current(client):
+                    self.on_remote_pad_removed(webrtc_element, pad)
+            client['webrtc'].connect('pad-removed', _on_pad_removed)
             client['webrtc'].connect('on-ice-candidate', send_ice_remote_candidate_message)
             client['webrtc'].connect('on-data-channel', on_data_channel)
             client['webrtc'].connect('on-new-transceiver', on_new_tranceiver)
@@ -10175,6 +10352,8 @@ class WebRTCClient:
             on_data_channel(client['webrtc'], channel)
             
 
+
+        self._arm_peer_connect_timeout(client)
 
     def setup_recording_pipeline(self, pad, name):
         """Set up proper recording pipeline for incoming stream"""
@@ -10514,56 +10693,59 @@ class WebRTCClient:
             if self.save_file:
                 pass
             elif self.pipe:
-                print("setting pipe to null")
+                with self.pipeline_lock:
+                    if self.pipe:
+                        print("setting pipe to null")
                 
-                if UUID in self.clients:
-                    print("Resetting existing pipe and p2p connection.")
-                    # Save session before cleanup
-                    session = self.clients[UUID]["session"] if "session" in self.clients[UUID] else None
+                        if UUID in self.clients:
+                            print("Resetting existing pipe and p2p connection.")
+                            previous = self.clients[UUID]
+                            # Retire callbacks BEFORE NULL emits state/data/pad signals.
+                            # Otherwise old callbacks can race teardown of the new peer.
+                            self.clients[UUID] = {
+                                "UUID": UUID,
+                                "session": previous.get("session"),
+                                "send_channel": None,
+                                "timer": None,
+                                "ping": 0,
+                                "webrtc": None,
+                                "direction": "receive" if self.view else "send",
+                            }
+                            if previous.get('original_uuid') is not None:
+                                self.clients[UUID]['original_uuid'] = previous['original_uuid']
+                            self._cancel_peer_connect_timeout(previous)
+                            timer = previous.get('timer')
+                            if timer is not None:
+                                try:
+                                    timer.cancel()
+                                except Exception:
+                                    pass
+                            webrtc = previous.get('webrtc')
+                            if webrtc is not None:
+                                try:
+                                    webrtc.set_state(Gst.State.NULL)
+                                except Exception:
+                                    pass
 
-                    # Cancel timer if exists
-                    if 'timer' in self.clients[UUID] and self.clients[UUID]['timer']:
+                        # Set pipeline to NULL after cleaning up elements
+                        self._remove_pipeline_bus_watch()
                         try:
-                            self.clients[UUID]['timer'].cancel()
-                            print("stop previous ping/pong timer")
-                        except:
-                            pass
-                    
-                    # Clean up webrtc element if it exists
-                    if 'webrtc' in self.clients[UUID] and self.clients[UUID]['webrtc']:
-                        try:
-                            self.clients[UUID]['webrtc'].set_state(Gst.State.NULL)
-                        except:
-                            pass
-
-                    # Reset client data
-                    self.clients[UUID] = {}
-                    self.clients[UUID]["UUID"] = UUID
-                    self.clients[UUID]["session"] = session
-                    self.clients[UUID]["send_channel"] = None
-                    self.clients[UUID]["timer"] = None
-                    self.clients[UUID]["ping"] = 0
-                    self.clients[UUID]["webrtc"] = None
-                    self.clients[UUID]["direction"] = "receive" if self.view else "send"
-                
-                # Set pipeline to NULL after cleaning up elements
-                try:
-                    if self.v4l2sink_device:
-                        # The primed idle output owns a v4l2loopback buffer pool.
-                        # Wait for the parent to close that device before a peer
-                        # pipeline opens it again, or the replacement pool can
-                        # stall while activating on its first frame.
-                        self.pipe.set_state(Gst.State.NULL)
-                        self.pipe.get_state(2 * Gst.SECOND)
-                        self._reset_display_chain_state()
-                        self._reset_v4l2sink_chain_state()
-                    else:
-                        self._reset_display_chain_state()
-                        self._reset_v4l2sink_chain_state()
-                        self.pipe.set_state(Gst.State.NULL)
-                except Exception as e:
-                    printwarn(f"Failed to set pipeline to NULL: {e}")
-                self.pipe = None
+                            if self.v4l2sink_device:
+                                # The primed idle output owns a v4l2loopback buffer pool.
+                                # Wait for the parent to close that device before a peer
+                                # pipeline opens it again, or the replacement pool can
+                                # stall while activating on its first frame.
+                                self.pipe.set_state(Gst.State.NULL)
+                                self.pipe.get_state(2 * Gst.SECOND)
+                                self._reset_display_chain_state()
+                                self._reset_v4l2sink_chain_state()
+                            else:
+                                self._reset_display_chain_state()
+                                self._reset_v4l2sink_chain_state()
+                                self.pipe.set_state(Gst.State.NULL)
+                        except Exception as e:
+                            printwarn(f"Failed to set pipeline to NULL: {e}")
+                        self.pipe = None
             await self.createPeer(UUID)
 
     def stop_pipeline(self, UUID, wait=False, expected_client=None):
@@ -10601,6 +10783,7 @@ class WebRTCClient:
             )
             
             # Cancel the ping timer if it exists
+            self._cancel_peer_connect_timeout(client)
             timer = client.get('timer')
             if timer is not None:
                 try:
@@ -10683,47 +10866,48 @@ class WebRTCClient:
             if should_restart and len(self.clients) == 0:
                 restart_display = True
 
-        if len(self.clients)==0:
-            enableLEDs(0.1)
-            if should_restart:
-                self._viewer_last_disconnect = time.monotonic()
-                self._viewer_restart_attempts = 0
-                self._viewer_last_play_request = 0.0
-                self._cancel_viewer_restart_timer()
-                self._viewer_restart_pending = False
-                self._request_view_stream_restart()
+            if len(self.clients)==0:
+                enableLEDs(0.1)
+                if should_restart:
+                    self._viewer_last_disconnect = time.monotonic()
+                    self._viewer_restart_attempts = 0
+                    self._viewer_last_play_request = 0.0
+                    self._cancel_viewer_restart_timer()
+                    self._viewer_restart_pending = False
+                    self._request_view_stream_restart()
 
-        if self.pipe:
-            if self.save_file:
-                pass
-            elif len(self.clients)==0:
-                if restart_display:
-                    try:
-                        self._set_display_mode("idle")
-                        self.pipe.set_state(Gst.State.PLAYING)
-                    except Exception as e:
-                        printwarn(f"Failed to keep display idle after disconnect: {e}")
-                else:
-                    # Ensure pipeline is properly cleaned up when no clients remain
-                    try:
-                        self._reset_display_chain_state()
-                        self._display_surface_cleared = False
-                        pause_result = self.pipe.set_state(Gst.State.PAUSED)
-                        if pause_result == Gst.StateChangeReturn.FAILURE:
-                            printwarn("Error pausing pipeline during viewer cleanup")
-                        null_result = self.pipe.set_state(Gst.State.NULL)
-                        if null_result == Gst.StateChangeReturn.FAILURE:
-                            printwarn("Error setting pipeline to NULL during viewer cleanup")
-                    except Exception as e:
-                        printwarn(f"Error setting pipeline to NULL: {e}")
-                        # Force cleanup even if state change failed
+            if self.pipe:
+                if self.save_file:
+                    pass
+                elif len(self.clients)==0:
+                    if restart_display:
                         try:
-                            self.pipe.set_state(Gst.State.NULL)
-                        except:
-                            pass
-                    finally:
-                        # Always clear the pipeline reference to prevent reuse
-                        self.pipe = None
+                            self._set_display_mode("idle")
+                            self.pipe.set_state(Gst.State.PLAYING)
+                        except Exception as e:
+                            printwarn(f"Failed to keep display idle after disconnect: {e}")
+                    else:
+                        # Ensure pipeline is properly cleaned up when no clients remain
+                        self._remove_pipeline_bus_watch()
+                        try:
+                            self._reset_display_chain_state()
+                            self._display_surface_cleared = False
+                            pause_result = self.pipe.set_state(Gst.State.PAUSED)
+                            if pause_result == Gst.StateChangeReturn.FAILURE:
+                                printwarn("Error pausing pipeline during viewer cleanup")
+                            null_result = self.pipe.set_state(Gst.State.NULL)
+                            if null_result == Gst.StateChangeReturn.FAILURE:
+                                printwarn("Error setting pipeline to NULL during viewer cleanup")
+                        except Exception as e:
+                            printwarn(f"Error setting pipeline to NULL: {e}")
+                            # Force cleanup even if state change failed
+                            try:
+                                self.pipe.set_state(Gst.State.NULL)
+                            except:
+                                pass
+                        finally:
+                            # Always clear the pipeline reference to prevent reuse
+                            self.pipe = None
     async def _add_room_stream(self, stream_id):
         """Add a stream for room recording"""
         if stream_id in self.room_recorders:
@@ -11475,6 +11659,8 @@ class WebRTCClient:
                 except Exception as e:
                     printwarn(f"Error stopping client {uuid}: {e}")
             
+            self._remove_pipeline_bus_watch()
+
             # Clean up main pipeline
             if self.pipe:
                 self._flush_publisher_fec_probe()
@@ -13430,7 +13616,7 @@ async def main():
     parser.add_argument('--format', type=str, default=None, help='The capture format type: YUYV, I420, BGR, or even JPEG/H264')
     parser.add_argument('--rotate', type=int, default=0, help='Rotates the camera in degrees; 0 (default), 90, 180, 270 are possible values.')
     parser.add_argument('--nvidiacsi', action='store_true', help='Sets the input to the nvidia csi port.')
-    parser.add_argument('--alsa', type=str, default=None, help='Use alsa audio input.')
+    parser.add_argument('--alsa', type=str, default=None, help='ALSA capture name or persistent /dev/snd/by-id/ USB microphone path (PCM device 0).')
     parser.add_argument('--pulse', type=str, help='Use pulse audio (or pipewire) input.')
     parser.add_argument('--zerolatency', action='store_true', help='A mode designed for the lowest audio output latency')
     parser.add_argument('--lowlatency', action='store_true', help='Enable low latency mode with leaky queues. May drop frames under load but reduces latency.')
@@ -13469,6 +13655,8 @@ async def main():
     parser.add_argument('--view',  type=str, help='Specify a stream ID to play out to the local display/audio.')
     parser.add_argument('--no-auto-retry', action='store_true', help='Viewer mode: disable automatic reconnect attempts when the remote peer disconnects.')
     parser.add_argument('--viewer-retry-initial', type=float, default=15.0, help='Viewer mode: seconds to wait before the first automatic reconnect attempt after a disconnect (default 15s).')
+    parser.add_argument('--peer-connect-timeout', type=float, default=60.0, help='Seconds allowed for a peer to connect before releasing it for reconnection (default 60s; 0 disables).')
+    parser.add_argument('--capture-timeout', type=float, default=30.0, help='Seconds without buffers from V4L2/ALSA/Pulse capture before exiting for supervised recovery (default 30s; 0 disables).')
     parser.add_argument('--viewer-retry-short', type=float, default=45.0, help='Viewer mode: seconds to wait before the second reconnect attempt (default 45s).')
     parser.add_argument('--viewer-retry-long', type=float, default=180.0, help='Viewer mode: seconds to wait between subsequent reconnect attempts (default 180s).')
     parser.add_argument('--viewer-enable-fec', action='store_true', help='Enable experimental viewer-side ULPFEC recovery. This currently requires manual testing and may destabilize the viewer; disabled by default.')
@@ -13545,6 +13733,17 @@ async def main():
 
     try:
         validate_receiver_output_args(args)
+        if not math.isfinite(args.capture_timeout) or args.capture_timeout < 0:
+            raise ValueError('--capture-timeout must be a finite nonnegative number')
+        if not math.isfinite(args.peer_connect_timeout) or args.peer_connect_timeout < 0:
+            raise ValueError('--peer-connect-timeout must be a finite nonnegative number')
+        turn_disabled = args.turn_server is not None and args.turn_server.strip().lower() in ('0', 'false', 'off', 'none', 'null')
+        if args.turn_server and not turn_disabled:
+            args.turn_server = normalize_turn_server_url(args.turn_server)
+        if args.ice_transport_policy == 'relay' and (
+            turn_disabled or (not args.turn_server and not (args.record or args.record_room or args.room_ndi))
+        ):
+            raise ValueError('Relay-only ICE requires a TURN server; set --turn-server.')
     except ValueError as exc:
         parser.error(str(exc))
     
@@ -13765,6 +13964,14 @@ async def main():
     # Ensure stream_filter is always defined
     if not hasattr(args, 'stream_filter'):
         args.stream_filter = None
+
+    try:
+        if not (args.noaudio or args.streamin or args.test or args.audio_pipeline or args.pulse):
+            if args.alsa and args.alsa.startswith(('/dev/snd/by-id/', '/dev/snd/by-path/')):
+                args._alsa_persistent_device = args.alsa
+            args.alsa = resolve_alsa_device(args.alsa)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if not (args.alsa or args.pulse or args.test or args.noaudio or args.pipein
             or args.streamin or args.audio_pipeline):
@@ -14897,6 +15104,7 @@ async def main():
     shutdown_event = asyncio.Event()
     loop = c.event_loop
     force_exit_handle = [None]
+    exit_status = [0]
 
     async def _close_connection():
         conn = c.conn
@@ -14936,6 +15144,21 @@ async def main():
     def _force_exit_due_to_timeout():
         printc("\n❌ Shutdown timeout reached, forcing exit.", "F00")
         os._exit(1)
+
+    def _fatal_media_shutdown():
+        if c._shutdown_requested:
+            return
+        exit_status[0] = 1
+        printwarn("Stopping after a media failure; an unattended service will retry automatically.")
+        # Native driver teardown can block asyncio, so arm an independent deadline.
+        timer = threading.Timer(8.0, _force_exit_due_to_timeout)
+        timer.daemon = True
+        force_exit_handle[0] = timer
+        timer.start()
+        _schedule_shutdown()
+
+    c._fatal_media_shutdown = _fatal_media_shutdown
+    gst_events_task = asyncio.create_task(dispatch_gstreamer_events(c._check_capture_watchdog))
 
     # Track if we're already shutting down
     shutdown_count = [0]
@@ -14989,6 +15212,12 @@ async def main():
             # WebSocket reconnection - peer connections remain active
             await _sleep_or_shutdown(5)
     shutdown_event.set()
+
+    gst_events_task.cancel()
+    try:
+        await gst_events_task
+    except asyncio.CancelledError:
+        pass
     
     # Ensure cleanup is called
     try:
@@ -15025,7 +15254,7 @@ async def main():
     if c.shared_memory:
         c.shared_memory.close()
         c.shared_memory.unlink()
-    sys.exit(0)
+    sys.exit(exit_status[0])
     return
 
 if __name__ == "__main__":

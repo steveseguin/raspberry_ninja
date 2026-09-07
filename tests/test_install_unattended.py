@@ -33,6 +33,8 @@ class InstallUnattendedTests(unittest.TestCase):
         self.assertNotIn("secret", unit)
         self.assertIn("WorkingDirectory=/home/steve/raspberry\\x20ninja", unit)
         self.assertIn("Restart=always", unit)
+        self.assertIn("StartLimitIntervalSec=0", unit)
+        self.assertIn("RestartSec=5", unit)
 
     def test_native_h264_camera_sender_config(self):
         with tempfile.TemporaryDirectory() as temporary:

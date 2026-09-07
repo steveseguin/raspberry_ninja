@@ -68,8 +68,8 @@ def render_service(
 Description={description}
 Wants=network-online.target
 After=network-online.target
-StartLimitIntervalSec=120
-StartLimitBurst=10
+# Keep retrying when a USB camera or network is unavailable for minutes.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -227,7 +227,7 @@ def create_parser() -> argparse.ArgumentParser:
     sender.add_argument("--height", type=int, default=360)
     sender.add_argument("--framerate", type=int, default=15)
     sender.add_argument("--bitrate", type=int, default=500)
-    sender.add_argument("--audio-device", help="ALSA capture name, for example hw:C920,0")
+    sender.add_argument("--audio-device", help="ALSA capture name (hw:C920,0) or persistent /dev/snd/by-id/ USB microphone path (PCM device 0)")
     sender.add_argument("--audio-bitrate", type=int, default=48)
     return parser
 

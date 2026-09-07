@@ -119,6 +119,12 @@ def resolve_v4l2_input_device(
     if usable:
         return device, False
 
+    # Persistent udev paths select a particular camera/port. On a reconnect,
+    # wait for that device instead of silently publishing a different camera.
+    if device.startswith(("/dev/v4l/by-id/", "/dev/v4l/by-path/")):
+        log(f"Selected camera {device} is unavailable or not capture-capable. Reconnect that device and retry.")
+        return original, True
+
     log(f"The video input {device} is unavailable or not capture-capable. Scanning for alternatives...")
     for candidate in sorted(glob.glob("/dev/video*"), key=_device_sort_key):
         if not os.path.exists(candidate) or not os.access(candidate, os.R_OK):
