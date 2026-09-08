@@ -32,11 +32,22 @@ jobs:
       - name: Install runtime dependencies
         shell: bash
         run: |
+          apt_sources=()
+          if [ "${{ matrix.image }}" = "debian:bullseye" ]; then
+            # Bullseye LTS ended 2026-08-31. Freeze this legacy compatibility
+            # fixture at the final LTS snapshot; signature verification stays on.
+            mkdir -p /tmp/bullseye-sourceparts
+            cat > /tmp/bullseye-sources.list <<'EOF'
+          deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20260901T000000Z/ bullseye main
+          deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20260901T000000Z/ bullseye-security main
+          EOF
+            apt_sources=(-o Dir::Etc::sourcelist=/tmp/bullseye-sources.list -o Dir::Etc::sourceparts=/tmp/bullseye-sourceparts)
+          fi
           # Refresh package indexes on every attempt: security mirrors can rotate
           # package versions between update and install. Never drop legacy coverage.
           for attempt in 1 2 3; do
-            if apt-get -o Acquire::Retries=3 -o Acquire::http::No-Cache=true -o APT::Update::Error-Mode=any update &&
-            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            if apt-get "${apt_sources[@]}" -o Acquire::Retries=3 -o Acquire::http::No-Cache=true -o APT::Update::Error-Mode=any update &&
+            DEBIAN_FRONTEND=noninteractive apt-get "${apt_sources[@]}" install -y --no-install-recommends \
               ca-certificates \
               python3 \
               python3-aiohttp \
