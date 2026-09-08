@@ -3,59 +3,35 @@ name: Enhance Commit Messages
 on:
   push:
     branches: [main]
-  pull_request:
-    types: [opened, synchronize]
+  workflow_dispatch:
+
+concurrency:
+  group: enhance-commits-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   enhance-commits:
-    if: "!contains(github.event.head_commit.message, '[auto-enhanced]') && !contains(github.event.head_commit.message, '[skip pages]') && !contains(github.event.head_commit.message, '[release]') && github.actor != 'github-pages[bot]' && github.actor != 'github-actions[bot]'"
+    if: "!contains(github.event.head_commit.message, '[auto-enhanced]') && github.actor != 'github-actions[bot]'"
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
-      pull-requests: write
-
     steps:
-      - name: Check optional enhancer configuration
-        id: configuration
-        env:
-          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
-          COMMIT_ENHANCER_PAT: ${{ secrets.COMMIT_ENHANCER_PAT }}
-        shell: bash
-        run: |
-          if [ -n "$ZAI_API_KEY" ] && [ -n "$COMMIT_ENHANCER_PAT" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "Optional commit enhancer is not configured; skipping."
-          fi
-
-      - name: Checkout code
-        if: steps.configuration.outputs.enabled == 'true'
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
-          token: ${{ secrets.COMMIT_ENHANCER_PAT }}
-
-      - name: Setup Node.js
-        if: steps.configuration.outputs.enabled == 'true'
-        uses: actions/setup-node@v4
+          fetch-depth: 5
+          token: ${{ github.token }}
+      - uses: actions/setup-node@v4
         with:
-          node-version: '18'
-
-      - name: Install dependencies
-        if: steps.configuration.outputs.enabled == 'true'
-        run: npm install axios
-
+          node-version: '22'
+      - name: Install enhancer dependency
+        run: npm install --prefix "$RUNNER_TEMP/enhancer" --no-audit --no-fund --ignore-scripts axios
       - name: Configure Git
-        if: steps.configuration.outputs.enabled == 'true'
         run: |
-          git config --global user.name "GitHub Actions Commit Enhancer"
-          git config --global user.email "actions@github.com"
-          
-      - name: Enhance commit messages
-        if: steps.configuration.outputs.enabled == 'true'
-        id: enhance
+          git config user.name "GitHub Actions Commit Enhancer"
+          git config user.email "actions@github.com"
+      - name: Enhance commit message
         env:
-          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.COMMIT_ENHANCER_PAT }} # This is used by the script for PR updates
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY || secrets.ZEN_API_TOKEN }}
+          NODE_PATH: ${{ runner.temp }}/enhancer/node_modules
         run: node .github/scripts/enhance-commits.js

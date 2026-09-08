@@ -32,24 +32,36 @@ jobs:
       - name: Install runtime dependencies
         shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ca-certificates \
-            python3 \
-            python3-aiohttp \
-            python3-cryptography \
-            python3-gi \
-            python3-websockets \
-            gir1.2-gstreamer-1.0 \
-            gir1.2-gst-plugins-base-1.0 \
-            gir1.2-gst-plugins-bad-1.0 \
-            gstreamer1.0-libav \
-            gstreamer1.0-nice \
-            gstreamer1.0-plugins-bad \
-            gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good \
-            gstreamer1.0-plugins-ugly \
-            gstreamer1.0-tools
+          # Refresh package indexes on every attempt: security mirrors can rotate
+          # package versions between update and install. Never drop legacy coverage.
+          for attempt in 1 2 3; do
+            if apt-get -o Acquire::Retries=3 -o Acquire::http::No-Cache=true -o APT::Update::Error-Mode=any update &&
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              ca-certificates \
+              python3 \
+              python3-aiohttp \
+              python3-cryptography \
+              python3-gi \
+              python3-websockets \
+              gir1.2-gstreamer-1.0 \
+              gir1.2-gst-plugins-base-1.0 \
+              gir1.2-gst-plugins-bad-1.0 \
+              gstreamer1.0-libav \
+              gstreamer1.0-nice \
+              gstreamer1.0-plugins-bad \
+              gstreamer1.0-plugins-base \
+              gstreamer1.0-plugins-good \
+              gstreamer1.0-plugins-ugly \
+              gstreamer1.0-tools; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::Runtime dependency installation failed after three fresh-index attempts"
+              exit 1
+            fi
+            apt-get clean
+            sleep 10
+          done
 
       - name: Record compatibility environment
         shell: bash
