@@ -13,6 +13,7 @@ import threading
 import os
 import hashlib
 from typing import Optional, Dict, Any
+from whep import WhepReceiver, RtpSourceSwitch, advertisements, opt_out_fields
 
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GObject, GLib
@@ -89,7 +90,7 @@ if HAS_CRYPTO:
 class GLibWebRTCHandler:
     """Handles WebRTC pipeline in a subprocess using GLib main loop"""
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], monitor_stdin=True):
         self.config = config
         self.stream_id = config.get('stream_id')
         self.mode = config.get('mode', 'view')
@@ -97,6 +98,11 @@ class GLibWebRTCHandler:
         self.record_file = config.get('record_file')
         self.record_path = config.get('record_path')
         self.record_audio = config.get('record_audio', False)
+        self.record_video = config.get('record_video', True)
+        self.nowhep = config.get('nowhep', False)
+        self.whep_receiver = None
+        self.rtp_switch = None
+        self.screen_handler = None
         self.room_ndi = config.get('room_ndi', False)
         self.ndi_name = config.get('ndi_name')
         self.ndi_direct = config.get('ndi_direct', False)  # Direct NDI mode flag
@@ -141,29 +147,42 @@ class GLibWebRTCHandler:
         self.main_loop = GLib.MainLoop()
         
         # Setup stdin monitoring
-        self.setup_stdin_watch()
+        if monitor_stdin:
+            self.setup_stdin_watch()
         
     def setup_stdin_watch(self):
         """Setup monitoring of stdin for messages"""
         # Create a channel for stdin
-        self.stdin_channel = GLib.IOChannel.unix_new(sys.stdin.fileno())
+        self._stdin_fd = sys.stdin.fileno()
+        self._stdin_buffer = b''
+        self.stdin_channel = GLib.IOChannel.unix_new(self._stdin_fd)
         self.stdin_channel.set_encoding(None)
         self.stdin_channel.set_buffered(False)
         
         # Add watch for stdin
-        GLib.io_add_watch(self.stdin_channel, GLib.IO_IN, self.on_stdin_data)
+        GLib.io_add_watch(self.stdin_channel, GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.on_stdin_data)
         
     def on_stdin_data(self, channel, condition):
         """Handle data from stdin"""
         try:
-            line = sys.stdin.readline()
-            if not line:
+            # TextIO.readline() can prefetch several IPC messages, hiding the
+            # rest from GLib's fd readiness watch until another write arrives.
+            # Read the available bytes once and drain every complete JSON line.
+            chunk = os.read(self._stdin_fd, 65536)
+            if not chunk:
                 self.log("EOF on stdin, shutting down")
                 self.shutdown()
                 return False
             
-            msg = json.loads(line.strip())
-            self.handle_message(msg)
+            self._stdin_buffer += chunk
+            while b'\n' in self._stdin_buffer:
+                line, self._stdin_buffer = self._stdin_buffer.split(b'\n', 1)
+                try:
+                    self.handle_message(json.loads(line))
+                except (json.JSONDecodeError, UnicodeError) as e:
+                    self.log(f"Invalid JSON: {e}", "error")
+                if not self.running:
+                    return False
             
         except json.JSONDecodeError as e:
             self.log(f"Invalid JSON: {e}", "error")
@@ -200,6 +219,8 @@ class GLibWebRTCHandler:
         elif msg_type == 'session':
             self.session_id = msg.get('session_id')
             self.log(f"Session ID set: {self.session_id}")
+        elif msg_type == 'relay':
+            self.handle_relay_control(msg.get('control', {}))
         else:
             self.log(f"Unknown message type: {msg_type}", "warning")
             
@@ -566,6 +587,59 @@ class GLibWebRTCHandler:
             "session_id": self.session_id
         })
         
+    def _configure_whep_ice(self, peer):
+        policy = self.config.get('ice_transport_policy', 'all')
+        turn = self.config.get('turn_server')
+        if policy == 'relay' and not turn:
+            raise RuntimeError('Relay-only ICE requires a TURN server')
+        try:
+            peer.set_property('ice-transport-policy', policy)
+            for key in ('stun_server', 'turn_server'):
+                value = self.config.get(key)
+                if value and str(value).lower() not in ('0', 'false', 'off', 'none', 'null'):
+                    peer.set_property(key.replace('_', '-'), value)
+        except Exception:
+            raise RuntimeError('Unable to configure WHEP ICE servers; check installed GStreamer support') from None
+
+    def _get_rtp_switch(self):
+        if self.rtp_switch is None:
+            if self.pipe is None:
+                self.create_pipeline()
+            self.rtp_switch = RtpSourceSwitch(self.pipe, self._on_selected_pad, self.log,
+                                              audio=self.record_audio, video=self.record_video)
+        return self.rtp_switch
+
+    def handle_relay_control(self, msg):
+        if self.nowhep or not self.running:
+            return False
+        try:
+            for settings in advertisements(msg):
+                owner = self
+                if settings['media'] == 'screen':
+                    if self.screen_handler is None:
+                        config = dict(self.config)
+                        config['stream_id'] = str(self.stream_id) + '_screen'
+                        if self.record_file:
+                            root, suffix = os.path.splitext(self.record_file)
+                            config['record_file'] = root + '_screen' + suffix
+                        if config.get('ndi_name'):
+                            config['ndi_name'] += '_screen'
+                        self.screen_handler = GLibWebRTCHandler(config, monitor_stdin=False)
+                    owner = self.screen_handler
+                output = owner._get_rtp_switch()
+                if owner.whep_receiver is None:
+                    owner.whep_receiver = WhepReceiver(owner.pipe, output, owner._configure_whep_ice,
+                                                        owner.log, video_codecs=('H264',) if owner.use_hls else ('H264', 'VP8'),
+                                                        latency=owner.config.get('buffer', 200))
+                owner.whep_receiver.update(settings)
+            info = msg.get('info') if isinstance(msg.get('info'), dict) else {}
+            if msg.get('screenShareState', info.get('screenShareState')) is False:
+                if self.screen_handler and self.screen_handler.whep_receiver:
+                    self.screen_handler.whep_receiver.close()
+        except (ValueError, RuntimeError) as exc:
+            self.log(f"WHEP: {exc}", 'error')
+        return False
+
     def request_media(self):
         """Request video and audio through data channel"""
         try:
@@ -591,10 +665,10 @@ class GLibWebRTCHandler:
             self.log("Sending media request through data channel")
             # Create the request message similar to VDO.Ninja
             request = {
-                "video": True,
-                "audio": True,
-                "allowscreenvideo": True,
-                "allowscreenaudio": True,
+                "video": self.record_video,
+                "audio": self.record_audio,
+                "allowscreenvideo": self.record_video,
+                "allowscreenaudio": self.record_audio,
                 "downloads": True,
                 "iframe": True,
                 "widget": True,
@@ -606,6 +680,7 @@ class GLibWebRTCHandler:
                 "allowresources": False
             }
             
+            request.update(opt_out_fields(self.nowhep))
             request_json = json.dumps(request)
             data_channel.send_string(request_json)
             self.log(f"Media request sent: {request_json}")
@@ -645,7 +720,7 @@ class GLibWebRTCHandler:
             
     def on_data_channel_message(self, channel, msg):
         """Handle incoming data channel text messages"""
-        self.log(f"Data channel message received: {msg[:200]}..." if len(msg) > 200 else f"Data channel message received: {msg}")
+        # Relay URLs and bearer tokens must not be copied into subprocess logs.
         
         # Quick check if this might be a renegotiation offer
         if '"type":"offer"' in msg:
@@ -656,6 +731,20 @@ class GLibWebRTCHandler:
             # Parse the message
             data = json.loads(msg)
             self.log("DEBUG: JSON parsed successfully")
+            if not isinstance(data, dict):
+                return
+            if 'ping' in data:
+                channel.send_string(json.dumps({'pong': data['ping']}))
+                return
+            if any(key in data for key in ('whepSettings', 'whepScreenSettings', 'screenShareState', 'info')):
+                GLib.idle_add(self.handle_relay_control, data)
+            if 'bye' in data:
+                if self.whep_receiver:
+                    GLib.idle_add(self.whep_receiver.close)
+                if self.screen_handler and self.screen_handler.whep_receiver:
+                    GLib.idle_add(self.screen_handler.whep_receiver.close)
+                self.send_message({'type': 'peer_left'})
+                return
             
             # Log what's in the data
             if 'description' in data:
@@ -1843,6 +1932,15 @@ class GLibWebRTCHandler:
             self._ndi_status_timer = GLib.timeout_add(10000, check_ndi_status)  # Every 10 seconds
         
     def on_pad_added(self, element, pad):
+        if self.nowhep:
+            self._on_selected_pad(element, pad)
+        else:
+            try:
+                self._get_rtp_switch().attach(element, pad)
+            except RuntimeError as exc:
+                self.log(str(exc), 'error')
+
+    def _on_selected_pad(self, element, pad):
         """Handle new pad from webrtcbin"""
         pad_name = pad.get_name()
         self.log(f"New pad added: {pad_name}")
@@ -3111,11 +3209,21 @@ class GLibWebRTCHandler:
         state = element.get_property('ice-gathering-state')
         self.log(f"ICE gathering state: {state.value_name}")
         
-    def shutdown(self):
+    def shutdown(self, finalize_timeout=3):
         """Shutdown the handler"""
         self.log("Shutting down...")
+        if self.whep_receiver:
+            self.whep_receiver.close()
+        if self.screen_handler:
+            # Share the existing shutdown budget across both recording pipelines.
+            finalize_timeout /= 2
+            self.screen_handler.shutdown(finalize_timeout)
+            self.screen_handler = None
 
-        self.finalize_recordings()
+        self.finalize_recordings(timeout_seconds=finalize_timeout)
+        if self.rtp_switch:
+            self.rtp_switch.close()
+            self.rtp_switch = None
         
         # Log recording status
         if hasattr(self, 'recording_video') and self.recording_video:

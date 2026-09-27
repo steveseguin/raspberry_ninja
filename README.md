@@ -629,6 +629,55 @@ I have added SRT support to the Raspberry Pi image.  You need to use it via Ffmp
 
 ### WHIP / Meshcast support
 
+Raspberry Ninja automatically follows WHEP playback URLs advertised by VDO.Ninja
+publishers using Meshcast, Meshcast2, MediaMTX, or `whepshare`/`whepsrc`. This works
+with `--view`, `--record`, room recording, and the existing receiver outputs. The
+VDO.Ninja connection remains available for discovery and controls; relay audio
+and video arrive through a separate WebRTC connection.
+
+WHEP reception uses Python HTTP signaling and the existing GStreamer `webrtcbin`.
+It does **not** require `whepsrc`, Rust, or `gst-plugins-rs`. The older `--whip`
+publishing option described below still uses `whipsink` and is separate.
+
+```bash
+# Follow the publisher's advertised relay automatically
+python3 publish.py --view STREAM_ID
+python3 publish.py --record STREAM_ID
+
+# Explicitly request P2P instead (alias: --nomeshcast)
+python3 publish.py --view STREAM_ID --nowhep
+
+# Receive a WHEP endpoint directly, without a VDO.Ninja signaling connection
+python3 publish.py --whep "https://relay.example/stream/whep"
+python3 publish.py --whep "https://relay.example/stream/whep" --record recording_name
+```
+
+Use `--whep-token TOKEN` when a direct endpoint requires bearer authentication.
+Tokens advertised by publishers are applied automatically. `--noaudio` and
+`--novideo` select the output tracks; the relay negotiation can still include both
+tracks for server compatibility. Existing STUN/TURN settings also apply to WHEP.
+
+Camera and screen advertisements are handled separately; screen recordings use
+an `_screen` suffix. Duplicate advertisements reuse the receiver, while changed
+URLs, tokens, or publisher restart markers reconnect it. A relay failure retries
+with bounded backoff and reports the error; it does not silently switch to P2P.
+Use `--nowhep` to explicitly request that alternative when the publisher has a
+P2P source. A shared external WHEP source may have no P2P media to offer.
+
+On GStreamer older than 1.20, the receiver posts its offer while ICE gathers,
+then sends the candidates after applying the SDP answer, using WHEP PATCH when
+the relay advertises support. This avoids a legacy connection startup race
+and excludes the unused ICE component for separate RTCP.
+Relays without PATCH support receive a complete offer on retry; newer GStreamer
+uses complete offers directly. HTTP session resources are deleted on replacement
+or shutdown. Ordinary P2P publishers continue to work without relay settings.
+
+Live testing on GStreamer 1.18.4 exposed a native crash when a browser switches
+from a data-only connection to P2P media. `--nowhep` is not reliable for that
+scenario on that version; use WHEP or a newer GStreamer stack. The same live
+P2P test passed on GStreamer 1.24.2. Live relay reconnects can also require
+multiple attempts on the tested 1.18.4 stack; the receiver retries automatically.
+
 I added WHIP/WHEP dependencies to the Raspberry Pi x64 pre-built image already (av1-whip support excluded), but for other users you may need to ensure you have the `gst-plugins-rs` installed to get WHIP out working. This may also mean you'll need Gstreamer 1.22 installed. If you want to use AV1, you'll also need to ensure you have an AV1 encoder available within Gstreamer; there's a few good options there.
 
 The WHIP output support within Raspberry Ninja is added by means of the Gstreamer's [whipsink](https://gstreamer.freedesktop.org/documentation/webrtchttp/whipsink.html?gi-language=python)

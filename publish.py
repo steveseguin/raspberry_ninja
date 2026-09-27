@@ -28,6 +28,7 @@ from functools import lru_cache
 from config_loader import apply_config_overrides, load_config_file
 from audio_devices import resolve_alsa_device
 from signaling_utils import handshake_server_requires_puuid
+from whep import WhepReceiver, RtpSourceSwitch, advertisements, opt_out_fields, normalize_settings
 from v4l2_devices import resolve_v4l2_input_device, resolve_v4l2_output_device
 try:
     import hashlib
@@ -2990,6 +2991,9 @@ class WebRTCSubprocessManager:
             'ndi_direct': self.config.get('ndi_direct', True),  # Default to direct mode
             'password': self.config.get('password'),  # Pass password for decryption
             'salt': self.config.get('salt', ''),  # Pass salt for decryption
+            'nowhep': self.config.get('nowhep', False),
+            'record_video': self.config.get('record_video', True),
+            'buffer': self.config.get('buffer', 200),
         }
         
         # Start subprocess
@@ -3393,6 +3397,10 @@ class WebRTCClient:
         self._shutdown_requested = False  # Initialize shutdown flag
         self.record = params.record
         self.streamin = params.streamin
+        self.nowhep = bool(getattr(params, 'nowhep', False))
+        self._whep_receivers = {}
+        self._rtp_switches = {}
+        self._relay_control = {}
         self.ndiout = params.ndiout
         self.fdsink = params.fdsink
         self.v4l2sink = params.v4l2sink
@@ -7633,6 +7641,102 @@ class WebRTCClient:
         else:
             self._set_display_mode("idle")
 
+    def _get_rtp_switch(self, UUID, media="primary"):
+        key = (UUID, media)
+        if key not in self._rtp_switches:
+            control = self.clients.get(UUID, {}).get('webrtc')
+            self._rtp_switches[key] = RtpSourceSwitch(
+                self.pipe, lambda element, pad: self._on_incoming_stream(control or element, pad),
+                printwarn, audio=not self.noaudio, video=not self.novideo, flush_on_detach=True)
+        return self._rtp_switches[key]
+
+    def _apply_relay_control(self, UUID, msg):
+        if self.nowhep or self._shutdown_requested:
+            return False
+        try:
+            settings_list = advertisements(msg)
+            if settings_list:
+                self._ensure_main_pipeline(log=False)
+            for settings in settings_list:
+                key = (UUID, settings['media'])
+                if key not in self._whep_receivers:
+                    codecs = ('H264', 'VP8', 'VP9', 'AV1')
+                    if self.vp8:
+                        codecs = ('VP8',)
+                    elif self.vp9:
+                        codecs = ('VP9',)
+                    elif self.av1:
+                        codecs = ('AV1',)
+                    self._whep_receivers[key] = WhepReceiver(
+                        self.pipe, self._get_rtp_switch(*key), self.setup_ice_servers,
+                        printwarn, video_codecs=codecs, latency=self.buffer)
+                self._whep_receivers[key].update(settings)
+            info = msg.get('info') if isinstance(msg.get('info'), dict) else {}
+            if msg.get('screenShareState', info.get('screenShareState')) is False:
+                receiver = self._whep_receivers.pop((UUID, 'screen'), None)
+                if receiver:
+                    receiver.close()
+                output = self._rtp_switches.pop((UUID, 'screen'), None)
+                if output:
+                    output.close(self.on_remote_pad_removed)
+        except (ValueError, RuntimeError) as exc:
+            printwarn(f"WHEP: {exc}")
+        return False
+
+    async def _handle_relay_control(self, UUID, msg):
+        if self.nowhep or not (self.streamin or self.room_recording):
+            return
+        control = {key: msg[key] for key in ('whepSettings', 'whepScreenSettings', 'screenShareState') if key in msg}
+        info = msg.get('info')
+        if isinstance(info, dict) and 'screenShareState' in info:
+            control['screenShareState'] = info['screenShareState']
+        if not control:
+            return
+        self._relay_control.setdefault(UUID, {}).update(control)
+        if 'screenShareState' not in control and ('whepScreenSettings' in control or
+                isinstance(control.get('whepSettings'), dict) and control['whepSettings'].get('media') == 'screen'):
+            self._relay_control[UUID].pop('screenShareState', None)
+        if self.room_recording or self.single_stream_recording:
+            stream_id = self.uuid_to_stream_id.get(UUID)
+            manager = self.subprocess_managers.get(stream_id)
+            if manager:
+                await manager.send_message({'type': 'relay', 'control': control})
+        else:
+            self._apply_relay_control(UUID, control)
+
+    def _close_peer_media(self, UUID, forget=True):
+        for key in list(getattr(self, '_whep_receivers', {})):
+            if key[0] == UUID:
+                self._whep_receivers.pop(key).close()
+        for key in list(getattr(self, '_rtp_switches', {})):
+            if key[0] == UUID:
+                self._rtp_switches.pop(key).close(self.on_remote_pad_removed)
+        if forget:
+            getattr(self, '_relay_control', {}).pop(UUID, None)
+
+    def _has_whep_media(self, UUID):
+        return any(receiver.stage != 'stopped' for key, receiver in
+                   list(getattr(self, '_whep_receivers', {}).items()) if key[0] == UUID)
+
+    async def _stop_recording_peer(self, UUID, expected_manager=None):
+        stream_id = self.uuid_to_stream_id.get(UUID)
+        manager = self.subprocess_managers.get(stream_id)
+        if expected_manager is not None and manager is not expected_manager:
+            return
+        self._close_peer_media(UUID)
+        if manager:
+            self.subprocess_managers.pop(stream_id, None)
+            await manager.stop()
+        self.uuid_to_stream_id.pop(UUID, None)
+        if stream_id:
+            self.stream_id_to_uuid.pop(stream_id, None)
+            for session_id, mapped_stream in list(self.session_to_stream.items()):
+                if mapped_stream == stream_id:
+                    self.session_to_stream.pop(session_id, None)
+        if UUID in self.room_streams:
+            await self.cleanup_room_stream(UUID)
+        self.clients.pop(UUID, None)
+
     def on_incoming_stream(self, webrtc, pad):
         # pad-added and the GLib existing-pad scan can observe the same pad,
         # including concurrently during reconnection. Never build it twice or
@@ -7642,7 +7746,15 @@ class WebRTCClient:
                 return
             self._incoming_pads_in_progress.add(pad)
         try:
-            self._on_incoming_stream(webrtc, pad)
+            UUID = next((key for key, value in getattr(self, 'clients', {}).items() if value.get('webrtc') == webrtc), None)
+            codec = None
+            if UUID and not getattr(self, 'nowhep', False):
+                caps = pad.get_current_caps() or pad.query_caps(None)
+                codec = caps.get_structure(0).get_string('encoding-name') if caps and caps.get_size() else None
+            if codec in ('H264', 'VP8', 'VP9', 'AV1', 'OPUS'):
+                self._get_rtp_switch(UUID).attach(webrtc, pad)
+            else:
+                self._on_incoming_stream(webrtc, pad)
         finally:
             with self._incoming_pad_lock:
                 self._incoming_pads_in_progress.discard(pad)
@@ -8647,6 +8759,9 @@ class WebRTCClient:
             client.pop('_connect_timer', None)
             if client['webrtc'].get_property('connection-state') == 2:
                 return
+            if self._has_whep_media(client['UUID']):
+                printwarn('Control peer timed out; retaining WHEP media and WebSocket controls')
+                return
             printwarn('Peer connection timed out; releasing it for reconnection')
             self.stop_pipeline(client['UUID'], expected_client=client)
 
@@ -8926,6 +9041,10 @@ class WebRTCClient:
                     client['timer'].start()
 
             elif state >= 4: # closed/failed
+                if self._has_whep_media(client['UUID']):
+                    self._cancel_peer_connect_timeout(client)
+                    printwarn('Control peer disconnected; retaining WHEP media')
+                    return
                 printc("\n🚫 Peer disconnected", "F77")
                 if self.view:
                     try:
@@ -8977,6 +9096,10 @@ class WebRTCClient:
 
             else:
                 printc("NO HEARTBEAT", "F44")
+                if self._has_whep_media(client['UUID']):
+                    client['timer'] = None
+                    printwarn('Control heartbeat stopped; retaining WHEP media')
+                    return
                 if self.view:
                     print("Viewer heartbeat timeout; restarting peer connection")
                     client['ping'] = 0
@@ -9010,13 +9133,8 @@ class WebRTCClient:
             # Don't print, already shown in connection message
             client['send_channel'] = channel
             if self.streamin:
-                if self.noaudio:
-                    msg = {"audio":False, "video":True, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
-                elif self.novideo:
-                    msg = {"audio":True, "video":False, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
-                else:
-                    msg = {"audio":True, "video":True, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
-                
+                msg = {"audio": not self.noaudio, "video": not self.novideo, "UUID": client["UUID"]}
+                msg.update(opt_out_fields(self.nowhep))
                 self.sendMessage(msg)
             elif self.midi:
                 msg = {"audio":False, "video":False, "allowmidi":True, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
@@ -9061,6 +9179,8 @@ class WebRTCClient:
                 return
             if handle_data_channel_heartbeat(channel, msg, client):
                 return
+            if any(key in msg for key in ('whepSettings', 'whepScreenSettings', 'screenShareState', 'info')):
+                asyncio.run_coroutine_threadsafe(self._handle_relay_control(client['UUID'], msg), self.event_loop)
             if 'candidates' in msg:
                 # Processing ICE candidates bundle
                 
@@ -9088,6 +9208,7 @@ class WebRTCClient:
                 self.handle_sdp_ice(msg, client["UUID"])
             elif 'bye' in msg: ## v19 of VDO.Ninja
                 printc("👋 Peer disconnected gracefully", "77F")
+                self._close_peer_media(client['UUID'])
                 if self.view:
                     self._set_display_mode("idle")
                     uuid = client.get("UUID")
@@ -10303,7 +10424,11 @@ class WebRTCClient:
             client['webrtc'].connect('pad-added', _on_pad_added)
             def _on_pad_removed(webrtc_element, pad):
                 if self._client_is_current(client):
-                    self.on_remote_pad_removed(webrtc_element, pad)
+                    switch = self._rtp_switches.get((UUID, 'primary'))
+                    if switch and pad in switch.inputs:
+                        switch.detach(pad)
+                    else:
+                        self.on_remote_pad_removed(webrtc_element, pad)
             client['webrtc'].connect('pad-removed', _on_pad_removed)
             client['webrtc'].connect('on-ice-candidate', send_ice_remote_candidate_message)
             client['webrtc'].connect('on-data-channel', on_data_channel)
@@ -10700,6 +10825,7 @@ class WebRTCClient:
                         if UUID in self.clients:
                             print("Resetting existing pipe and p2p connection.")
                             previous = self.clients[UUID]
+                            self._close_peer_media(UUID, forget=False)
                             # Retire callbacks BEFORE NULL emits state/data/pad signals.
                             # Otherwise old callbacks can race teardown of the new peer.
                             self.clients[UUID] = {
@@ -10747,6 +10873,8 @@ class WebRTCClient:
                             printwarn(f"Failed to set pipeline to NULL: {e}")
                         self.pipe = None
             await self.createPeer(UUID)
+        if UUID in getattr(self, '_relay_control', {}) and not (self.room_recording or self.single_stream_recording):
+            self._apply_relay_control(UUID, self._relay_control[UUID])
 
     def stop_pipeline(self, UUID, wait=False, expected_client=None):
         if wait:
@@ -10776,6 +10904,7 @@ class WebRTCClient:
             if expected_client is not None and client is not expected_client:
                 print(f"Client {UUID} was replaced; ignoring stale cleanup")
                 return
+            self._close_peer_media(UUID)
             should_restart = (
                 bool(self.view)
                 and not getattr(self, "_shutdown_requested", False)
@@ -11608,6 +11737,13 @@ class WebRTCClient:
             self._viewer_restart_enabled = False
             self._viewer_restart_pending = False
             self._cancel_viewer_restart_timer()
+            # Finish parent state transitions before removing relay/display bins.
+            # Otherwise a pending PLAYING transition can reactivate a splash bin
+            # between its NULL transition and removal during immediate shutdown.
+            if self.view and self.pipe:
+                self.pipe.set_state(Gst.State.NULL)
+            for uuid in set(key[0] for key in getattr(self, '_rtp_switches', {})) | set(key[0] for key in getattr(self, '_whep_receivers', {})):
+                self._close_peer_media(uuid)
 
             if getattr(self, "ice_processor_task", None):
                 task = self.ice_processor_task
@@ -11823,6 +11959,7 @@ class WebRTCClient:
                     if handled:
                         continue
                 
+                await self._handle_relay_control(UUID, msg)
                 if 'description' in msg:
                     # Description (SDP Offer/Answer) received from WebSocket
                     if 'vector' in msg:
@@ -11906,21 +12043,12 @@ class WebRTCClient:
                         if not self.single_stream_recording:  # Skip for subprocess recording
                             await self.start_pipeline(UUID)
                     elif msg['request'] == 'cleanup' or msg['request'] == 'bye':
+                        self._close_peer_media(UUID)
+                        if UUID in self.uuid_to_stream_id:
+                            await self._stop_recording_peer(UUID)
                         # Handle cleanup for recording
                         if (self.room_recording or self.room_ndi or self.room_monitor) and UUID in self.room_streams:
                             await self.cleanup_room_stream(UUID)
-                        elif self.single_stream_recording and UUID in self.uuid_to_stream_id:
-                            # Clean up single-stream recording subprocess
-                            stream_id = self.uuid_to_stream_id[UUID]
-                            printc(f"🧹 Cleaning up single-stream recording for {stream_id}", "F77")
-                            if stream_id in self.subprocess_managers:
-                                manager = self.subprocess_managers[stream_id]
-                                await manager.stop()
-                                del self.subprocess_managers[stream_id]
-                            if UUID in self.uuid_to_stream_id:
-                                del self.uuid_to_stream_id[UUID]
-                            if stream_id in self.stream_id_to_uuid:
-                                del self.stream_id_to_uuid[stream_id]
                     elif msg['request'] == "play":
                         # Play request received
                         if 'streamID' in msg:
@@ -12179,6 +12307,9 @@ class WebRTCClient:
             'ndi_name': f"{self.room_name}_{stream_id}" if self.room_ndi else None,  # NDI stream name
             'password': self.password,  # Pass password for decryption
             'salt': self.salt,  # Pass salt for decryption
+            'nowhep': self.nowhep,
+            'record_video': not self.novideo,
+            'buffer': self.buffer,
         }
         printc(f"[{stream_id}] DEBUG: Creating subprocess with record_audio={True if not self.noaudio else False} (noaudio={self.noaudio})", "77F")
         if self.password:
@@ -12191,9 +12322,12 @@ class WebRTCClient:
         manager.on_message('ice', lambda msg: asyncio.create_task(self.send_subprocess_ice(stream_id, msg)))
         manager.on_message('connection_state', lambda msg: printc(f"[{stream_id}] State: {msg.get('state', 'N/A')}", "77F"))
         manager.on_message('ice_state', lambda msg: printc(f"[{stream_id}] ICE: {msg.get('state', 'N/A')}", "77F"))
+        manager.on_message('peer_left', lambda msg: asyncio.create_task(self._stop_recording_peer(uuid, manager)))
         
         if await manager.start():
             self.subprocess_managers[stream_id] = manager
+            if uuid in self._relay_control:
+                await manager.send_message({'type': 'relay', 'control': self._relay_control[uuid]})
             if request_play:
                 # Ask the server for an offer when this recorder was created from
                 # a room listing rather than from an offer already in hand.
@@ -13653,6 +13787,9 @@ async def main():
     parser.add_argument('--pipeline', type=str, help='A full custom pipeline')
     parser.add_argument('--record',  type=str, help='Specify a stream ID to record to disk. System will not publish a stream when enabled.')
     parser.add_argument('--view',  type=str, help='Specify a stream ID to play out to the local display/audio.')
+    parser.add_argument('--nowhep', '--nomeshcast', action='store_true', help='Request P2P media instead of following advertised WHEP relays.')
+    parser.add_argument('--whep', '--whepplay', type=str, help='Receive directly from a WHEP URL, without VDO.Ninja signaling. Defaults to local playback; combine with --record NAME for recording.')
+    parser.add_argument('--whep-token', type=str, default='', help='Bearer token for a direct --whep endpoint.')
     parser.add_argument('--no-auto-retry', action='store_true', help='Viewer mode: disable automatic reconnect attempts when the remote peer disconnects.')
     parser.add_argument('--viewer-retry-initial', type=float, default=15.0, help='Viewer mode: seconds to wait before the first automatic reconnect attempt after a disconnect (default 15s).')
     parser.add_argument('--peer-connect-timeout', type=float, default=60.0, help='Seconds allowed for a peer to connect before releasing it for reconnection (default 60s; 0 disables).')
@@ -13732,6 +13869,12 @@ async def main():
         print(f"Loaded configuration from: {config_path}")
 
     try:
+        if args.whep:
+            normalize_settings({'url': args.whep, 'token': args.whep_token})
+            if args.nowhep or args.whip or args.record_room or args.room_ndi or args.room_monitor:
+                raise ValueError('--whep cannot be combined with --nowhep, --whip or room modes')
+            if not any((args.view, args.record, args.ndiout, args.fdsink, args.socketout, args.framebuffer)):
+                args.view = 'whep'
         validate_receiver_output_args(args)
         if not math.isfinite(args.capture_timeout) or args.capture_timeout < 0:
             raise ValueError('--capture-timeout must be a finite nonnegative number')
@@ -15007,7 +15150,9 @@ async def main():
     bold_color = hex_to_ansi("FAF")
 
     if args.streamin:
-        if args.record_room:
+        if args.whep:
+            printc("\nReceiving directly from a WHEP endpoint (URL and token hidden)", "0FF")
+        elif args.record_room:
             printc(f"\n-> Recording all streams from room: {bold_color}{args.room}", "7FF")
             if args.stream_filter:
                 printc(f"   Filter: {', '.join(args.stream_filter)}", "77F")
@@ -15199,6 +15344,17 @@ async def main():
     
     while not c._shutdown_requested:
         try:
+            if args.whep:
+                control = {'whepSettings': {'type': 'whep', 'url': args.whep, 'token': args.whep_token}}
+                if c.single_stream_recording:
+                    await c.create_subprocess_recorder(c.record, 'direct-whep', request_play=False)
+                    if c.record not in c.subprocess_managers:
+                        raise RuntimeError('Unable to start WHEP recorder')
+                    await c.subprocess_managers[c.record].send_message({'type': 'relay', 'control': control})
+                else:
+                    c._apply_relay_control('direct-whep', control)
+                await shutdown_event.wait()
+                break
             await c.connect()
             res = await c.loop()
         except KeyboardInterrupt:
