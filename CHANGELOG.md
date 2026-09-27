@@ -1,5 +1,46 @@
 # Changelog
 
+# Release 25.0.0
+
+**Release Date:** 2026-09-27
+
+## 🚀 Major Release
+
+This release includes breaking changes or significant new features.
+
+### Core Changes (publish.py)
+
+The main streaming script has been updated. This includes significant changes that may affect compatibility.
+
+### Commits
+
+- Publish WHIP with Python signaling and discover current TURN servers (928bef1)
+- chore(docs): update TOC (1b61490)
+- Match VDO.Ninja screen lifecycle and relay media requests (8e86ba1)
+- Receive advertised WHEP streams with Python signaling (a75bf43)
+- ci: Pin legacy Bullseye CI to its final LTS package snapshot (79793ca)
+- Here's a thinking process: (6b776ca)
+- Harden capture recovery, forced TURN, and peer lifecycle cleanup (1a06e26)
+- Fix Pi viewer decoding, legacy RTX negotiation, and debug reconnect crashes (73c2cc9)
+- Fix media pipelines, recording lifecycle, signaling, and service installation (b295ec7)
+- . (402ef35)
+
+### Installation
+
+For installation instructions, please refer to the platform-specific guides:
+- [Raspberry Pi](./raspberry_pi/README.md)
+- [NVIDIA Jetson](./nvidia_jetson/README.md)
+- [Orange Pi](./orangepi/README.md)
+- [Ubuntu](./ubuntu/README.md)
+
+### ⚠️ Upgrade Notes
+
+This is a major version upgrade. Please review the changes carefully before updating.
+It's recommended to backup your configuration before upgrading.
+
+
+---
+
 # Release 24.0.0
 
 **Release Date:** 2026-09-04
