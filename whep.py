@@ -20,6 +20,15 @@ def opt_out_fields(disabled):
                           "allowscreenwhipout"), False)
 
 
+def media_request_fields(audio, video, disabled):
+    # MediaMTX/WHIP publishers interpret a partial A/V request as a request for
+    # P2P. Keep relay discovery enabled and apply output filters locally. An
+    # explicit --nowhep retains selective P2P requests and their bandwidth savings.
+    if not disabled and (audio or video):
+        audio = video = True
+    return dict(audio=bool(audio), video=bool(video), **opt_out_fields(disabled))
+
+
 def validate_url(url):
     if not isinstance(url, str) or any(ord(c) < 32 for c in url):
         raise ValueError("WHEP requires an HTTP(S) URL")
@@ -54,6 +63,47 @@ def advertisements(message):
         if key in message:
             result.append(normalize_settings(message[key], media))
     return result
+
+
+def has_started(settings):
+    """Match VDO.Ninja's whepSettingsHasStarted, including string markers."""
+    value = settings.get('started')
+    if isinstance(value, str):
+        return value.strip().lower() not in ('', '0', 'false')
+    if isinstance(value, (int, float)):
+        return value > 0
+    return False
+
+
+class RelayControlState:
+    """Remember an advertised screen endpoint until the publisher starts it."""
+
+    def __init__(self):
+        self.screen = None
+        self.screen_active = False
+
+    def update(self, message):
+        settings = advertisements(message)
+        info = message.get('info') if isinstance(message.get('info'), dict) else {}
+        screen_state = message.get('screenShareState', info.get('screenShareState'))
+        if 'screenStopped' in message:
+            screen_state = not bool(message['screenStopped'])
+        ready = [item for item in settings if item['media'] == 'primary']
+        screen_changed = False
+        for item in settings:
+            if item['media'] == 'screen':
+                self.screen = item
+                screen_changed = True
+                if has_started(item):
+                    self.screen_active = True
+        if screen_state is False:
+            self.screen = None
+            self.screen_active = False
+        elif screen_state is True:
+            self.screen_active = True
+        if self.screen and self.screen_active and (screen_changed or screen_state is True):
+            ready.append(self.screen)
+        return ready, screen_state is False
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -184,7 +234,7 @@ class WhepHttpSession:
             location, fragment = self.location, self.candidates
             self.candidates = None
         status, _, _, _ = self._request('PATCH', location, fragment.encode('utf-8'))
-        if status in (405, 415, 422, 501):
+        if status in (405, 412, 415, 422, 428, 501):
             raise TrickleUnsupported('Relay rejected WHEP trickle ICE; using a complete offer')
         if status != 204:
             raise RuntimeError('WHEP PATCH returned HTTP %s' % status)

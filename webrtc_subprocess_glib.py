@@ -13,7 +13,7 @@ import threading
 import os
 import hashlib
 from typing import Optional, Dict, Any
-from whep import WhepReceiver, RtpSourceSwitch, advertisements, opt_out_fields
+from whep import WhepReceiver, RtpSourceSwitch, RelayControlState, media_request_fields
 
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GObject, GLib
@@ -103,6 +103,7 @@ class GLibWebRTCHandler:
         self.whep_receiver = None
         self.rtp_switch = None
         self.screen_handler = None
+        self.relay_state = RelayControlState()
         self.room_ndi = config.get('room_ndi', False)
         self.ndi_name = config.get('ndi_name')
         self.ndi_direct = config.get('ndi_direct', False)  # Direct NDI mode flag
@@ -613,7 +614,8 @@ class GLibWebRTCHandler:
         if self.nowhep or not self.running:
             return False
         try:
-            for settings in advertisements(msg):
+            settings_list, stop_screen = self.relay_state.update(msg)
+            for settings in settings_list:
                 owner = self
                 if settings['media'] == 'screen':
                     if self.screen_handler is None:
@@ -632,8 +634,7 @@ class GLibWebRTCHandler:
                                                         owner.log, video_codecs=('H264',) if owner.use_hls else ('H264', 'VP8'),
                                                         latency=owner.config.get('buffer', 200))
                 owner.whep_receiver.update(settings)
-            info = msg.get('info') if isinstance(msg.get('info'), dict) else {}
-            if msg.get('screenShareState', info.get('screenShareState')) is False:
+            if stop_screen:
                 if self.screen_handler and self.screen_handler.whep_receiver:
                     self.screen_handler.whep_receiver.close()
         except (ValueError, RuntimeError) as exc:
@@ -680,7 +681,7 @@ class GLibWebRTCHandler:
                 "allowresources": False
             }
             
-            request.update(opt_out_fields(self.nowhep))
+            request.update(media_request_fields(self.record_audio, self.record_video, self.nowhep))
             request_json = json.dumps(request)
             data_channel.send_string(request_json)
             self.log(f"Media request sent: {request_json}")
@@ -736,7 +737,7 @@ class GLibWebRTCHandler:
             if 'ping' in data:
                 channel.send_string(json.dumps({'pong': data['ping']}))
                 return
-            if any(key in data for key in ('whepSettings', 'whepScreenSettings', 'screenShareState', 'info')):
+            if any(key in data for key in ('whepSettings', 'whepScreenSettings', 'screenShareState', 'screenStopped', 'info')):
                 GLib.idle_add(self.handle_relay_control, data)
             if 'bye' in data:
                 if self.whep_receiver:

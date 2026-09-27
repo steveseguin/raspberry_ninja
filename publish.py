@@ -28,7 +28,7 @@ from functools import lru_cache
 from config_loader import apply_config_overrides, load_config_file
 from audio_devices import resolve_alsa_device
 from signaling_utils import handshake_server_requires_puuid
-from whep import WhepReceiver, RtpSourceSwitch, advertisements, opt_out_fields, normalize_settings
+from whep import WhepReceiver, RtpSourceSwitch, RelayControlState, media_request_fields, normalize_settings
 from v4l2_devices import resolve_v4l2_input_device, resolve_v4l2_output_device
 try:
     import hashlib
@@ -3401,6 +3401,7 @@ class WebRTCClient:
         self._whep_receivers = {}
         self._rtp_switches = {}
         self._relay_control = {}
+        self._relay_states = {}
         self.ndiout = params.ndiout
         self.fdsink = params.fdsink
         self.v4l2sink = params.v4l2sink
@@ -7654,7 +7655,8 @@ class WebRTCClient:
         if self.nowhep or self._shutdown_requested:
             return False
         try:
-            settings_list = advertisements(msg)
+            state = self._relay_states.setdefault(UUID, RelayControlState())
+            settings_list, stop_screen = state.update(msg)
             if settings_list:
                 self._ensure_main_pipeline(log=False)
             for settings in settings_list:
@@ -7671,8 +7673,7 @@ class WebRTCClient:
                         self.pipe, self._get_rtp_switch(*key), self.setup_ice_servers,
                         printwarn, video_codecs=codecs, latency=self.buffer)
                 self._whep_receivers[key].update(settings)
-            info = msg.get('info') if isinstance(msg.get('info'), dict) else {}
-            if msg.get('screenShareState', info.get('screenShareState')) is False:
+            if stop_screen:
                 receiver = self._whep_receivers.pop((UUID, 'screen'), None)
                 if receiver:
                     receiver.close()
@@ -7688,13 +7689,23 @@ class WebRTCClient:
             return
         control = {key: msg[key] for key in ('whepSettings', 'whepScreenSettings', 'screenShareState') if key in msg}
         info = msg.get('info')
-        if isinstance(info, dict) and 'screenShareState' in info:
+        if isinstance(info, dict) and 'screenShareState' in info and 'screenShareState' not in control:
             control['screenShareState'] = info['screenShareState']
+        if 'screenStopped' in msg:
+            control['screenShareState'] = not bool(msg['screenStopped'])
         if not control:
             return
+        # Canonicalize the alternate screen envelope before caching early WSS
+        # metadata; primary and screen advertisements must not overwrite each other.
+        if isinstance(control.get('whepSettings'), dict) and control['whepSettings'].get('media') == 'screen':
+            control['whepScreenSettings'] = control.pop('whepSettings')
         self._relay_control.setdefault(UUID, {}).update(control)
-        if 'screenShareState' not in control and ('whepScreenSettings' in control or
-                isinstance(control.get('whepSettings'), dict) and control['whepSettings'].get('media') == 'screen'):
+        if control.get('screenShareState') is False:
+            self._relay_control[UUID].pop('whepScreenSettings', None)
+        elif ('screenShareState' not in control and 'whepScreenSettings' in control
+                and self._relay_control[UUID].get('screenShareState') is False):
+            # A stop predating this endpoint must not erase the new pending
+            # advertisement when a recorder later replays the cached packet.
             self._relay_control[UUID].pop('screenShareState', None)
         if self.room_recording or self.single_stream_recording:
             stream_id = self.uuid_to_stream_id.get(UUID)
@@ -7713,6 +7724,7 @@ class WebRTCClient:
                 self._rtp_switches.pop(key).close(self.on_remote_pad_removed)
         if forget:
             getattr(self, '_relay_control', {}).pop(UUID, None)
+            getattr(self, '_relay_states', {}).pop(UUID, None)
 
     def _has_whep_media(self, UUID):
         return any(receiver.stage != 'stopped' for key, receiver in
@@ -9133,8 +9145,7 @@ class WebRTCClient:
             # Don't print, already shown in connection message
             client['send_channel'] = channel
             if self.streamin:
-                msg = {"audio": not self.noaudio, "video": not self.novideo, "UUID": client["UUID"]}
-                msg.update(opt_out_fields(self.nowhep))
+                msg = dict(UUID=client["UUID"], **media_request_fields(not self.noaudio, not self.novideo, self.nowhep))
                 self.sendMessage(msg)
             elif self.midi:
                 msg = {"audio":False, "video":False, "allowmidi":True, "UUID": client["UUID"]} ## You must edit the SDP instead if you want to force a particular codec
@@ -9179,7 +9190,7 @@ class WebRTCClient:
                 return
             if handle_data_channel_heartbeat(channel, msg, client):
                 return
-            if any(key in msg for key in ('whepSettings', 'whepScreenSettings', 'screenShareState', 'info')):
+            if any(key in msg for key in ('whepSettings', 'whepScreenSettings', 'screenShareState', 'screenStopped', 'info')):
                 asyncio.run_coroutine_threadsafe(self._handle_relay_control(client['UUID'], msg), self.event_loop)
             if 'candidates' in msg:
                 # Processing ICE candidates bundle
