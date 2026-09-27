@@ -691,6 +691,9 @@ the relay advertises support. This reduces legacy connection startup failures
 and excludes the unused ICE component for separate RTCP.
 Relays without PATCH support, or which reject its HTTP preconditions, receive a
 complete offer on retry; newer GStreamer uses complete offers directly.
+Full-offer startup can still stall on the tested GStreamer 1.18.4/libnice 0.1.16
+stack. See [legacy WHIP/WHEP troubleshooting](docs/troubleshooting.md#whip-or-whep-stalls-on-gstreamer-118)
+for the tested workarounds and diagnostic details.
 HTTP session resources are deleted on replacement
 or shutdown. Ordinary P2P publishers continue to work without relay settings.
 
@@ -739,14 +742,17 @@ When the installed GStreamer exposes RTCP reception notifications, 30 seconds
 without feedback triggers reconnection even if its connection state is stale.
 
 `--whip-trickle auto` is the default: GStreamer older than 1.20 sends candidates
-by PATCH after applying the answer, avoiding a legacy ICE/DTLS startup race.
+by PATCH after applying the answer, reducing legacy ICE/DTLS startup failures.
 If the endpoint does not advertise PATCH support or rejects its preconditions,
 the publisher retries with a complete offer. Newer GStreamer uses a complete
 offer directly. `--whip-trickle on` tries PATCH on any version; `off` always uses
 a complete offer. These options and `--whip-http-timeout` apply to the Python
 backend. GStreamer 1.18 can repeatedly stall with some servers lacking PATCH
 support. Use a PATCH-capable endpoint or a newer GStreamer stack for reliable
-startup in that case; the publisher reports the limitation and retries.
+startup in that case; the publisher reports the limitation and retries. Timeout
+messages include the installed GStreamer version, ICE/peer/signaling states,
+and whether PATCH or a complete offer was used. See
+[legacy WHIP/WHEP troubleshooting](docs/troubleshooting.md#whip-or-whep-stalls-on-gstreamer-118).
 
 For VDO.Ninja's direct browser WHIP receiver, first open
 `https://vdo.ninja/?whip=YOUR_UNIQUE_ID`, then publish:

@@ -290,6 +290,25 @@ class WhepHttpSession:
                 pass  # Best effort; never retain a session after local shutdown.
 
 
+def negotiation_timeout(peer, gst, trickle):
+    """Describe stalled negotiation without SDP, addresses or credentials."""
+    states = []
+    for label, name in (('ICE', 'ice-connection-state'), ('peer', 'connection-state'),
+                        ('signaling', 'signaling-state')):
+        try:
+            state = peer.get_property(name).value_nick
+        except (AttributeError, TypeError):
+            state = 'unknown'
+        states.append('%s=%s' % (label, state))
+    mode = 'PATCH' if trickle else 'complete offer'
+    reason = 'Negotiation/connection timed out (%s; %s; %s)' % (
+        gst.version_string(), ', '.join(states), mode)
+    if gst.version()[:2] < (1, 20) and not trickle:
+        reason += ('; legacy ICE/DTLS can stall without PATCH; use a PATCH-capable endpoint '
+                   'or a newer GStreamer/libnice stack (see docs/troubleshooting.md)')
+    return reason
+
+
 def _gst():
     import gi
     gi.require_version("Gst", "1.0")
@@ -681,7 +700,7 @@ class WhepReceiver:
                 elif state in (self.WebRTC.WebRTCPeerConnectionState.FAILED, self.WebRTC.WebRTCPeerConnectionState.CLOSED):
                     self._fail("Relay WebRTC connection failed")
                 elif now >= self.deadline:
-                    self._fail("Relay negotiation/connection timed out")
+                    self._fail(negotiation_timeout(self.peer, self.Gst, self.trickle))
         except Exception as exc:
             self._fail(str(exc))
         return True

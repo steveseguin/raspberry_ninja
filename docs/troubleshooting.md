@@ -76,6 +76,49 @@ Look for all of these milestones:
 
 Test with `--test --noaudio` to separate signaling/encoding from the physical camera. If the test source works, return to the camera and inspect its modes.
 
+## WHIP or WHEP stalls on GStreamer 1.18
+
+Complete-offer negotiation remains unreliable on the tested Pi 3 with Raspberry
+Pi OS Bullseye, GStreamer 1.18.4 and libnice 0.1.16. This includes endpoints that
+do not support candidate PATCH requests. A successful SDP POST, or ICE reaching
+`connected`/`completed`, does not guarantee that DTLS and media have started.
+Some attempts also remain at an earlier ICE state. Automatic retries continue,
+but they are not a guaranteed recovery from this legacy startup problem.
+
+Keep `--whip-trickle auto` on that stack. It sends candidates by PATCH only
+after applying the answer; WHEP uses the same version-dependent strategy
+automatically. Use an endpoint that advertises and accepts conditional
+`application/trickle-ice-sdpfrag` PATCH requests. If it does not, Raspberry Ninja
+cleans up and retries with a complete offer. `--whip-trickle on` cannot force an
+endpoint to support PATCH, and `off` disables the legacy workaround.
+
+For an endpoint without PATCH, use a newer distribution-supported GStreamer
+and libnice stack. Complete offers were tested successfully on GStreamer
+1.24.2; this is not a claim that every intermediate version or board has been
+verified. Neither Python HTTP backend requires Rust or `gst-plugins-rs`.
+For an advertised WHEP stream, `--nowhep` requests P2P only if the publisher
+can supply it. The separate 1.18 data-only-to-P2P native crash described in the
+README makes that an unsuitable universal workaround.
+
+Timeout messages now include GStreamer version, ICE, peer and signaling states,
+and the candidate mode. Save that message and these version checks:
+
+```bash
+gst-launch-1.0 --version
+gst-inspect-1.0 nice
+gst-inspect-1.0 webrtcbin
+```
+
+These states help distinguish negotiation stages; they do not by themselves
+prove the cause. Increasing `--whip-http-timeout` cannot repair a transport
+stall after the HTTP answer has already arrived. Native debug logs can contain
+SDP, candidate addresses and credentials; redact them before sharing.
+
+Repeated Pi tests still reproduced the failure without verbose logging.
+Verbose logging sometimes changed the outcome, so a single successful debug
+run should not be treated as a fix. The QA repository contains an opt-in
+full-offer reproducer and delayed-answer tests for both candidate modes.
+
 ## Signaling TLS or certificate errors
 
 Secure `wss://` signaling verifies the server certificate and hostname by default. Fix an expired certificate, missing CA bundle, incorrect device clock, or wrong hostname instead of disabling verification.

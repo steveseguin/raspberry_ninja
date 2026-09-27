@@ -2,7 +2,8 @@
 
 Capture/encoding pipelines come from publish.py unchanged. HTTP runs off the
 GLib context; promises copy their SDP before dispatching back to that context.
-Complete ICE offers work with endpoints that do not implement optional PATCH.
+Complete ICE offers support endpoints without optional PATCH; see the legacy
+GStreamer limitations in docs/troubleshooting.md.
 """
 
 import re
@@ -12,7 +13,7 @@ import time
 import uuid
 
 from whep import (HttpStatusError, WhepHttpSession, TrickleUnsupported, _gst,
-                  mux_candidates, numeric_mids, deferred_candidates)
+                  mux_candidates, numeric_mids, deferred_candidates, negotiation_timeout)
 
 
 def prepare_offer(text, stream_id):
@@ -270,10 +271,7 @@ class WhipPublisher:
                 elif state in (self.WebRTC.WebRTCPeerConnectionState.FAILED, self.WebRTC.WebRTCPeerConnectionState.CLOSED):
                     self._retry('WebRTC connection failed')
                 elif now >= self.deadline:
-                    reason = 'WHIP negotiation/connection timed out'
-                    if self.Gst.version()[:2] < (1, 20) and not self.trickle:
-                        reason += '; GStreamer <1.20 can stall without PATCH; try a newer GStreamer'
-                    self._retry(reason)
+                    self._retry(negotiation_timeout(self.peer, self.Gst, self.trickle))
         except Exception as exc:
             self._fatal(str(exc))
         return not self.failed and not self.closed
