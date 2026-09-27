@@ -14,6 +14,7 @@ import os
 import hashlib
 from typing import Optional, Dict, Any
 from whep import WhepReceiver, RtpSourceSwitch, RelayControlState, media_request_fields
+from whep import _gst as prepare_gstreamer_types
 
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GObject, GLib
@@ -34,6 +35,7 @@ except ImportError:
 
 # Initialize GStreamer
 Gst.init(None)
+prepare_gstreamer_types()
 
 
 def filename_for_container(filename, extension):

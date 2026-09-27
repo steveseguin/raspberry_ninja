@@ -47,6 +47,7 @@ It also has the ability to record remote VDO.Ninja streams to disk (no transcode
   - [SRT support](#srt-support)
   - [WHEP playback / Meshcast reception](#whep-playback--meshcast-reception)
   - [WHIP publishing](#whip-publishing)
+  - [STUN and TURN servers](#stun-and-turn-servers)
   - [Custom Gstreamer audio/video source pipeline](#custom-gstreamer-audiovideo-source-pipeline)
   - [NDI support](#ndi-support)
     - [Single Stream to NDI](#single-stream-to-ndi)
@@ -637,8 +638,8 @@ VDO.Ninja connection remains available for discovery and controls; relay audio
 and video arrive through a separate WebRTC connection.
 
 WHEP reception uses Python HTTP signaling and the existing GStreamer `webrtcbin`.
-It does **not** require `whepsrc`, Rust, or `gst-plugins-rs`. The older `--whip`
-publishing option described below still uses `whipsink` and is separate.
+It does **not** require `whepsrc`, Rust, or `gst-plugins-rs`. WHIP publishing
+also uses Python signaling by default, as described below.
 
 ```bash
 # Follow the publisher's advertised relay automatically
@@ -701,43 +702,90 @@ multiple attempts on the tested 1.18.4 stack; the receiver retries automatically
 
 ### WHIP publishing
 
-I added WHIP/WHEP dependencies to the Raspberry Pi x64 pre-built image already (av1-whip support excluded), but for other users you may need to ensure you have the `gst-plugins-rs` installed to get WHIP out working. This may also mean you'll need Gstreamer 1.22 installed. If you want to use AV1, you'll also need to ensure you have an AV1 encoder available within Gstreamer; there's a few good options there.
+`--whip URL` publishes directly to a WHIP endpoint using Python HTTP signaling
+and GStreamer's ordinary `webrtcbin`. The default backend needs no Rust,
+`whipsink`, or `gst-plugins-rs`. It reuses Raspberry Ninja's existing source,
+encoder, bitrate, and audio settings. Ordinary WebRTC plugins (`webrtcbin`,
+libnice, DTLS/SRTP, RTP) and the selected codec plugins are still required.
 
-The WHIP output support within Raspberry Ninja is added by means of the Gstreamer's [whipsink](https://gstreamer.freedesktop.org/documentation/webrtchttp/whipsink.html?gi-language=python)
-[whepsrc](https://gstreamer.freedesktop.org/documentation/webrtchttp/whepsrc.html?gi-language=python) Rust-based plugins.
+```bash
+# Portable H.264/Opus test source
+python3 publish.py --whip "https://relay.example/stream/whip" --test --x264
 
-To use, you can just do:
+# Authenticated endpoint; omit --test to use your configured capture devices
+python3 publish.py --whip "https://relay.example/stream/whip" --whip-token TOKEN --test --x264
+
+# Keep using the optional installed Rust plugin
+python3 publish.py --whip "https://relay.example/stream/whip" --whip-backend whipsink --test
 ```
-python3 publish.py --whip "https://yourwhipurl.com/here" --test
+
+Use `--noaudio` or `--novideo` for a single track, `--bitrate` and
+`--audiobitrate` for encoding rates, and the existing codec/source options such
+as `--x264`, `--vp8`, `--video-pipeline`, and `--audio-pipeline`. The endpoint must
+accept the chosen codecs. AV1 and other codecs can require additional plugins
+on older GStreamer versions, independently of the WHIP signaling backend.
+WHIP sends the selected source directly; it does not join a VDO.Ninja room or
+advertise a WHEP URL under a stream ID. Use a separate receiver process to play
+or record the server's WHEP endpoint.
+
+The Python backend supports bearer authentication, POST-preserving redirects,
+automatic retries for network/server failures (including HTTP `Retry-After`),
+and DELETE cleanup on reconnect, Ctrl+C, and SIGTERM. Authentication and other
+non-transient HTTP 4xx errors stop with a diagnostic. Endpoint URLs, response
+bodies, and bearer tokens are omitted from its HTTP diagnostics. A stop during
+POST waits for the bounded HTTP operation so a late session can be deleted.
+`--whip-http-timeout SECONDS` sets the per-request timeout (default 15).
+When the installed GStreamer exposes RTCP reception notifications, 30 seconds
+without feedback triggers reconnection even if its connection state is stale.
+
+`--whip-trickle auto` is the default: GStreamer older than 1.20 sends candidates
+by PATCH after applying the answer, avoiding a legacy ICE/DTLS startup race.
+If the endpoint does not advertise PATCH support or rejects its preconditions,
+the publisher retries with a complete offer. Newer GStreamer uses a complete
+offer directly. `--whip-trickle on` tries PATCH on any version; `off` always uses
+a complete offer. These options and `--whip-http-timeout` apply to the Python
+backend. GStreamer 1.18 can repeatedly stall with some servers lacking PATCH
+support. Use a PATCH-capable endpoint or a newer GStreamer stack for reliable
+startup in that case; the publisher reports the limitation and retries.
+
+For VDO.Ninja's direct browser WHIP receiver, first open
+`https://vdo.ninja/?whip=YOUR_UNIQUE_ID`, then publish:
+
+```bash
+python3 publish.py --whip "https://whip.vdo.ninja/YOUR_UNIQUE_ID" --test --x264
 ```
-The gst-launch-1.0 command line that's printed to screen can be run on its own after, without Raspberry Ninja in cases, as Raspberry Ninja doesn't need to make use of Websockets or other logic when dealing with WHIP.
 
-You can test this out live using VDO.Ninja still, as VDO.Ninja supports WHIP playback without needing your own SFU or server. Just open [https://vdo.ninja/alpha/?whip=XXXXXX123](https://vdo.ninja/alpha/?whip=XXXXXX123) in your browser FIRST, and then run the following command line:
+The browser must be open before publishing. This direct receiver is separate
+from an SFU's WHEP playback endpoint. The [VDO.Ninja WHIP page](https://vdo.ninja/whip)
+provides browser publishing and playback options.
 
+### STUN and TURN servers
+
+Automatic TURN configuration uses `https://turnservers.vdo.ninja/`, matching
+VDO.Ninja's current discovery endpoint. Results are cached in memory for one
+hour, with up to two UDP servers and one TCP/TLS server. Discovery has a two-second
+HTTP timeout; failure uses the current public VDO.Ninja fallback and retries
+discovery after a minute. Credentials are not written to disk or printed.
+
+WHIP and the existing recording modes use automatic TURN by default. Other
+modes can opt in with `--turn-server auto`. An explicit TURN URL bypasses
+discovery; `--turn-server false` disables it. A WebRTC element supporting only
+one TURN server uses the first result and reports that limitation.
+
+```bash
+# Discover current TURN servers and require relay candidates
+python3 publish.py --whip "https://relay.example/stream/whip" --test --x264 --turn-server auto --ice-transport-policy relay
+
+# Use your own TURN server (percent-encode special characters in credentials)
+python3 publish.py --view STREAM_ID --turn-server "turns://USER:PASSWORD@turn.example:443"
+
+# Local-network endpoint with no STUN or TURN
+python3 publish.py --whip "http://relay.local:8889/stream/whip" --test --x264 --stun-server false --turn-server false
 ```
-python3 publish.py --whip "https://whip.vdo.ninja/XXXXXX123" --test
-```
-You should see your video play on the VDO.Ninja website within a few seconds after you start publishing, and there should be audio included. 
 
-
-Please note that you don't need Raspberry Ninja to use WHIP, but Raspberry Ninja will handle all the Gstreamer pipelining, audio/video device detection, and I am open to feature requests.
-
-As noted above, you can just re-use the gstreamer pipelines outputted by Raspberry Ninja when using WHIP output, but below I offer you a few test pipelines you can try from the command line to get you started there without Raspberry Ninja:
-```
-# To view the stream, FIRSTLY, open this link:
-https://vdo.ninja/alpha/?whip=XXXXXX123
-
-# to publish h264 to that viewer, use the following
-gst-launch-1.0 videotestsrc ! videoconvert ! x264enc ! rtph264pay ! whipsink whip-endpoint="https://whip.vdo.ninja/XXXXXX123"
-
-# or to publish av1 to that viewer, use the following:
-gst-launch-1.0 videotestsrc ! av1enc usage-profile=realtime ! av1parse ! rtpav1pay ! whipsink whip-endpoint="http://whip.vdo.ninja/XXXXXX123"
-```
-In this case, we're publishing direct to the browser, so it needs to be opened first, as we're using VDO.Ninja to do the WHIP playback without WHEP.
-
-You can find many more WHIP/WHEP options within VDO.Ninja, and a great place to start playing is at [https://vdo.ninja/alpha/whip](https://vdo.ninja/alpha/whip). This page offers a web-based WHIP/WHEP player/publisher, as well as support for SVC, insertable streams, and all the advantages of VDO.Ninja in a simple to use web interface.
-
-As for Meshcast support, Meshcast is getting WHIP-ingest support; the availability of this update is just peng some more testing and deployment.
+`--ice-transport-policy relay` fails if TURN is explicitly disabled; it never
+silently permits direct candidates. `--stun-server URL` selects a STUN server,
+and `--stun-server false` disables STUN without disabling TURN.
 
 ### Custom Gstreamer audio/video source pipeline
 

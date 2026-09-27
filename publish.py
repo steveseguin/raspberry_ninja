@@ -28,7 +28,9 @@ from functools import lru_cache
 from config_loader import apply_config_overrides, load_config_file
 from audio_devices import resolve_alsa_device
 from signaling_utils import handshake_server_requires_puuid
-from whep import WhepReceiver, RtpSourceSwitch, RelayControlState, media_request_fields, normalize_settings
+from turn_servers import get_default_turn_servers
+from whep import WhepReceiver, RtpSourceSwitch, RelayControlState, media_request_fields, normalize_settings, WhepHttpSession
+from whep import _gst as prepare_gstreamer_types
 from v4l2_devices import resolve_v4l2_input_device, resolve_v4l2_output_device
 try:
     import hashlib
@@ -3894,16 +3896,17 @@ class WebRTCClient:
                 raise
             printwarn('ICE transport policy property unavailable; retaining default all-candidate policy.')
         turn_url = getattr(self, 'turn_server', None)
+        turn_urls = []
         if turn_url and str(turn_url).strip().lower() in ('0', 'false', 'off', 'none', 'null'):
             turn_url = None
-        elif not turn_url and getattr(self, 'auto_turn', False):
-            default = self._get_default_turn_server()
-            if default:
-                turn_url = normalize_turn_server_url(default['url'], default['user'], default['pass'])
+        elif turn_url == 'auto' or (not turn_url and getattr(self, 'auto_turn', False)):
+            turn_urls = [normalize_turn_server_url(server['url'], server['user'], server['pass'])
+                         for server in get_default_turn_servers(printwarn)]
+            turn_url = None
         if turn_url:
-            turn_url = normalize_turn_server_url(turn_url,
-                getattr(self, 'turn_user', None), getattr(self, 'turn_pass', None))
-        if policy == 'relay' and not turn_url:
+            turn_urls = [normalize_turn_server_url(turn_url,
+                getattr(self, 'turn_user', None), getattr(self, 'turn_pass', None))]
+        if policy == 'relay' and not turn_urls:
             raise ValueError('Relay-only ICE requires a TURN server; set --turn-server.')
         try:
             if getattr(self, 'no_stun', False):
@@ -3911,12 +3914,19 @@ class WebRTCClient:
             else:
                 webrtc.set_property('stun-server', getattr(self, 'stun_server', None)
                                     or 'stun://stun.l.google.com:19302')
-            if turn_url:
+            if turn_urls:
                 # The property and add-turn-server both register a server. Use
                 # the property once and check that GStreamer accepted the URL.
-                webrtc.set_property('turn-server', turn_url)
-                if webrtc.get_property('turn-server') != turn_url:
+                webrtc.set_property('turn-server', turn_urls[0])
+                if webrtc.get_property('turn-server') != turn_urls[0]:
                     raise ValueError('TURN URL was rejected')
+                if len(turn_urls) > 1:
+                    if GObject.signal_lookup('add-turn-server', webrtc.__gtype__):
+                        for extra in turn_urls[1:]:
+                            if not webrtc.emit('add-turn-server', extra):
+                                printwarn('An additional TURN server was rejected; retaining accepted servers.')
+                    else:
+                        printwarn('This WebRTC element supports one TURN server; using the first result.')
                 printc('TURN server configured (credentials hidden)', '77F')
         except Exception:
             # Native error strings can contain the supplied credential-bearing URL.
@@ -3924,40 +3934,9 @@ class WebRTCClient:
         printc(f'ICE transport policy: {policy}', '0FF')
 
     def _get_default_turn_server(self):
-        """Get default VDO.Ninja TURN server based on location/preference"""
-        # VDO.Ninja's public TURN servers from the backup list
-        turn_servers = [
-            # North America
-            {
-                'url': 'turn:turn-cae1.vdo.ninja:3478',
-                'user': 'steve',
-                'pass': 'setupYourOwnPlease',
-                'region': 'na-east'
-            },
-            {
-                'url': 'turn:turn-usw2.vdo.ninja:3478',
-                'user': 'vdoninja',
-                'pass': 'theyBeSharksHere',
-                'region': 'na-west'
-            },
-            # Europe
-            {
-                'url': 'turn:turn-eu1.vdo.ninja:3478',
-                'user': 'steve',
-                'pass': 'setupYourOwnPlease',
-                'region': 'eu-central'
-            },
-            # Secure fallback
-            {
-                'url': 'turns:www.turn.obs.ninja:443',
-                'user': 'steve',
-                'pass': 'setupYourOwnPlease',
-                'region': 'global'
-            }
-        ]
-        
-        # For now, return the first one (could be enhanced to select by region)
-        return turn_servers[0]
+        """Compatibility helper for recorder workers accepting one TURN URL."""
+        servers = get_default_turn_servers(printwarn)
+        return servers[0] if servers else None
 
     @staticmethod
     def _coerce_message_flag(value, default: Optional[bool] = None) -> Optional[bool]:
@@ -12281,20 +12260,9 @@ class WebRTCClient:
                  self.stream_id_to_uuid[base_stream_id] = uuid
                  printc(f"[Subprocess] Also mapping base stream ID {base_stream_id} to UUID {uuid}", "77F")
         
-        default_turn = self._get_default_turn_server()
+        default_turn = self._get_default_turn_server() if not self.turn_server or self.turn_server == 'auto' else None
         if default_turn:
-            turn_info = default_turn
-            turn_url = turn_info['url']
-            if '@' not in turn_url and turn_url.startswith('turn'):
-                if turn_url.startswith('turns:'):
-                    protocol = 'turns://'
-                    server_part = turn_url[6:]  # Skip "turns:"
-                else:
-                    protocol = 'turn://'
-                    server_part = turn_url[5:]  # Skip "turn:"
-                default_turn_url = f"{protocol}{turn_info['user']}:{turn_info['pass']}@{server_part}"
-            else:
-                default_turn_url = turn_url
+            default_turn_url = normalize_turn_server_url(default_turn['url'], default_turn['user'], default_turn['pass'])
             printc(f"[{stream_id}] Using default TURN server for subprocess.", "77F")
         else:
             default_turn_url = None
@@ -12305,7 +12273,7 @@ class WebRTCClient:
             'room': self.record,  # Room name prefix for files
             'record_file': f"{self.record}_{stream_id}_{int(time.time())}.webm",
             'stun_server': None if self.no_stun else (self.stun_server or 'stun://stun.cloudflare.com:3478'),
-            'turn_server': self.turn_server or default_turn_url,
+            'turn_server': default_turn_url if self.turn_server == 'auto' else (self.turn_server or default_turn_url),
             'ice_transport_policy': self.ice_transport_policy,
             'record_audio': True if not self.noaudio else False,  # Default to recording audio unless --noaudio is set
             'use_mkv': False,  # Don't use MKV subprocess for now as it has issues
@@ -13181,39 +13149,26 @@ class WHIPClient:
         self.args = args
         self.pipe = None
         self.loop = None
+        self.publisher = None
+
+    def configure_ice(self, peer):
+        from types import SimpleNamespace
+        stun, disabled = normalize_stun_server_option(self.args.stun_server)
+        config = SimpleNamespace(stun_server=stun, no_stun=disabled,
+            turn_server=self.args.turn_server, auto_turn=True, ice_transport_policy=self.args.ice_transport_policy)
+        WebRTCClient.setup_ice_servers(config, peer)
         
     def setup_pipeline(self):
-        # Configure WHIP elements
-        whip_props = [
-            'whipsink name=sendrecv',
-            f'whip-endpoint="{self.args.whip}"'
-        ]
-        
-        # Add STUN servers
-        if self.args.stun_server:
-            if self.args.stun_server not in ["0", "false", "null"]:
-                whip_props.append(f'stun-server="{self.args.stun_server}"')
-        else:
-            whip_props.append('stun-server="stun://stun.cloudflare.com:3478"')
-            whip_props.append('stun-server="stun://stun.l.google.com:19302"')
-        
-        # Add TURN servers    
-        if self.args.turn_server:
-            if self.args.turn_server not in ["0", "false", "null"]:
-                whip_props.append(f'turn-server="{self.args.turn_server}"')
-        else:
-            whip_props.append('turn-server="turn://vdoninja:IchBinSteveDerNinja@www.turn.vdo.ninja:3478"')
-        
-        whip_props.append(f'ice-transport-policy={self.args.ice_transport_policy}')
-        
-        # Build complete pipeline
-        pipeline_segments = [self.pipeline_desc]
-        pipeline_segments.append(' '.join(whip_props))
-        complete_pipeline = ' '.join(pipeline_segments)
-        
-        print('gst-launch-1.0 ' + complete_pipeline.replace('(', '\\(').replace(')', '\\)'))
-        
-        self.pipe = Gst.parse_launch(complete_pipeline)
+        # Keep endpoint/token out of pipeline strings and native parser errors.
+        self.pipe = Gst.parse_launch(self.pipeline_desc + ' whipsink name=sendrecv')
+        sink = self.pipe.get_by_name('sendrecv')
+        sink.set_property('whip-endpoint', self.args.whip)
+        if self.args.whip_token:
+            if not sink.find_property('auth-token'):
+                raise RuntimeError('This whipsink lacks auth-token; use --whip-backend python')
+            sink.set_property('auth-token', self.args.whip_token)
+        self.configure_ice(sink)
+        print('WHIP: optional whipsink backend')
         return self.pipe
 
     def on_state_changed(self, bus, message):
@@ -13233,8 +13188,14 @@ class WHIPClient:
         return False
 
     def start(self):
+        if self.args.whip_backend == 'python':
+            from whip import WhipPublisher
+            self.publisher = WhipPublisher(self.pipeline_desc, self.args.whip,
+                self.configure_ice, printwarn, token=self.args.whip_token,
+                timeout=self.args.whip_http_timeout, latency=self.args.buffer, trickle=self.args.whip_trickle)
+            return self.publisher.start()
         if not check_plugins('whipsink'):
-            print("WHIP SINK not installed. Please install (build if needed) the gst-plugins-rs webrtchttp plugin for your specific version of Gstreamer; 1.22 or newer required")
+            print("whipsink is not installed; use --whip-backend python (no Rust plugin required)")
             return False
             
         self.setup_pipeline()
@@ -13260,6 +13221,8 @@ class WHIPClient:
         return True
 
     def stop(self):
+        if self.publisher:
+            self.publisher.stop()
         if self.pipe:
             self.pipe.set_state(Gst.State.NULL)
         if self.loop:
@@ -13740,6 +13703,10 @@ async def main():
     parser.add_argument('--room', type=str, default=None, help='optional - Room name of the peer to join')
     parser.add_argument('--rtmp', type=str, default=None, help='Use RTMP instead; pass the rtmp:// publishing address here to use')
     parser.add_argument('--whip', type=str, default=None, help='Use WHIP output instead; pass the https://whip.publishing/address here to use')
+    parser.add_argument('--whip-backend', choices=('python', 'whipsink'), default='python', help='WHIP signaling backend; python uses ordinary webrtcbin without Rust plugins (default)')
+    parser.add_argument('--whip-token', default='', help='Bearer token for the WHIP endpoint')
+    parser.add_argument('--whip-http-timeout', type=float, default=15, help='Timeout in seconds for each WHIP HTTP request (default: 15)')
+    parser.add_argument('--whip-trickle', choices=('auto', 'on', 'off'), default='auto', help='Python WHIP: auto defers ICE candidates on GStreamer <1.20; falls back to a complete offer if PATCH is unsupported')
     parser.add_argument('--bitrate', type=int, default=2500, help='Sets the video bitrate; kbps. If error correction (red) is on, the total bandwidth used may be up to 2X higher than the bitrate')
     parser.add_argument('--audiobitrate', type=int, default=64, help='Sets the audio bitrate; kbps.')
     parser.add_argument('--width', type=int, default=1920, help='Sets the video width. Make sure that your input supports it.')
@@ -13855,7 +13822,7 @@ async def main():
     parser.add_argument('--socketport', type=str, default=12345, help='Output video frames to a socket; specify the port number')
     parser.add_argument('--socketout', type=str, help='Output video frames to a socket; specify the stream ID')
     parser.add_argument('--stun-server', type=str, help='STUN server URL (stun://hostname:port), or false to disable STUN')
-    parser.add_argument('--turn-server', type=str, help='TURN server URL (turn(s)://username:password@host:port)')
+    parser.add_argument('--turn-server', type=str, help='TURN URL (turn(s)://username:password@host:port), auto for VDO.Ninja discovery, or false to disable')
     parser.add_argument('--ice-transport-policy', type=str, choices=['all', 'relay'], default='all', help='ICE transport policy (all or relay)')
     parser.add_argument('--h265', action='store_true', help='Prioritize h265/hevc encoding over h264')
     parser.add_argument('--hevc', action='store_true', help='Prioritize h265/hevc encoding over h264 (same as --h265)')
@@ -13880,6 +13847,16 @@ async def main():
         print(f"Loaded configuration from: {config_path}")
 
     try:
+        if args.whip:
+            WhepHttpSession(args.whip, args.whip_token, protocol='WHIP')
+            if not math.isfinite(args.whip_http_timeout) or args.whip_http_timeout <= 0:
+                raise ValueError('--whip-http-timeout must be a finite positive number')
+            if args.noaudio and args.novideo:
+                raise ValueError('--whip requires audio or video')
+            if any((args.rtmp, args.view, args.record, args.record_room, args.room_ndi,
+                    args.room_monitor, args.multiviewer, args.save, args.pipeline,
+                    args.ndiout, args.fdsink, args.socketout, args.framebuffer)):
+                raise ValueError('--whip cannot be combined with receiver modes, --rtmp, --multiviewer, --save or --pipeline; use --video-pipeline/--audio-pipeline for custom sources')
         if args.whep:
             normalize_settings({'url': args.whep, 'token': args.whep_token})
             if args.nowhep or args.whip or args.record_room or args.room_ndi or args.room_monitor:
@@ -13892,10 +13869,12 @@ async def main():
         if not math.isfinite(args.peer_connect_timeout) or args.peer_connect_timeout < 0:
             raise ValueError('--peer-connect-timeout must be a finite nonnegative number')
         turn_disabled = args.turn_server is not None and args.turn_server.strip().lower() in ('0', 'false', 'off', 'none', 'null')
-        if args.turn_server and not turn_disabled:
+        if args.turn_server and args.turn_server.strip().lower() == 'auto':
+            args.turn_server = 'auto'
+        if args.turn_server and not turn_disabled and args.turn_server != 'auto':
             args.turn_server = normalize_turn_server_url(args.turn_server)
         if args.ice_transport_policy == 'relay' and (
-            turn_disabled or (not args.turn_server and not (args.record or args.record_room or args.room_ndi))
+            turn_disabled or (not args.turn_server and not (args.whip or args.record or args.record_room or args.room_ndi))
         ):
             raise ValueError('Relay-only ICE requires a TURN server; set --turn-server.')
     except ValueError as exc:
@@ -13967,6 +13946,7 @@ async def main():
         printc("⚡ Low latency mode enabled - frames may be dropped under load", "FF0")
 
     Gst.init(None)
+    prepare_gstreamer_types()
 
     if args.debug:
         Gst.debug_set_active(True)
@@ -15114,9 +15094,16 @@ async def main():
             pipeline_desc = ' '.join(pipeline_segments)
             
             whip_client = WHIPClient(pipeline_desc, args)
-            if whip_client.start():
+            try:
+                success = whip_client.start()
+            except KeyboardInterrupt:
+                success = True
+            except Exception as exc:
+                printwarn('WHIP: ' + str(exc))
+                success = False
+            finally:
                 whip_client.stop()
-            sys.exit(1)
+            sys.exit(0 if success else 1)
 
         elif args.streamin:
             args.h264 = True

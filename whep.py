@@ -11,6 +11,7 @@ import uuid
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+from email.utils import parsedate_to_datetime
 
 
 def opt_out_fields(disabled):
@@ -29,15 +30,18 @@ def media_request_fields(audio, video, disabled):
     return dict(audio=bool(audio), video=bool(video), **opt_out_fields(disabled))
 
 
-def validate_url(url):
-    if not isinstance(url, str) or any(ord(c) < 32 for c in url):
-        raise ValueError("WHEP requires an HTTP(S) URL")
-    parsed = urlsplit(url)
-    if (parsed.scheme not in ("http", "https") or not parsed.hostname
-            or parsed.username is not None or parsed.password is not None or parsed.fragment):
-        raise ValueError("WHEP requires an HTTP(S) URL without embedded credentials or fragment")
-    if parsed.port is not None and not 0 < parsed.port < 65536:
-        raise ValueError("Invalid WHEP port")
+def validate_url(url, protocol='WHEP'):
+    if not isinstance(url, str) or any(ord(c) < 32 or c.isspace() for c in url):
+        raise ValueError("%s requires an HTTP(S) URL" % protocol)
+    try:
+        parsed = urlsplit(url)
+        if (parsed.scheme not in ("http", "https") or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None or parsed.fragment
+                or (parsed.port is not None and not 0 < parsed.port < 65536)):
+            raise ValueError()
+    except ValueError:
+        # urlsplit/port exceptions can otherwise expose parts of a secret URL.
+        raise ValueError("%s requires a valid HTTP(S) URL without embedded credentials or fragment" % protocol) from None
     return url
 
 
@@ -145,11 +149,44 @@ def deferred_candidates(sdp):
     return '\r\n'.join(offer) + '\r\n', '\r\n'.join(fragment) + '\r\n'
 
 
-class WhepHttpSession:
-    """One HTTP resource, including POST-preserving relay redirects and DELETE."""
+def numeric_mids(text):
+    """Keep local SDP and PATCH identities consistent for numeric-MID relays."""
+    lines = text.splitlines()
+    mids = {line[6:]: str(index) for index, line in enumerate(
+        line for line in lines if line.startswith('a=mid:'))}
+    for index, line in enumerate(lines):
+        if line.startswith('a=mid:'):
+            lines[index] = 'a=mid:' + mids[line[6:]]
+        elif line.startswith('a=group:BUNDLE '):
+            lines[index] = 'a=group:BUNDLE ' + ' '.join(mids[mid] for mid in line.split()[1:])
+    return '\r\n'.join(lines) + '\r\n'
 
-    def __init__(self, url, token="", timeout=15, trickle=False):
-        self.url = validate_url(url)
+
+class HttpStatusError(RuntimeError):
+    """Safe HTTP diagnostics shared by WHIP and WHEP; no response body or URL."""
+
+    def __init__(self, protocol, method, status, retry_after=None):
+        super().__init__("%s %s returned HTTP %s" % (protocol, method, status))
+        self.status = status
+        self.retry_after = 0
+        if retry_after:
+            try:
+                self.retry_after = max(0, int(retry_after))
+            except (ValueError, TypeError):
+                try:
+                    self.retry_after = max(0, parsedate_to_datetime(retry_after).timestamp() - time.time())
+                except (ValueError, TypeError, OverflowError):
+                    pass
+
+
+class WhepHttpSession:
+    """Shared WHIP/WHEP HTTP resource, with POST-preserving redirects and DELETE."""
+
+    def __init__(self, url, token="", timeout=15, trickle=False, protocol="WHEP"):
+        self.url = validate_url(url, protocol)
+        self.protocol = protocol
+        if not isinstance(token, str) or any(not 33 <= ord(c) <= 126 for c in token):
+            raise ValueError("Invalid %s bearer token" % protocol)
         self.token = token
         self.timeout = timeout
         self.location = None
@@ -161,7 +198,7 @@ class WhepHttpSession:
         self.opener = build_opener(_NoRedirect())
 
     def _request(self, method, url, data=None):
-        headers = {"Accept": "application/sdp"}
+        headers = {"Accept": "application/sdp", "User-Agent": "RaspberryNinja"}
         if data is not None:
             headers["Content-Type"] = "application/sdp"
         if method == 'PATCH':
@@ -170,58 +207,61 @@ class WhepHttpSession:
         if self.token:
             headers["Authorization"] = "Bearer " + self.token
         for _ in range(6):
+            with self._lock:
+                if self._closed and method != 'DELETE':
+                    raise RuntimeError('%s session was cancelled' % self.protocol)
             request = Request(url, data=data, headers=headers, method=method)
             try:
                 response = self.opener.open(request, timeout=self.timeout)
             except HTTPError as exc:
                 response = exc
-            except (URLError, OSError):
+            except (URLError, OSError, UnicodeError):
                 # Exceptions and response bodies can contain secret-bearing URLs.
-                raise RuntimeError("WHEP HTTP connection failed (check endpoint, TLS and network)") from None
+                raise RuntimeError("%s HTTP connection failed (check endpoint, TLS and network)" % self.protocol) from None
             with response:
                 status = response.code
                 response_headers = response.headers
                 if status in (307, 308):
-                    target = validate_url(urljoin(url, response_headers.get("Location", "")))
+                    target = validate_url(urljoin(url, response_headers.get("Location", "")), self.protocol)
                     if urlsplit(url).scheme == "https" and urlsplit(target).scheme != "https":
-                        raise RuntimeError("WHEP refused an HTTPS downgrade redirect")
+                        raise RuntimeError("%s refused an HTTPS downgrade redirect" % self.protocol)
                     url = target
                     continue
                 body = response.read(1024 * 1024 + 1)
                 if len(body) > 1024 * 1024:
-                    raise RuntimeError("WHEP response exceeded 1 MiB")
+                    raise RuntimeError("%s response exceeded 1 MiB" % self.protocol)
                 return status, response_headers, body, url
-        raise RuntimeError("Too many WHEP redirects")
+        raise RuntimeError("Too many %s redirects" % self.protocol)
 
     def offer(self, sdp):
         if self.trickle:
             sdp, self.candidates = deferred_candidates(sdp)
         status, headers, body, endpoint = self._request("POST", self.url, sdp.encode("utf-8"))
         if status not in (200, 201):
-            raise RuntimeError("WHEP POST returned HTTP %s" % status)
+            raise HttpStatusError(self.protocol, "POST", status, headers.get('Retry-After'))
         if headers.get("Location"):
-            location = validate_url(urljoin(endpoint, headers["Location"]))
+            location = validate_url(urljoin(endpoint, headers["Location"]), self.protocol)
             if urlsplit(endpoint).scheme == "https" and urlsplit(location).scheme != "https":
-                raise RuntimeError("WHEP refused an insecure session Location")
+                raise RuntimeError("%s refused an insecure session Location" % self.protocol)
             with self._lock:
                 self.location = location
                 cancelled = self._closed
             if cancelled:
                 self.close()
-                raise RuntimeError("WHEP session was cancelled")
+                raise RuntimeError("%s session was cancelled" % self.protocol)
         if headers.get_content_type() != "application/sdp":
-            raise RuntimeError("WHEP endpoint did not return application/sdp")
+            raise RuntimeError("%s endpoint did not return application/sdp" % self.protocol)
         try:
             answer = body.decode("utf-8")
         except UnicodeError:
-            raise RuntimeError("WHEP returned invalid SDP encoding") from None
+            raise RuntimeError("%s returned invalid SDP encoding" % self.protocol) from None
         if not answer.startswith("v=0") or "\nm=" not in answer:
-            raise RuntimeError("WHEP returned an invalid SDP answer")
+            raise RuntimeError("%s returned an invalid SDP answer" % self.protocol)
         if self.trickle:
             self.etag = headers.get('ETag')
             if (not self.location or not self.etag or
                     'application/trickle-ice-sdpfrag' not in headers.get('Accept-Patch', '').lower()):
-                raise TrickleUnsupported('Relay does not advertise WHEP trickle ICE; using a complete offer')
+                raise TrickleUnsupported('Relay does not advertise %s trickle ICE; using a complete offer' % self.protocol)
             # 1.18 also gathers a separate RTCP component. With a multiplexed
             # relay, checking it can redirect the relay away from the RTP socket.
             answer = mux_candidates(answer)
@@ -235,9 +275,9 @@ class WhepHttpSession:
             self.candidates = None
         status, _, _, _ = self._request('PATCH', location, fragment.encode('utf-8'))
         if status in (405, 412, 415, 422, 428, 501):
-            raise TrickleUnsupported('Relay rejected WHEP trickle ICE; using a complete offer')
+            raise TrickleUnsupported('Relay rejected %s trickle ICE; using a complete offer' % self.protocol)
         if status != 204:
-            raise RuntimeError('WHEP PATCH returned HTTP %s' % status)
+            raise HttpStatusError(self.protocol, 'PATCH', status)
 
     def close(self):
         with self._lock:
@@ -256,6 +296,13 @@ def _gst():
     gi.require_version("GstWebRTC", "1.0")
     gi.require_version("GstSdp", "1.0")
     from gi.repository import Gst, GstWebRTC, GstSdp, GLib
+    # Resolve lazy boxed types and enum members before concurrent A/V callbacks.
+    # Older PyGObject can otherwise create incompatible Caps wrappers or expose
+    # a partially initialized PadDirection enum. Entry points call this before
+    # any pipeline starts, including P2P receivers that create switches lazily.
+    _ = (Gst.Caps, Gst.Structure, Gst.Buffer, Gst.Event, Gst.Pad, Gst.GhostPad,
+         Gst.PadProbeInfo, Gst.PadDirection.SRC, Gst.PadProbeType.BUFFER,
+         Gst.PadProbeReturn.OK, Gst.EventType.EOS)
     return Gst, GstWebRTC, GstSdp, GLib
 
 
@@ -500,15 +547,7 @@ class WhepReceiver:
         if self.trickle:
             # MediaMTX's SDP-fragment parser expects numeric mids. Set them in
             # the local offer too, so the SDP, PATCH and RTP identities agree.
-            lines = offer.sdp.as_text().splitlines()
-            mids = {line[6:]: str(index) for index, line in enumerate(
-                line for line in lines if line.startswith('a=mid:'))}
-            for index, line in enumerate(lines):
-                if line.startswith('a=mid:'):
-                    lines[index] = 'a=mid:' + mids[line[6:]]
-                elif line.startswith('a=group:BUNDLE '):
-                    lines[index] = 'a=group:BUNDLE ' + ' '.join(mids[mid] for mid in line.split()[1:])
-            result, sdp = self.Sdp.SDPMessage.new_from_text('\r\n'.join(lines) + '\r\n')
+            result, sdp = self.Sdp.SDPMessage.new_from_text(numeric_mids(offer.sdp.as_text()))
             if result != self.Sdp.SDPResult.OK:
                 raise RuntimeError('Unable to prepare the WHEP offer')
             offer = self.WebRTC.WebRTCSessionDescription.new(self.WebRTC.WebRTCSDPType.OFFER, sdp)
