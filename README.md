@@ -576,10 +576,12 @@ This enables:
 
 Access your HLS stream at:
 ```
-http://localhost:8080/streamID_timestamp.m3u8
+http://localhost:8080/hls/streamID_timestamp.m3u8
 ```
 
-The built-in web server automatically serves all HLS files in the current directory, making it easy to access recordings without setting up a separate web server.
+The dashboard at `http://localhost:8080/` lists available playlists. The server serves `.m3u8` playlists and `.ts` segments within the directory where it started, including media in subdirectories. It rejects other file types, directory traversal, and symlinks pointing outside that directory. Playlists bypass caching; segment responses support byte ranges for seeking.
+
+The optional dashboard and HLS server listen on all interfaces and have no authentication. Use them on a trusted network, or restrict access through a firewall or an authenticated reverse proxy. For a standalone HLS server with a configurable bind address and media directory, see [Serving existing HLS files](docs/operations-guide.md#serving-existing-hls-files).
 
 #### HLS Implementation Notes
 
@@ -1021,6 +1023,8 @@ midi demo video: https://youtu.be/Gry9UFtOTmQ
 
 The `record.py` script is a standalone microservice that provides audio recording and automatic transcription capabilities for VDO.Ninja streams using OpenAI's Whisper AI model. This service can run independently of the main `publish.py` script.
 
+Its HTTP endpoints have no authentication. Bind to `127.0.0.1` for local use, or protect access on a trusted network or through an authenticated reverse proxy.
+
 ### What it does
 
 - **Records Audio Streams**: Captures audio from any VDO.Ninja room participant
@@ -1124,9 +1128,9 @@ python3 record.py --stop --pid 12345 --record myRecordID --language en
 
 ### File Output
 
-- **Audio files**: Saved as `{record_id}_audio.ts` in the current directory
-- **Transcriptions**: Saved as `stt/{record_id}_{timestamp}.txt`
-- **Format**: Audio is saved in MPEG-TS format, compatible with most players
+- **Audio files**: Current recordings match `{record_id}_*_audio.webm` in the current directory; the service also accepts legacy `_audio.ts` files and selects the most recently modified match.
+- **Transcriptions**: Saved as `stt/{record_id}_speech.txt`.
+- **Format**: Current Opus audio uses WebM. The source audio file is removed after successful transcription.
 
 ### Running as a System Service
 
@@ -1199,8 +1203,8 @@ curl -X POST -F "room=DailyStandup" -F "record=meeting_2024_01_22" http://localh
 curl -X POST -F "record=meeting_2024_01_22" -F "process_pid=12345" -F "language=en" http://localhost:8000/stop
 
 # Find your files:
-# Audio: meeting_2024_01_22_audio.ts
-# Text: stt/meeting_2024_01_22_1705931234.txt
+# Audio before transcription: meeting_2024_01_22_*_audio.webm
+# Text: stt/meeting_2024_01_22_speech.txt
 ```
 
 ### Note:

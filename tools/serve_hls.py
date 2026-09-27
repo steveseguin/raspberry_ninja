@@ -4,6 +4,12 @@ import argparse
 from functools import partial
 import http.server
 from pathlib import Path
+import sys
+from urllib.parse import unquote, urlsplit
+
+if __package__ in (None, ''):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from hls_files import resolve_hls_file
 
 
 class CORSHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
@@ -11,6 +17,14 @@ class CORSHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         return Path(self.translate_path(self.path)).suffix.lower() == '.m3u8'
 
     def send_head(self):
+        try:
+            resolve_hls_file(self.directory, unquote(urlsplit(self.path).path).lstrip('/'))
+        except (ValueError, RuntimeError):
+            self.send_error(403, 'Forbidden')
+            return None
+        except OSError:
+            self.send_error(404, 'Not Found')
+            return None
         if self._is_playlist():
             # HTTP dates only have second precision; live playlists can change
             # more than once per second. Always serve their current contents.
@@ -18,6 +32,11 @@ class CORSHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 if header in self.headers:
                     del self.headers[header]
         return super().send_head()
+
+    def guess_type(self, path):
+        # System MIME tables sometimes identify .ts as a translation/source file.
+        return ('application/vnd.apple.mpegurl' if Path(path).suffix.lower() == '.m3u8'
+                else 'video/mp2t')
 
     def end_headers(self):
         if self._is_playlist():

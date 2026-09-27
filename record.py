@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+from typing import Optional
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -67,7 +68,7 @@ def terminate_process(process: subprocess.Popen, timeout: float = 10.0) -> None:
         process.wait()
 
 
-def claim_recording_process(process_pid: int, record: str) -> subprocess.Popen | None:
+def claim_recording_process(process_pid: int, record: str) -> Optional[subprocess.Popen]:
     with processes_lock:
         process_info = processes.get(process_pid)
         if not process_info or process_info[2] != record:
@@ -76,9 +77,10 @@ def claim_recording_process(process_pid: int, record: str) -> subprocess.Popen |
         return process_info[0]
 
 
-def find_audio_file(record: str) -> Path | None:
+def find_audio_file(record: str) -> Optional[Path]:
     validate_record_id(record)
-    matches = list(Path.cwd().glob(f"{record}_*_audio.ts"))
+    matches = [path for suffix in ('.webm', '.ts')
+               for path in Path.cwd().glob(f"{record}_*_audio{suffix}") if path.is_file()]
     return max(matches, key=lambda path: path.stat().st_mtime, default=None)
 
 

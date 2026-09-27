@@ -32,6 +32,7 @@ from turn_servers import get_default_turn_servers
 from whep import WhepReceiver, RtpSourceSwitch, RelayControlState, media_request_fields, normalize_settings, WhepHttpSession
 from whep import _gst as prepare_gstreamer_types
 from v4l2_devices import resolve_v4l2_input_device, resolve_v4l2_output_device
+from hls_files import resolve_hls_file
 try:
     import hashlib
     from urllib.parse import urlparse, urlencode
@@ -1474,6 +1475,17 @@ def decrypt_message(encrypted_data, iv, phrase):
         return None
 
 
+if web is not None:
+    class _HlsSegmentResponse(web.FileResponse):
+        async def prepare(self, request):
+            # FileResponse can automatically select a sibling .gz/.br file.
+            # Serve exactly the validated segment, including when such a
+            # sibling is a symlink outside the configured media directory.
+            headers = request.headers.copy()
+            headers.popall('Accept-Encoding', None)
+            return await super().prepare(request.clone(headers=headers))
+
+
 class WebServer:
     def __init__(self, port, client):
         self.port = port
@@ -1482,6 +1494,7 @@ class WebServer:
         self.runner = None
         self.logs = []  # Store recent logs
         self.max_logs = 1000
+        self.hls_directory = Path.cwd().resolve()
         
         # Setup routes
         self.app.router.add_get('/', self.index)
@@ -1494,8 +1507,7 @@ class WebServer:
         self.app.router.add_get('/api/pipeline', self.get_pipeline_info)
         self.app.router.add_get('/api/ice', self.get_ice_stats)
         self.app.router.add_get('/api/hls', self.get_hls_streams)
-        self.app.router.add_get('/hls/{filename}', self.serve_hls_file)
-        self.app.router.add_static('/hls/', path='.', name='hls_static')
+        self.app.router.add_get('/hls/{filename:.*}', self.serve_hls_file)
         
     async def index(self, request):
         html = r"""
@@ -1752,6 +1764,12 @@ class WebServer:
             <script>
                 let ws;
                 let hls;
+
+                function escapeHTML(value) {
+                    const text = document.createElement('span');
+                    text.textContent = String(value ?? '');
+                    return text.innerHTML;
+                }
                 
                 function playHLSStream(url) {
                     const playerSection = document.getElementById('hlsPlayerSection');
@@ -1933,7 +1951,7 @@ class WebServer:
                 }
                 
                 function connectWebSocket() {
-                    ws = new WebSocket('ws://' + window.location.host + '/ws');
+                    ws = new WebSocket((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/ws');
                     
                     ws.onmessage = (event) => {
                         const data = JSON.parse(event.data);
@@ -1965,7 +1983,7 @@ class WebServer:
                         const logs = await response.json();
                         const logsDiv = document.getElementById('logs');
                         logsDiv.innerHTML = logs.map(log => 
-                            '<div class="log-entry">' + log + '</div>'
+                            '<div class="log-entry">' + escapeHTML(log) + '</div>'
                         ).join('');
                     } catch (error) {
                         console.error('Failed to fetch logs:', error);
@@ -1981,16 +1999,16 @@ class WebServer:
                     
                     let html = Object.entries(stats).map(([key, value]) => {
                         // Special formatting for certain fields
-                        let displayValue = value;
+                        let displayValue = escapeHTML(value);
                         let statusClass = '';
                         
                         if (key === 'status') {
                             statusClass = value === 'connected' ? 'connected' : 'disconnected';
-                            displayValue = '<span class="status ' + statusClass + '"></span>' + value;
+                            displayValue = '<span class="status ' + statusClass + '"></span>' + escapeHTML(value);
                         }
                         
                         return '<div class="stat-card">' +
-                            '<div class="stat-label">' + key.replace(/_/g, ' ').toUpperCase() + '</div>' +
+                            '<div class="stat-label">' + escapeHTML(key.replace(/_/g, ' ').toUpperCase()) + '</div>' +
                             '<div class="stat-value">' + displayValue + '</div>' +
                             '</div>';
                     }).join('');
@@ -2002,9 +2020,9 @@ class WebServer:
                             '<div style="font-size: 0.9em; margin-top: 10px;">' +
                             viewerDetails.map(v => 
                                 '<div style="margin: 5px 0;">' +
-                                'Viewer ' + v.id + ': ' +
+                                'Viewer ' + escapeHTML(v.id) + ': ' +
                                 (v.has_data_channel ? 'YES' : 'NO') + ' Data Channel | ' +
-                                'Ping: ' + v.ping +
+                                'Ping: ' + escapeHTML(v.ping) +
                                 '</div>'
                             ).join('') +
                             '</div></div>';
@@ -2019,10 +2037,10 @@ class WebServer:
                             '<h2 style="margin: 0; color: #ff4444;">RECORDING ACTIVE</h2>' +
                             '</div>' +
                             '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">' +
-                            '<div><strong>Mode:</strong> ' + recordingInfo.mode.replace(/_/g, ' ').toUpperCase() + '</div>';
+                            '<div><strong>Mode:</strong> ' + escapeHTML(recordingInfo.mode.replace(/_/g, ' ').toUpperCase()) + '</div>';
                         
                         if (recordingInfo.room_name) {
-                            html += '<div><strong>Room:</strong> ' + recordingInfo.room_name + '</div>';
+                            html += '<div><strong>Room:</strong> ' + escapeHTML(recordingInfo.room_name) + '</div>';
                         }
                         
                         if (recordingInfo.audio_enabled !== undefined) {
@@ -2031,20 +2049,20 @@ class WebServer:
                         
                         // Only show active recordings count for single stream mode, not room recording
                         if (recordingInfo.mode === 'single_stream' && recordingInfo.active_recordings !== undefined) {
-                            html += '<div><strong>Active Recordings:</strong> ' + recordingInfo.active_recordings + '</div>';
+                            html += '<div><strong>Active Recordings:</strong> ' + escapeHTML(recordingInfo.active_recordings) + '</div>';
                         }
                         
                         html += '</div>'; // Close grid
                         
                         if (recordingInfo.note) {
-                            html += '<div style="margin-top: 15px; padding: 10px; background: #1a1a1a; border-radius: 4px; font-style: italic;">' + recordingInfo.note + '</div>';
+                            html += '<div style="margin-top: 15px; padding: 10px; background: #1a1a1a; border-radius: 4px; font-style: italic;">' + escapeHTML(recordingInfo.note) + '</div>';
                         }
                         
                         if (recordingInfo.files && recordingInfo.files.length > 0) {
                             html += '<div style="margin-top: 15px;"><h3 style="margin-bottom: 10px;">Recording Files:</h3>';
                             html += '<div style="background: #1a1a1a; padding: 10px; border-radius: 4px; max-height: 200px; overflow-y: auto;">';
                             recordingInfo.files.forEach(f => {
-                                html += '<div style="margin: 5px 0; font-family: monospace;">• ' + f + '</div>';
+                                html += '<div style="margin: 5px 0; font-family: monospace;">• ' + escapeHTML(f) + '</div>';
                             });
                             html += '</div></div>';
                         }
@@ -2276,8 +2294,8 @@ class WebServer:
                             const systemDiv = document.getElementById('systemStats');
                             systemDiv.innerHTML = Object.entries(stats).map(([key, value]) => 
                                 '<div class="stat-card">' +
-                                '<div class="stat-label">' + key.replace(/_/g, ' ').toUpperCase() + '</div>' +
-                                '<div class="stat-value">' + value + '</div>' +
+                                '<div class="stat-label">' + escapeHTML(key.replace(/_/g, ' ').toUpperCase()) + '</div>' +
+                                '<div class="stat-value">' + escapeHTML(value) + '</div>' +
                                 '</div>'
                             ).join('');
                         }
@@ -2301,7 +2319,7 @@ class WebServer:
                             return;
                         }
                         
-                        hlsDiv.innerHTML = streams.map(stream => {
+                        hlsDiv.innerHTML = streams.map((stream, index) => {
                             let status;
                             if (stream.status === 'recording') {
                                 status = '<span style="color: #ff4444;">● RECORDING</span>';
@@ -2319,24 +2337,27 @@ class WebServer:
                             
                             const modified = new Date(stream.modified * 1000).toLocaleString();
                             
-                            return '<div class="stat-card" style="grid-column: span 3; cursor: pointer;" onclick="playHLSStream(\'' + stream.url + '\')">' +
+                            return '<div class="stat-card" style="grid-column: span 3; cursor: pointer;" data-hls-index="' + index + '">' +
                                 '<div style="display: flex; justify-content: space-between; align-items: center;">' +
                                 '<div>' +
-                                '<div class="stat-label">Stream: ' + (stream.stream_id || 'Unknown') + ' | Room: ' + (stream.room || 'Unknown') + '</div>' +
-                                '<div class="stat-value" style="font-size: 0.9em;">' + stream.filename + '</div>' +
+                                '<div class="stat-label">Stream: ' + escapeHTML(stream.stream_id || 'Unknown') + ' | Room: ' + escapeHTML(stream.room || 'Unknown') + '</div>' +
+                                '<div class="stat-value" style="font-size: 0.9em;">' + escapeHTML(stream.filename) + '</div>' +
                                 '<div style="margin-top: 5px; font-size: 0.8em; color: #888;">' +
-                                'Segments: ' + stream.segment_count + ' | Modified: ' + modified +
+                                'Segments: ' + escapeHTML(stream.segment_count) + ' | Modified: ' + escapeHTML(modified) +
                                 '</div>' +
                                 '</div>' +
                                 '<div style="text-align: right;">' +
                                 status +
                                 '<div style="margin-top: 5px;">' +
-                                '<button onclick="event.stopPropagation(); playHLSStream(\'' + stream.url + '\')" style="padding: 5px 10px; font-size: 0.8em;">Play</button>' +
+                                '<button type="button" style="padding: 5px 10px; font-size: 0.8em;">Play</button>' +
                                 '</div>' +
                                 '</div>' +
                                 '</div>' +
                                 '</div>';
                         }).join('');
+                        hlsDiv.querySelectorAll('[data-hls-index]').forEach(card => {
+                            card.addEventListener('click', () => playHLSStream(streams[Number(card.dataset.hlsIndex)].url));
+                        });
                     } catch (error) {
                         console.error('Failed to fetch HLS streams:', error);
                     }
@@ -2352,7 +2373,7 @@ class WebServer:
                     try {
                         const response = await fetch('/api/stats');
                         const stats = await response.json();
-                        const bitrateMatch = stats.bitrate.match(/(\d+)/);
+                        const bitrateMatch = String(stats.current_bitrate || '0').match(/(\d+)/);
                         if (bitrateMatch) {
                             const bitrate = parseInt(bitrateMatch[1]);
                             qualityHistory.bitrate.push(bitrate);
@@ -2378,7 +2399,7 @@ class WebServer:
                     modal.style.display = 'block';
                     modal.innerHTML = '<div class="modal-content">' +
                         '<span class="modal-close" onclick="this.parentElement.parentElement.remove()">&times;</span>' +
-                        '<h2>' + title + '</h2>' +
+                        '<h2>' + escapeHTML(title) + '</h2>' +
                         content +
                         '</div>';
                     document.getElementById('modalContainer').appendChild(modal);
@@ -2400,9 +2421,9 @@ class WebServer:
                         if (devices.video && devices.video.length > 0) {
                             content += '<ul>';
                             devices.video.forEach(dev => {
-                                content += '<li><strong>' + dev.name + '</strong><br>';
-                                content += 'Path: ' + dev.path + '<br>';
-                                content += 'Class: ' + dev.class + '</li>';
+                                content += '<li><strong>' + escapeHTML(dev.name) + '</strong><br>';
+                                content += 'Path: ' + escapeHTML(dev.path) + '<br>';
+                                content += 'Class: ' + escapeHTML(dev.class) + '</li>';
                             });
                             content += '</ul>';
                         } else {
@@ -2413,7 +2434,7 @@ class WebServer:
                         if (devices.audio && devices.audio.length > 0) {
                             content += '<ul>';
                             devices.audio.forEach(dev => {
-                                content += '<li>' + dev.name + '</li>';
+                                content += '<li>' + escapeHTML(dev.name) + '</li>';
                             });
                             content += '</ul>';
                         } else {
@@ -2431,15 +2452,15 @@ class WebServer:
                         const response = await fetch('/api/pipeline');
                         const pipeline = await response.json();
                         
-                        let content = '<h3>Pipeline State: ' + pipeline.pipeline_state + '</h3>';
+                        let content = '<h3>Pipeline State: ' + escapeHTML(pipeline.pipeline_state) + '</h3>';
                         content += '<h3>Pipeline Configuration</h3>';
-                        content += '<pre>' + pipeline.pipeline_string.replace(/!/g, '!\n    ') + '</pre>';
+                        content += '<pre>' + escapeHTML(pipeline.pipeline_string.replace(/!/g, '!\n    ')) + '</pre>';
                         
                         if (pipeline.elements && pipeline.elements.length > 0) {
                             content += '<h3>Pipeline Elements (' + pipeline.elements.length + ')</h3>';
                             content += '<ul>';
                             pipeline.elements.forEach(elem => {
-                                content += '<li>' + elem.name + ' (' + elem.type + ')</li>';
+                                content += '<li>' + escapeHTML(elem.name) + ' (' + escapeHTML(elem.type) + ')</li>';
                             });
                             content += '</ul>';
                         }
@@ -2456,17 +2477,17 @@ class WebServer:
                         const ice = await response.json();
                         
                         let content = '<h3>ICE Configuration</h3>';
-                        content += '<p><strong>STUN Server:</strong> ' + ice.stun_server + '</p>';
-                        content += '<p><strong>TURN Server:</strong> ' + (ice.turn_server || 'Not configured') + '</p>';
+                        content += '<p><strong>STUN Server:</strong> ' + escapeHTML(ice.stun_server) + '</p>';
+                        content += '<p><strong>TURN Server:</strong> ' + escapeHTML(ice.turn_server || 'Not configured') + '</p>';
                         
                         if (ice.connections && ice.connections.length > 0) {
                             content += '<h3>Active Connections</h3>';
                             ice.connections.forEach(conn => {
                                 content += '<div style="margin: 10px 0; padding: 10px; background: #1a1a1a; border-radius: 4px;">';
-                                content += '<strong>Viewer ' + conn.viewer_id + '</strong><br>';
-                                content += 'ICE State: ' + conn.ice_connection_state + '<br>';
-                                content += 'Gathering: ' + conn.ice_gathering_state + '<br>';
-                                content += 'Signaling: ' + conn.signaling_state;
+                                content += '<strong>Viewer ' + escapeHTML(conn.viewer_id) + '</strong><br>';
+                                content += 'ICE State: ' + escapeHTML(conn.ice_connection_state) + '<br>';
+                                content += 'Gathering: ' + escapeHTML(conn.ice_gathering_state) + '<br>';
+                                content += 'Signaling: ' + escapeHTML(conn.signaling_state);
                                 content += '</div>';
                             });
                         } else {
@@ -2801,21 +2822,24 @@ class WebServer:
     
     async def get_hls_streams(self, request):
         """Get list of available HLS streams"""
-        import glob
+        from urllib.parse import quote
         hls_streams = []
         
-        # Find all .m3u8 files in current directory
-        for playlist in glob.glob("*.m3u8"):
-            # Get file info
-            stat = os.stat(playlist)
+        # List only playlists that the file-serving route can actually serve.
+        for playlist in self.hls_directory.glob("*.m3u8"):
+            try:
+                path = resolve_hls_file(self.hls_directory, playlist.name)
+                stat = path.stat()
+            except (ValueError, RuntimeError, OSError):
+                continue
             
             # Extract stream info from filename
             # Format: room_streamid_timestamp.m3u8
-            parts = playlist.replace('.m3u8', '').split('_')
+            parts = playlist.stem.split('_')
             
             stream_info = {
-                'filename': playlist,
-                'url': f'/hls/{playlist}',
+                'filename': playlist.name,
+                'url': '/hls/' + quote(playlist.name, safe=''),
                 'size': stat.st_size,
                 'modified': stat.st_mtime,
                 'segments': []
@@ -2829,41 +2853,27 @@ class WebServer:
             
             # Check if playlist has EXT-X-ENDLIST (is complete)
             try:
-                with open(playlist, 'r') as f:
+                with path.open('r', encoding='utf-8') as f:
                     content = f.read()
                     stream_info['is_complete'] = '#EXT-X-ENDLIST' in content
                     stream_info['has_segments'] = '#EXTINF:' in content
-            except:
+            except (OSError, UnicodeError):
                 stream_info['is_complete'] = False
                 stream_info['has_segments'] = False
             
             # Count segments
-            base_name = playlist.replace('.m3u8', '')
-            segments = glob.glob(f"{base_name}_*.ts")
-            stream_info['segment_count'] = len(segments)
-            
-            # Check if still recording (recently modified)
-            import time
-            current_time = time.time()
-            
-            # Check both playlist and most recent segment modification times
-            time_since_playlist_modified = current_time - stat.st_mtime
-            
-            # Find most recent segment modification time
-            most_recent_segment_time = 0
-            if segments:
-                for segment in segments:
-                    sink = None
-                    try:
-                        seg_mtime = os.stat(segment).st_mtime
-                        if seg_mtime > most_recent_segment_time:
-                            most_recent_segment_time = seg_mtime
-                    except:
-                        pass
+            segment_times = []
+            for segment in self.hls_directory.glob(glob.escape(playlist.stem) + '_*.ts'):
+                try:
+                    segment_path = resolve_hls_file(self.hls_directory, segment.name)
+                    segment_times.append(segment_path.stat().st_mtime)
+                except (ValueError, RuntimeError, OSError):
+                    continue
+            stream_info['segment_count'] = len(segment_times)
             
             # Use the most recent modification time (playlist or segment)
-            most_recent_activity = max(stat.st_mtime, most_recent_segment_time) if most_recent_segment_time else stat.st_mtime
-            time_since_activity = current_time - most_recent_activity
+            most_recent_activity = max([stat.st_mtime] + segment_times)
+            time_since_activity = time.time() - most_recent_activity
             
             # Determine status based on activity and completion
             if time_since_activity < 10:  # Activity in last 10 seconds
@@ -2886,17 +2896,15 @@ class WebServer:
     async def serve_hls_file(self, request):
         """Serve HLS files with proper headers"""
         filename = request.match_info['filename']
-        
-        # Security check - only allow .m3u8 and .ts files
-        if not (filename.endswith('.m3u8') or filename.endswith('.ts')):
+        try:
+            path = resolve_hls_file(self.hls_directory, filename)
+        except (ValueError, RuntimeError):
             return web.Response(status=403, text='Forbidden')
-            
-        # Check if file exists
-        if not os.path.exists(filename):
+        except OSError:
             return web.Response(status=404, text='Not Found')
             
         # Set appropriate content type
-        if filename.endswith('.m3u8'):
+        if path.suffix.lower() == '.m3u8':
             content_type = 'application/vnd.apple.mpegurl'
             # Don't cache playlists
             headers = {
@@ -2917,13 +2925,18 @@ class WebServer:
                 'Access-Control-Allow-Headers': 'Content-Type'
             }
             
-        # Read and serve file
+        # Stream large segments with range support instead of blocking the
+        # signaling loop and allocating an entire segment per HTTP request.
+        if path.suffix.lower() == '.ts':
+            headers['Content-Type'] = content_type
+            return _HlsSegmentResponse(path, headers=headers)
+
+        # Live playlists must bypass conditional caching even within one second.
         try:
-            with open(filename, 'rb') as f:
-                content = f.read()
+            content = await asyncio.get_running_loop().run_in_executor(None, path.read_bytes)
             return web.Response(body=content, content_type=content_type, headers=headers)
-        except Exception as e:
-            return web.Response(status=500, text=str(e))
+        except OSError:
+            return web.Response(status=404, text='Not Found')
     
     async def start(self):
         """Start the web server"""
@@ -3116,37 +3129,53 @@ class WebRTCSubprocessManager:
     async def stop(self):
         """Stop the subprocess"""
         # Give the child a bounded opportunity to send EOS through its muxers
-        # before escalating to terminate/kill. MP4 indexes are written during
-        # this finalization step.
-        if self.process and self.process.returncode is None:
-            await self.send_message({"type": "stop"})
-            try:
-                await asyncio.wait_for(self.process.wait(), timeout=6.0)
-            except asyncio.TimeoutError:
-                self.process.terminate()
+        # before escalating to terminate/kill. Include stdin.drain in that
+        # deadline: a wedged child may have stopped reading control messages.
+        process = self.process
+        readers = [self.reader_task, getattr(self, 'stderr_task', None)]
+        try:
+            if process and process.returncode is None:
+                async def finish():
+                    await self.send_message({"type": "stop"})
+                    await process.wait()
                 try:
-                    await asyncio.wait_for(self.process.wait(), timeout=3.0)
-                except asyncio.TimeoutError:
-                    self.process.kill()
-                    await self.process.wait()
-
-        self.running = False
-
-        # Keep readers alive until the child exits so finalization diagnostics
-        # are not discarded.
-        if self.reader_task:
-            self.reader_task.cancel()
+                    await asyncio.wait_for(finish(), timeout=6.0)
+                except (asyncio.TimeoutError, BrokenPipeError, ConnectionResetError):
+                    pass
+        finally:
+            # A cancelled parent or broken pipe must not leave an orphan recorder.
             try:
-                await self.reader_task
-            except asyncio.CancelledError:
-                pass
-                
-        if hasattr(self, 'stderr_task') and self.stderr_task:
-            self.stderr_task.cancel()
-            try:
-                await self.stderr_task
-            except asyncio.CancelledError:
-                pass
+                if process and process.returncode is None:
+                    try:
+                        process.terminate()
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=3.0)
+                    finally:
+                        if process.returncode is None:
+                            try:
+                                process.kill()
+                            except ProcessLookupError:
+                                pass
+                            await process.wait()
+            except asyncio.TimeoutError:
+                pass  # The finally block above already killed and reaped it.
+            finally:
+                self.running = False
+                if process and process.stdin:
+                    process.stdin.close()
+                    try:
+                        await process.stdin.wait_closed()
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+                # Keep readers alive for EOS diagnostics; never await ourselves
+                # when a child message handler initiates shutdown.
+                tasks = [task for task in readers if task and task is not asyncio.current_task()]
+                for task in tasks:
+                    task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
 
         printc(f"[{self.stream_id}] Subprocess stopped", "77F")
 
@@ -12428,10 +12457,16 @@ class WebRTCClient:
         
     async def cleanup_subprocess_managers(self):
         """Stop all subprocess managers"""
-        for stream_id, manager in self.subprocess_managers.items():
-            printc(f"Stopping subprocess: {stream_id}", "77F")
-            await manager.stop()
+        # Detach this batch before yielding: peer-left callbacks can remove
+        # entries, and a reconnect can register a replacement during shutdown.
+        managers = list(self.subprocess_managers.items())
         self.subprocess_managers.clear()
+        for stream_id, _manager in managers:
+            printc(f"Stopping subprocess: {stream_id}", "77F")
+        results = await asyncio.gather(*(manager.stop() for _, manager in managers), return_exceptions=True)
+        for (stream_id, _manager), result in zip(managers, results):
+            if isinstance(result, BaseException):
+                printwarn(f"Recorder shutdown failed for {stream_id}: {result}")
     
     async def handle_new_room_stream(self, stream_id, uuid, source="event"):
         """Handle a new stream that has joined the room by starting a recorder for it."""

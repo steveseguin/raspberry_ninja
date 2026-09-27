@@ -382,9 +382,17 @@ python3 tools/serve_hls.py --directory /path/to/hls --bind 127.0.0.1 --port 8089
 ```
 
 Open the playlist at `http://127.0.0.1:8089/PLAYLIST.m3u8` in an HLS-compatible
-player. The helper serves files; it does not generate the stream. It supports
+player. The helper serves `.m3u8` playlists and `.ts` segments inside the selected
+directory, including subdirectories. Other file types, directory listings,
+traversal, and symlinks pointing outside that directory are rejected.
+It does not generate the stream. It supports
 concurrent requests and CORS preflight. Playlist responses disable caching so live
 updates remain visible even when the playlist changes within one second.
 Without options it serves the repository
 root on port 8089 on all interfaces. Use `--directory` to select the files to expose
 and `--bind` to choose the listening address. Stop with Ctrl+C.
+
+Neither this helper nor the built-in `--webserver` dashboard authenticates
+requests. Keep them on a trusted network or behind access controls. The built-in
+dashboard listens on all interfaces and serves media below `/hls/`; the standalone
+helper serves media directly below `/`.
