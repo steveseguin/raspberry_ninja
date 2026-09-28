@@ -194,6 +194,17 @@ pipelines, require JSON strings. To disable the password, use `"password": "fals
 (a string); `"noaudio": false` is a boolean flag. Optional text settings whose
 default is unset also accept `null`.
 
+Unknown configuration keys produce a warning and, when possible, suggest a
+matching option name. They remain ignored for compatibility. Correct spelling
+matters: `"bitrete": 500` does not change the bitrate.
+
+Passwords are trimmed and encoded internally to match VDO.Ninja's browser
+behavior. Pass the normal password text on the CLI or in JSON and use the printed
+browser link, which escapes URL characters. Alphanumeric passwords keep their
+existing behavior. To connect an updated endpoint to an older Raspberry Ninja
+peer using raw spaces or punctuation, set `--raw-password` or `"raw_password": true`.
+That legacy mode may not match browser peers with those characters.
+
 Explicit command-line values override saved settings, even if the value equals
 the built-in default. For example, `--config sender.json --bitrate 2500` uses
 2500 kbps. Unique long-option abbreviations follow the same rule, but use full

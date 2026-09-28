@@ -9,7 +9,8 @@ Most users should start with the universal installer from the repository root:
 For a basic non-interactive install:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/install.sh | bash
+curl -fL https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/install.sh -o install-raspberry-ninja.sh && \
+  bash install-raspberry-ninja.sh --non-interactive --runtime-only --skip-system-upgrade
 ```
 
 The platform directories contain additional notes and scripts for hardware-specific or manually managed installations:

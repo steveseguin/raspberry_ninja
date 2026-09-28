@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from argparse import ArgumentParser, Namespace
+from difflib import get_close_matches
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Set
 
@@ -184,6 +186,11 @@ def apply_config_overrides(
             continue
 
         target_key = CONFIG_ARG_ALIASES.get(key, key)
+        if target_key not in actions:
+            matches = get_close_matches(key, actions, n=1, cutoff=0.65)
+            hint = f" Did you mean '{matches[0]}'?" if matches else ""
+            print(f"Warning: unknown configuration key {key!r} (ignored).{hint}", file=sys.stderr)
+            continue
         # Prefer current names over legacy aliases independently of JSON order.
         if target_key != key and target_key in config:
             continue

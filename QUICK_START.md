@@ -30,6 +30,11 @@ adjustment for your camera's supported resolutions and frame rates.
 Use the same stream name and password at both ends. That is all most Raspberry
 Pi setups need.
 
+Passwords follow VDO.Ninja's browser encoding, including spaces and punctuation.
+Copy the printed viewer link so its password characters stay intact. When the
+other end is an older Raspberry Ninja using an unescaped password, enable
+`--raw-password` (or `"raw_password": true` in JSON) on the updated endpoint.
+
 The guided service setup targets Raspberry Pi Linux systems with systemd. For
 Jetson, Orange Pi, desktops, or other platforms, use the
 [platform installation guides](installers/README.md) and manual commands.
@@ -61,6 +66,12 @@ python3 publish.py --test --h264 --noaudio \
 
 Open `https://vdo.ninja/?view=rn-test&password=false` and stop the test with
 Ctrl+C. Use a real password for anything beyond this first test.
+
+Choose a unique stream name if someone else might be using `rn-test`. The printed
+viewer link is available before a viewer connects; expect moving video in the
+browser and a connected peer in the terminal before considering the test complete.
+If the browser keeps waiting, check that the stream name and password match and
+that the publisher reports a successful signaling connection.
 
 For a local software encode/decode check without publishing a stream, run
 `python3 tools/media_self_test.py`. Missing codecs are reported as skipped;

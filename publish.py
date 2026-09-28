@@ -27,7 +27,7 @@ from typing import Dict, Any, Optional, Tuple, Set, List
 from functools import lru_cache
 from config_loader import apply_config_overrides, load_config_file
 from audio_devices import resolve_alsa_device
-from signaling_utils import handshake_server_requires_puuid
+from signaling_utils import handshake_server_requires_puuid, normalize_vdo_password, encode_browser_password
 from turn_servers import get_default_turn_servers
 from whep import WhepReceiver, RtpSourceSwitch, RelayControlState, media_request_fields, normalize_settings, WhepHttpSession
 from whep import _gst as prepare_gstreamer_types
@@ -35,7 +35,7 @@ from v4l2_devices import resolve_v4l2_input_device, resolve_v4l2_output_device
 from hls_files import resolve_hls_file
 try:
     import hashlib
-    from urllib.parse import urlparse, urlencode
+    from urllib.parse import urlparse, urlencode, quote
     from urllib import request as urllib_request
 except Exception as e:
     pass
@@ -1494,6 +1494,8 @@ class WebServer:
         self.runner = None
         self.logs = []  # Store recent logs
         self.max_logs = 1000
+        self.log_sequence = 0
+        self.log_lock = threading.Lock()
         self.hls_directory = Path.cwd().resolve()
         
         # Setup routes
@@ -1540,6 +1542,14 @@ class WebServer:
                     grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
                     gap: 20px;
                     margin: 20px 0;
+                }
+                @media (max-width: 600px) {
+                    .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+                    .stats-grid .stat-card { padding: 12px; min-width: 0; }
+                    .stats-grid .stat-value { font-size: 1.2em; overflow-wrap: anywhere; }
+                    #hlsStreams .stat-card { grid-column: 1 / -1 !important; }
+                    .controls { display: flex; flex-wrap: wrap; gap: 8px; }
+                    .controls button { margin: 0; min-height: 44px; }
                 }
                 .recording-section {
                     background: #3a2a2a;
@@ -1692,9 +1702,8 @@ class WebServer:
                 </div>
                 
                 <div class="controls">
-                    <button onclick="toggleRecording()">Start Recording</button>
+                    <button onclick="showRecordingInfo()">Recording Info</button>
                     <button onclick="adjustBitrate()">Adjust Bitrate</button>
-                    <button onclick="takeSnapshot()">Take Snapshot</button>
                     <button onclick="showDevices()">Show Devices</button>
                     <button onclick="showPipeline()">Show Pipeline</button>
                     <button onclick="showICEStats()">ICE Stats</button>
@@ -1977,16 +1986,21 @@ class WebServer:
                     }
                 }
                 
+                let logCursor = 0;
+                let fetchingLogs = false;
                 async function fetchLogs() {
+                    if (fetchingLogs) return;
+                    fetchingLogs = true;
                     try {
-                        const response = await fetch('/api/logs');
-                        const logs = await response.json();
-                        const logsDiv = document.getElementById('logs');
-                        logsDiv.innerHTML = logs.map(log => 
-                            '<div class="log-entry">' + escapeHTML(log) + '</div>'
-                        ).join('');
+                        const response = await fetch('/api/logs?after=' + logCursor, {cache: 'no-store'});
+                        if (!response.ok) throw new Error('HTTP ' + response.status);
+                        const batch = await response.json();
+                        batch.logs.forEach(addLog);
+                        logCursor = batch.cursor;
                     } catch (error) {
                         console.error('Failed to fetch logs:', error);
+                    } finally {
+                        fetchingLogs = false;
                     }
                 }
                 
@@ -2146,36 +2160,7 @@ class WebServer:
                     URL.revokeObjectURL(url);
                 }
                 
-                async function takeSnapshot() {
-                    try {
-                        const response = await fetch('/api/control', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({action: 'take_snapshot'})
-                        });
-                        const result = await response.json();
-                        
-                        if (result.status === 'success') {
-                            // Download the snapshot
-                            const a = document.createElement('a');
-                            a.href = '/api/snapshot';
-                            a.download = result.filename;
-                            document.body.appendChild(a);
-                            a.click();
-                            document.body.removeChild(a);
-                            
-                            addLog('[SNAPSHOT] ' + result.message);
-                        } else {
-                            alert('Error: ' + result.message);
-                        }
-                    } catch (error) {
-                        alert('Failed to take snapshot: ' + error.message);
-                    }
-                }
-                
-                let isRecording = false;
-                
-                async function toggleRecording() {
+                async function showRecordingInfo() {
                     try {
                         const response = await fetch('/api/control', {
                             method: 'POST',
@@ -2184,50 +2169,39 @@ class WebServer:
                         });
                         const result = await response.json();
                         
-                        if (result.status === 'success') {
-                            isRecording = result.recording;
-                            const btn = event.target;
-                            btn.textContent = isRecording ? 'Stop Recording' : 'Start Recording';
-                            btn.style.background = isRecording ? '#f44336' : '#4CAF50';
-                            
-                            if (result.message) {
-                                addLog('[RECORDING] ' + result.message);
-                            }
-                        } else {
-                            alert('Error: ' + result.message);
-                        }
+                        alert(result.message || 'Enable recording at startup with --save.');
                     } catch (error) {
-                        alert('Failed to toggle recording: ' + error.message);
+                        alert('Failed to get recording info: ' + error.message);
                     }
                 }
                 
                 async function adjustBitrate() {
-                    const bitrate = prompt('Enter new bitrate (kbps):', '2000');
-                    if (bitrate) {
-                        await fetch('/api/control', {
+                    const input = prompt('Enter video bitrate (100–50000 kbps):', '2000');
+                    if (input === null) return;
+                    const bitrate = Number(input);
+                    if (!Number.isInteger(bitrate) || bitrate < 100 || bitrate > 50000) {
+                        alert('Enter a whole number between 100 and 50000 kbps.');
+                        return;
+                    }
+                    try {
+                        const response = await fetch('/api/control', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({action: 'set_bitrate', value: parseInt(bitrate)})
+                            body: JSON.stringify({action: 'set_bitrate', value: bitrate})
                         });
+                        const result = await response.json();
+                        if (!response.ok || result.status !== 'success') {
+                            alert(result.message || 'Could not change the bitrate.');
+                            return;
+                        }
+                        await fetchStats();
+                    } catch (error) {
+                        alert('Failed to change bitrate: ' + error.message);
                     }
                 }
                 
                 // Initial fetch and setup
-                fetchStats().then(() => {
-                    // Check initial recording state from stats
-                    fetch('/api/stats')
-                        .then(r => r.json())
-                        .then(stats => {
-                            if (stats.recording === 'active') {
-                                isRecording = true;
-                                const btn = document.querySelector('button[onclick="toggleRecording()"]');
-                                btn.textContent = 'Recording Active';
-                                btn.style.background = '#666';
-                                btn.disabled = true;
-                                btn.title = 'Recording was enabled at startup with --save flag';
-                            }
-                        });
-                });
+                fetchStats();
                 fetchLogs();
                 connectWebSocket();
                 
@@ -2502,6 +2476,7 @@ class WebServer:
                 
                 // Refresh stats every 2 seconds
                 setInterval(fetchStats, 2000);
+                setInterval(fetchLogs, 2000);
                 setInterval(fetchSystemStats, 5000);
                 setInterval(fetchHLSStreams, 3000);
                 fetchSystemStats();
@@ -2598,7 +2573,22 @@ class WebServer:
         return web.json_response(stats)
     
     async def get_logs(self, request):
-        return web.json_response(self.logs[-100:])  # Return last 100 logs
+        with self.log_lock:
+            logs = list(self.logs)
+            cursor = self.log_sequence
+        if 'after' not in request.query:
+            return web.json_response(logs[-100:])  # Preserve the original API.
+        try:
+            after = int(request.query['after'])
+            if after < 0:
+                raise ValueError()
+        except ValueError:
+            return web.json_response({'error': 'after must be a nonnegative integer'}, status=400)
+        if after > cursor:  # The browser survived an application restart.
+            after = 0
+        offset = max(0, after - (cursor - len(logs)))
+        return web.json_response({'logs': logs[offset:], 'cursor': cursor},
+                                 headers={'Cache-Control': 'no-store'})
     
     async def control(self, request):
         try:
@@ -2685,9 +2675,11 @@ class WebServer:
         """Add a log message to the buffer"""
         timestamp = time.strftime('%H:%M:%S')
         log_entry = f"[{timestamp}] {message}"
-        self.logs.append(log_entry)
-        if len(self.logs) > self.max_logs:
-            self.logs.pop(0)
+        with self.log_lock:
+            self.logs.append(log_entry)
+            self.log_sequence += 1
+            if len(self.logs) > self.max_logs:
+                self.logs.pop(0)
     
     async def get_system_stats(self, request):
         """Get system resource usage"""
@@ -3477,7 +3469,7 @@ class WebRTCClient:
 
         self.processing = False
         self.buffer = params.buffer
-        self.password = params.password
+        self.password = normalize_vdo_password(params.password, raw=getattr(params, 'raw_password', False))
         self.hostname = params.hostname
         self.hashcode = ""
         self.salt = getattr(params, 'salt', None)  # Get salt from params if provided
@@ -13848,6 +13840,7 @@ async def main():
     parser.add_argument('--buffer',  type=int, default=200, help='The jitter buffer latency in milliseconds; default is 200ms, minimum is 10ms. (gst +v1.18)')
     parser.add_argument('--auto-view-buffer', action='store_true', help='Viewer mode: dynamically raise jitter buffer latency when packet loss is detected (opt-in).')
     parser.add_argument('--password', type=str, nargs='?', default="someEncryptionKey123", required=False, const='', help='Specify a custom password. If setting to false, password/encryption will be disabled.')
+    parser.add_argument('--raw-password', action='store_true', help='Use legacy unescaped passwords for older Raspberry Ninja peers. Special characters may not match VDO.Ninja browsers.')
     parser.add_argument('--salt', type=str, default=None, help='Specify a custom salt for encryption. If not provided, will be derived from hostname (default: vdo.ninja)')
     parser.add_argument('--hostname', type=str, default='https://vdo.ninja/', help='Your URL for vdo.ninja, if self-hosting the website code')
     parser.add_argument('--video-pipeline', type=str, default=None, help='Custom GStreamer video source pipeline')
@@ -13882,6 +13875,7 @@ async def main():
         print(f"Loaded configuration from: {config_path}")
 
     try:
+        normalize_vdo_password(args.password, raw=args.raw_password)
         if args.whip:
             WhepHttpSession(args.whip, args.whip_token, protocol='WHIP')
             if not math.isfinite(args.whip_http_timeout) or args.whip_http_timeout <= 0:
@@ -15161,7 +15155,7 @@ async def main():
             args.server = normalize_signaling_server_url(args.server)
         except ValueError as exc:
             parser.error(str(exc))
-        server = "&wss=" + args.server.split("://", 1)[1]
+        server = "&wss=" + quote(args.server.split("://", 1)[1], safe='')
         if args.puuid is None and handshake_server_requires_puuid(args.server):
             args.puuid = str(random.randint(10000000,99999999999))
     else:
@@ -15176,7 +15170,7 @@ async def main():
         if args.password == "someEncryptionKey123":
             watchURL += "?"
         else:
-            watchURL += "?password="+args.password+"&"
+            watchURL += "?password="+encode_browser_password(args.password)+"&"
     else:
         watchURL += "?password=false&"
 
@@ -15214,16 +15208,16 @@ async def main():
                 printc(f"   └─ GPIO pin {args.join_gpio_pin} ({level_mode}, {args.join_gpio_pulse:.2f}s)", "77F")
         elif args.view and not args.room:
             printc(f"\n📺 Viewer Mode", "0FF")
-            printc(f"   └─ Sender URL: {bold_color}{watchURL}push={args.view}{server}", "77F")
+            printc(f"   └─ Sender URL: {bold_color}{watchURL}push={quote(args.view, safe='')}{server}", "77F")
         elif args.view:
             printc(f"\n📺 Viewer Mode (Room: {args.room})", "0FF")
-            printc(f"   └─ Sender URL: {bold_color}{watchURL}push={args.view}{server}&room={args.room}", "77F")
+            printc(f"   └─ Sender URL: {bold_color}{watchURL}push={quote(args.view, safe='')}{server}&room={quote(args.room, safe='')}", "77F")
         elif not args.room:
             printc(f"\n📹 Recording Mode", "0FF")
-            printc(f"   └─ Publish to: {bold_color}{watchURL}push={args.streamin}{server}", "77F")
+            printc(f"   └─ Publish to: {bold_color}{watchURL}push={quote(args.streamin, safe='')}{server}", "77F")
         else:
             printc(f"\n📹 Recording Mode (Room: {args.room})", "0FF")
-            printc(f"   └─ Publish to: {bold_color}{watchURL}push={args.streamin}{server}&room={args.room}", "77F")
+            printc(f"   └─ Publish to: {bold_color}{watchURL}push={quote(args.streamin, safe='')}{server}&room={quote(args.room, safe='')}", "77F")
         if getattr(args, 'room_monitor', False):
             print("\nUse --join-webhook/--join-postapi/--join-notify-topic/--join-gpio-pin for room-join alerts.")
         else:
@@ -15233,11 +15227,11 @@ async def main():
         if not args.nored and not args.novideo:
             print("Note: Redundant error correction is enabled (default). This will double the sending video bitrate, but handle packet loss better. Use --nored to disable this.")
         if args.room:
-            printc(f"\n📡 Stream Ready!", "0FF")
-            printc(f"   └─ View at: {bold_color}{watchURL}view={args.streamid}&room={args.room}&scene{server}\n", "7FF")
+            printc(f"\n📡 Viewer link (waiting for a connection)", "0FF")
+            printc(f"   └─ View at: {bold_color}{watchURL}view={quote(args.streamid, safe='')}&room={quote(args.room, safe='')}&scene{server}\n", "7FF")
         else:
-            printc(f"\n📡 Stream Ready!", "0FF")
-            printc(f"   └─ View at: {bold_color}{watchURL}view={args.streamid}{server}\n", "7FF")
+            printc(f"\n📡 Viewer link (waiting for a connection)", "0FF")
+            printc(f"   └─ View at: {bold_color}{watchURL}view={quote(args.streamid, safe='')}{server}\n", "7FF")
 
     args.pipeline = PIPELINE_DESC
     

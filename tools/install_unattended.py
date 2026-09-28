@@ -376,7 +376,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.dry_run:
             parser.error("--password is required with --dry-run")
         args.password = getpass.getpass("Shared VDO.Ninja password (or false for a test): ")
-    if args.password == "":
+    if not args.password.strip():
         parser.error("password cannot be empty; use the literal value false only for a test")
     validate_args(parser, args)
 

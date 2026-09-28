@@ -105,13 +105,14 @@ Recent updates to Raspberry Ninja have added improved error correction and video
 
 ### Quick Install (Universal Installer)
 
-For the easiest installation experience, use our universal installer that works across all platforms.
+Start with the [Quick start](QUICK_START.md) for installation, a first test stream, and guided Raspberry Pi setup. The universal installer supports the Linux platforms described below, including WSL.
 
 #### Non-Interactive Installation (Basic)
 For a quick, basic installation that only installs dependencies:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/install.sh | bash
+curl -fL https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/install.sh -o install-raspberry-ninja.sh && \
+  bash install-raspberry-ninja.sh --non-interactive --runtime-only --skip-system-upgrade
 ```
 
 **Note:** This method runs in non-interactive mode and will:
@@ -124,11 +125,11 @@ curl -sSL https://raw.githubusercontent.com/steveseguin/raspberry_ninja/main/ins
 After installation, you'll need to:
 ```bash
 cd ~/raspberry_ninja
-python3 publish.py --help
+python3 tools/media_self_test.py
 ```
 
 #### Interactive Installation (Full Setup)
-For the complete setup experience with configuration and auto-start options:
+After installing dependencies, Raspberry Pi users can run `sudo python3 tools/setup.py` for guided sender or TV receiver setup. The older universal installer also provides configuration and auto-start prompts:
 
 **Option 1: If you haven't cloned the repository yet:**
 ```bash
@@ -222,28 +223,13 @@ See the macOS install notes here: [Jump there now](installers/mac/readme.md)
 
 Many modern versions of Linux distributions, such as Ubuntu 22, support Raspberry.Ninja with minimal installation effort.
 
-The basic install script for Ubuntu-like systems is as below:
-```
-sudo apt-get update && sudo apt upgrade -y
+Use the runtime installer in [Quick Install](#quick-install-universal-installer). It installs Python bindings and GStreamer through the OS package manager on Debian-based systems. There is no need to delete Python's `EXTERNALLY-MANAGED` file or compile PyGObject for this path.
 
- # Use a virtual environment or delete the following file if having issues
-sudo rm /usr/lib/python3.11/EXTERNALLY-MANAGED ## For Debian 12-based systems
+If the repository is already cloned, run from its directory:
 
-sudo apt-get install python3-pip -y
-
-sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools gstreamer1.0-x python3-pyqt5 python3-opengl gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-qt5 gstreamer1.0-gtk3 gstreamer1.0-pulseaudio gstreamer1.0-nice gstreamer1.0-plugins-base-apps 
-
-pip3 install --break-system-packages websockets cryptography
-
-sudo apt-get install -y libcairo-dev ## possibly optional
-pip3 install PyGObject ## possibly optional
-pip3 install aiohttp --break-system-packages # optional
-
-sudo apt-get install git -y
-cd ~ 
-git clone https://github.com/steveseguin/raspberry_ninja
-cd raspberry_ninja
-python3 publish.py --test
+```bash
+bash install.sh --non-interactive --runtime-only --skip-system-upgrade
+python3 tools/media_self_test.py
 ```
 Package managers with old versions of Gstreamers, or with no hardware acceleration or limited codec support, may be limited in what Raspberry.Ninja can offer. For the most up-to-date and comprehensive feature set, compiling Gstreamer from scratch may be still needed.
 
@@ -251,41 +237,37 @@ If wanting to use AV1 streaming, you'll need to install `gst-plugins-rs` as well
 
 ## Updating
 
-Major updates sometimes will require that the latest Rasbperry Pi or Jetson image be installed on your device, but most updates are minor and only require the `publish.py` file to be updated.  If you've just installed the latest device image, you will still want to update before going further, as the image is not updated with every new code release.
+Update the entire checkout: `publish.py` imports companion modules that must stay in step with it. Device images may contain an older checkout even when the image was recently installed.
 
 You can normally update by logging into your device, either via SSH, or via mouse/keyboard with the terminal app open.
 
 ```
 cd ~
 cd raspberry_ninja
-git pull
+git pull --ff-only
 ```
-That's it.
+Restart any running publisher or receiver afterward. For guided services, use `sudo systemctl restart raspberry-ninja-sender` or `sudo systemctl restart raspberry-ninja-viewer` as appropriate.
 
-If you run into issues due making changes to the code, you can either `git stash` your changes first, or  you can just delete the raspberry_ninja folder and clone it again.
-
-ie:
-```
-cd ~
-rm raspberry_ninja -r
-git clone https://github.com/steveseguin/raspberry_ninja
-cd raspberry_ninja
-```
+If Git reports local changes, inspect them with `git status` and preserve your configurations and recordings before resolving the conflict. Keep personal settings in a separate configuration file such as `~/.raspberry_ninja/config.json`; deleting the checkout can also delete recordings and local settings.
 
 Updates are usually optional, as they typically just focus on added features or improving video quality/stability. I do recommend checking for new updates every now and then.
 
 ## Usage
 
-You should be able to run the publishing script simply with `python3 publish.py`, however lots of options are available for customizing as desired.
+For a first stream, use the small test pattern in [Quick start](QUICK_START.md#optional-one-time-test) and open the viewer link printed in the terminal. The test needs no camera or microphone. Stop it with Ctrl+C.
+
+You can also run without arguments to try the default camera and available audio input:
 
 ```
 $ python3 publish.py
 ```
 
-If you used the universal installer, you can run with your saved configuration:
+If the interactive universal installer created a configuration, run it explicitly:
 ```
 $ python3 publish.py --config ~/.raspberry_ninja/config.json
 ```
+
+Guided `tools/setup.py` services use their own configuration paths, printed at the end of setup. Merely editing a JSON file does not load it into a manually started publisher; pass `--config PATH`.
 
 To get the list of supported commands with your version of the code, run `python3 publish.py --help`.
 

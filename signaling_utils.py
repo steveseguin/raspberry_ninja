@@ -1,6 +1,23 @@
 from __future__ import annotations
 
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
+
+
+def normalize_vdo_password(password, *, raw=False):
+    """Match VDO.Ninja's trim + encodeURIComponent before hashing/encryption."""
+    if not password or raw:
+        return password
+    if not password.strip():
+        raise ValueError('password cannot contain only whitespace; use --password false to disable it explicitly')
+    return quote(password.strip(), safe="~()*!.'-")
+
+
+def encode_browser_password(password: str) -> str:
+    """Quote a browser query value, preserving literal percent escapes too.
+
+    VDO.Ninja decodes passwords once beyond URLSearchParams decoding.
+    """
+    return quote(password.replace('%', '%25'), safe='')
 
 
 OFFICIAL_HANDSHAKE_HOSTS = {

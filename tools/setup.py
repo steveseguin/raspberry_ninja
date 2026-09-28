@@ -26,6 +26,7 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from v4l2_devices import get_v4l2_device_name, is_v4l2_capture_device
 
+from signaling_utils import encode_browser_password
 
 STREAM_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 ALSA_CAPTURE_RE = re.compile(
@@ -208,7 +209,7 @@ def build_receiver_arguments(repo: Path, stream_id: str, password: str) -> List[
 def build_view_url(stream_id: str, password: str) -> str:
     return (
         "https://vdo.ninja/?view="
-        f"{quote(stream_id, safe='')}&password={quote(password, safe='')}"
+        f"{quote(stream_id, safe='')}&password={encode_browser_password(password)}"
     )
 
 
@@ -251,6 +252,22 @@ def main(
     input_fn: Callable[[str], str] = input,
     password_fn: Callable[[str], str] = getpass.getpass,
 ) -> int:
+    try:
+        return _run_setup(argv, input_fn=input_fn, password_fn=password_fn)
+    except EOFError:
+        print("\nSetup cancelled: input ended. Run sudo python3 tools/setup.py in an interactive terminal.", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("\nSetup cancelled.", file=sys.stderr)
+        return 130
+
+
+def _run_setup(
+    argv: Optional[Sequence[str]] = None,
+    *,
+    input_fn: Callable[[str], str] = input,
+    password_fn: Callable[[str], str] = getpass.getpass,
+) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inventory", action="store_true", help=argparse.SUPPRESS)
     options = parser.parse_args(list(argv or []))
@@ -276,7 +293,7 @@ def main(
     )
     stream_id = ask_stream_id(input_fn=input_fn)
     password = password_fn("Stream password: ")
-    if not password:
+    if not password.strip():
         print("A password is required.", file=sys.stderr)
         return 2
 
