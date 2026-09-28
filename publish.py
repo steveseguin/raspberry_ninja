@@ -13875,6 +13875,11 @@ async def main():
         print(f"Loaded configuration from: {config_path}")
 
     try:
+        for option in ('width', 'height', 'framerate', 'bitrate', 'audiobitrate'):
+            if getattr(args, option) <= 0:
+                raise ValueError(f'--{option} must be a positive integer')
+        if args.webserver is not None and not 0 <= args.webserver <= 65535:
+            raise ValueError('--webserver must be between 0 and 65535 (0 disables it)')
         normalize_vdo_password(args.password, raw=args.raw_password)
         if args.whip:
             WhepHttpSession(args.whip, args.whip_token, protocol='WHIP')
@@ -15267,7 +15272,13 @@ async def main():
             printc("⚠️  Web server requires aiohttp: pip install aiohttp", "F77")
         else:
             webserver = WebServer(args.webserver, c)
-            await webserver.start()
+            try:
+                await webserver.start()
+            except OSError as exc:
+                await webserver.stop()
+                printwarn(f'Cannot start the web interface on port {args.webserver}: {exc}. '
+                          'Choose another --webserver PORT or stop the process using it.')
+                raise SystemExit(1)
             # Set global reference for logging
             global _webserver_instance
             _webserver_instance = webserver

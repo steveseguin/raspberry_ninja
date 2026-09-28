@@ -49,6 +49,12 @@ class CombineRecordingDiscoveryTests(unittest.TestCase):
 
             self.assertEqual(pairs, [(video, audio)])
 
+    def test_numeric_uuid_suffix_is_not_mistaken_for_timestamp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            video = self.touch(directory, 'room_camera_1700000000_12345678.webm')
+            audio = self.touch(directory, 'room_camera_1700000002_12345678_audio.webm')
+            self.assertEqual(combine_recordings.discover_recording_pairs(directory), [(video, audio)])
+
     def test_supports_legacy_wav_audio_without_pairing_unrelated_stream(self):
         with tempfile.TemporaryDirectory() as directory:
             video = self.touch(directory, "room_camera_1700000000.webm")

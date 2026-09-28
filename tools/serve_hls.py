@@ -64,7 +64,13 @@ def main(argv=None):
     if not 0 <= args.port <= 65535:
         parser.error('--port must be between 0 and 65535')
     handler = partial(CORSHTTPRequestHandler, directory=str(directory))
-    with http.server.ThreadingHTTPServer((args.bind, args.port), handler) as server:
+    try:
+        server = http.server.ThreadingHTTPServer((args.bind, args.port), handler)
+    except OSError as exc:
+        print(f'Cannot start HLS server on {args.bind or "all interfaces"}:{args.port}: {exc}. '
+              'Choose another --port or check --bind and the process using this port.', file=sys.stderr)
+        return 1
+    with server:
         print(f'Serving {directory} at http://{args.bind or "localhost"}:{server.server_port}')
         try:
             server.serve_forever()

@@ -146,7 +146,15 @@ With no arguments, the tool scans the current directory for timestamp-matched pa
 python3 tools/combine_recordings.py
 ```
 
-The tool re-encodes video to H.264 and audio to AAC while compensating for differing stream start timestamps. Keep the originals until the combined file has been inspected and decoded successfully.
+The tool re-encodes video to H.264 and audio to AAC. When both inputs share a timestamp origin, it pads the later track with black video or silence and ends at the shorter track. Failed merges return a nonzero exit status and preserve existing output files; a successful explicit merge replaces the named output. Automatic discovery skips existing outputs.
+
+MPEG-TS and WebM/WAV can use different timestamp origins, so their timestamps alone do not establish synchronization. For these mixed pairs, specify the audio offset explicitly. Start with zero to align the first decoded samples, inspect a visible/audible event, then adjust as needed:
+
+```bash
+python3 tools/combine_recordings.py --audio-offset 0 video.ts audio.webm combined.mp4
+```
+
+Positive offsets delay audio; negative offsets delay video. For example, `--audio-offset 0.25` adds 250 ms of silence before the audio. This overrides container timestamps. Keep the originals until the combined file has been inspected and decoded successfully.
 
 ## Resource planning
 

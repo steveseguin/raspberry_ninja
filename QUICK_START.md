@@ -73,6 +73,11 @@ browser and a connected peer in the terminal before considering the test complet
 If the browser keeps waiting, check that the stream name and password match and
 that the publisher reports a successful signaling connection.
 
+Width, height, frame rate, and audio/video bitrate must be positive integers;
+the chosen camera still needs to support the requested capture mode. If the
+optional web dashboard cannot start because its port is occupied, choose another
+port (for example, `--webserver 8090`).
+
 For a local software encode/decode check without publishing a stream, run
 `python3 tools/media_self_test.py`. Missing codecs are reported as skipped;
 a failed probe or no passing probes returns a nonzero exit status. This does
