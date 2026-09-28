@@ -110,8 +110,14 @@ is available, then tries `nvv4l2h264enc` when OMX is absent. Both require
 can choose an installed software encoder. An available `--x264` or
 `--openh264` encoder takes precedence over the NVIDIA hardware default.
 CSI input from `nvarguscamerasrc` is converted from NVMM to system memory
-before software H.264 encoding. Test sources and ordinary system-memory input
-do not require NVIDIA conversion when using these software encoders.
+before software H.264, H.265, VP8, VP9, or AV1 encoding. Test sources and ordinary
+system-memory input do not require NVIDIA conversion with software encoders.
+Custom source pipelines must supply memory compatible with the selected encoder.
+
+VP8 keeps the legacy NVIDIA `omxvp8enc` path when it and `nvvidconv` are
+available. Without those elements, NVIDIA mode can use the normal software
+`vp8enc` path; it no longer requires OMX just because `--nvidia` is set.
+This does not establish VP8 hardware support on newer JetPack releases.
 
 The modern encoder uses bitrate in bits per second and `control-rate=1`, as
 documented in [NVIDIA's accelerated GStreamer guide](https://docs.nvidia.com/jetson/archives/r35.6.2/DeveloperGuide/SD/Multimedia/AcceleratedGstreamer.html).
@@ -156,6 +162,16 @@ On macOS, `--apple 0` selects AVFoundation device index 0. A nonnumeric value
 such as `--apple "External Camera"` selects the first case-insensitive name
 match. An unmatched name stops startup rather than opening the default camera.
 Numeric index availability is checked by the native source when it opens.
+
+Automatic audio selection preserves the existing ALSA card preference. When
+GStreamer's device monitor finds audio inputs without ALSA card metadata,
+Raspberry Ninja uses `autoaudiosrc` if installed. This allows native desktop
+backends such as CoreAudio, WASAPI, or PulseAudio to supply the system input.
+An empty device list still disables automatic audio, preserving headless
+operation on boards without a microphone. Explicit `--alsa`, `--pulse`, and
+`--audio-pipeline` selections bypass automatic discovery. If the platform does
+not enumerate its inputs, use an explicit audio pipeline and check microphone
+permissions. See [GStreamer's autoaudiosrc documentation](https://gstreamer.freedesktop.org/documentation/autodetect/autoaudiosrc.html).
 
 AV1 publishing requires the `av1parse` and `rtpav1pay` elements plus an encoder.
 `--av1` tries `qsvav1enc`, `av1enc`, then `rav1enc`, based on element availability.
@@ -217,5 +233,7 @@ software H.264 recording, and finalized-file decoding on Pi 3/Bullseye with
 GStreamer 1.18.4. Software pipeline tests also run under GStreamer 1.24.2 on
 Ubuntu/WSL. Factory and source mocks cover Pi 2/3/4/5 selection, legacy Pi CSI,
 Jetson CSI/OMX/V4L2 encoder selection, Rockchip MPP, and Apple device selection.
+Additional checks exercise desktop audio discovery, CSI memory conversion for
+software codecs, and native software VP8/VP9/H.265/Opus encode/decode pipelines.
 Those mocked results are not physical hardware passes for the other boards,
 CSI cameras, or native desktop operating systems.

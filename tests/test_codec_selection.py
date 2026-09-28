@@ -62,12 +62,13 @@ class CodecSelectionTests(unittest.TestCase):
         self.assertIn("encoding-name=VP9", fragment)
         self.assertNotIn("vp8", fragment.lower())
 
-    def test_nvidia_vp9_fragment_moves_frames_out_of_nvmm(self):
+    def test_nvidia_hint_does_not_force_nvmm_on_software_vp9_input(self):
         args = codec_args(nvidia=True, vp9=True)
 
         fragment = publish.build_vp9_encoder_fragment(args)
 
-        self.assertIn("nvvidconv ! video/x-raw,format=I420", fragment)
+        self.assertIn("videoconvert ! video/x-raw,format=I420", fragment)
+        self.assertNotIn("nvvidconv", fragment)
 
     def test_pi5_defaults_to_x264_without_an_explicit_alternative(self):
         self.assertTrue(publish.should_default_pi5_to_x264(codec_args(rpi=True)))

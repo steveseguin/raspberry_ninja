@@ -13737,11 +13737,8 @@ def should_default_pi5_to_x264(args):
 
 
 def build_vp9_encoder_fragment(args, timestamp_overlay="", save_video=""):
-    """Build a portable, real-time VP9 software encoder fragment."""
-    if getattr(args, "nvidia", False):
-        converter = " ! nvvidconv ! video/x-raw,format=I420"
-    else:
-        converter = f" ! videoconvert{timestamp_overlay} ! video/x-raw,format=I420"
+    """Encode system-memory frames; the source path downloads NVMM if needed."""
+    converter = f" ! videoconvert{timestamp_overlay} ! video/x-raw,format=I420"
 
     return (
         f"{converter} ! queue max-size-buffers=10 "
@@ -14192,6 +14189,7 @@ async def main():
     except ValueError as exc:
         parser.error(str(exc))
 
+    auto_audio_source = False
     if not (args.alsa or args.pulse or args.test or args.noaudio or args.pipein
             or args.streamin or args.audio_pipeline):
         monitor = Gst.DeviceMonitor.new()
@@ -14217,9 +14215,15 @@ async def main():
             _, card, name = next((item for item in candidates if item[0]), candidates[0])
             args.alsa = f"hw:{card},0"
             print(f" >> Selected audio device: {name}, via alsasrc device={args.alsa}")
+        elif audiodevices and check_plugins('autoaudiosrc'):
+            # CoreAudio, WASAPI and some desktop sound-server sources have no
+            # ALSA card number. Let GStreamer select the system's audio backend.
+            auto_audio_source = True
+            print(" >> Audio input detected; using autoaudiosrc for the system default. "
+                  "Use --audio-pipeline to select a specific native input.")
         else:
             args.noaudio = True
-            print("No ALSA capture source found; disabling audio. "
+            print("No usable automatic audio source found; disabling audio. "
                   "Use --alsa DEVICE, --pulse DEVICE, or --audio-pipeline for an explicit source.")
         print()
 
@@ -14936,6 +14940,19 @@ async def main():
                                 f'! video/x-raw,framerate=(fraction){args.framerate}/1'
                             )
 
+            nvidia_vp8_hardware = (
+                args.nvidia
+                and not (args.h264 or args.av1 or args.h265 or args.vp9)
+                and check_plugins(['nvvidconv', 'omxvp8enc'])
+            )
+            nvidia_h264_hardware = args.h264 and h264 in ('omxh264enc', 'nvv4l2h264enc')
+            if video_input_uses_nvmm and not (nvidia_h264_hardware or nvidia_vp8_hardware):
+                # CSI supplies NVMM, but software H.264/H.265/VP8/VP9/AV1
+                # encoders consume system memory. Do this once at the boundary,
+                # without assuming USB, file or test sources also use NVMM.
+                needed += ['nvvidconv']
+                pipeline_video_input += ' ! nvvidconv ! video/x-raw,format=I420'
+
             if args.filesrc2:
                 pass
             elif v4l2_h264_passthrough:
@@ -14955,9 +14972,6 @@ async def main():
                         "Check availability with gst-inspect-1.0 x264enc."
                     )
                 print("h264 preferred codec is ", h264)
-                if video_input_uses_nvmm and h264 not in ('omxh264enc', 'nvv4l2h264enc'):
-                    needed += ['nvvidconv']
-                    pipeline_video_input += ' ! nvvidconv ! video/x-raw,format=I420'
                 if h264 == "vtenc_h264_hw":
                     pipeline_video_input += f'{pipeline_video_converter} ! autovideoconvert ! vtenc_h264_hw name="encoder" qos=true bitrate={args.bitrate} realtime=true allow-frame-reordering=false ! video/x-h264'
                 elif args.nvidia and h264 == 'omxh264enc':
@@ -15040,8 +15054,9 @@ async def main():
                     saveVideo,
                 )
             else:
-                if args.nvidia:
-                    pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxvp8enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
+                if nvidia_vp8_hardware:
+                    needed += ['nvvidconv', 'omxvp8enc']
+                    pipeline_video_input += f' ! nvvidconv ! video/x-raw(memory:NVMM) ! omxvp8enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true {saveVideo} ! rtpvp8pay ! application/x-rtp,media=video,encoding-name=VP8,payload=96'
                 elif args.rpi:
                     # vp8enc consumes system-memory frames; avoid fragile V4L2 mem2mem
                     # conversion when no hardware encoder follows it.
@@ -15093,6 +15108,10 @@ async def main():
             elif args.pulse:
                 needed += ['pulseaudio']
                 pipeline_audio_input += f'pulsesrc device={quote_gst_string(args.pulse)}'
+
+            elif auto_audio_source:
+                needed += ['autoaudiosrc']
+                pipeline_audio_input += 'autoaudiosrc'
 
             else:
                 needed += ['alsa']
