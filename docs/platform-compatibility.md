@@ -58,7 +58,7 @@ Missing commands are useful results. Include them in a bug report rather than in
 
 ## Raspberry Pi generations
 
-### Pi Zero 2 W and Pi 3
+### Pi 2, Pi Zero 2 W, and Pi 3
 
 These systems have little RAM and older Pi media blocks. A `v4l2h264enc` factory can exist while the driver rejects frames. Raspberry Ninja performs a small runtime probe and falls back to x264 when necessary. Keep resolution and frame rate low until the complete WebRTC path is stable.
 
@@ -104,11 +104,31 @@ The code uses compatibility helpers and frame probes for these cases. When addin
 
 Jetson acceleration uses NVIDIA-specific elements such as `nvv4l2decoder`, encoders, converters, and NVMM buffers. Their availability and properties depend on JetPack/L4T, not just the GStreamer version. Keep NVIDIA paths isolated and preserve a software decoder fallback when memory conversion or the hardware decoder fails repeatedly.
 
+For H.264 publishing, NVIDIA mode keeps the legacy `omxh264enc` path when it
+is available, then tries `nvv4l2h264enc` when OMX is absent. Both require
+`nvvidconv`. If neither NVIDIA encoder is available, normal H.264 selection
+can choose an installed software encoder. An available `--x264` or
+`--openh264` encoder takes precedence over the NVIDIA hardware default.
+CSI input from `nvarguscamerasrc` is converted from NVMM to system memory
+before software H.264 encoding. Test sources and ordinary system-memory input
+do not require NVIDIA conversion when using these software encoders.
+
+The modern encoder uses bitrate in bits per second and `control-rate=1`, as
+documented in [NVIDIA's accelerated GStreamer guide](https://docs.nvidia.com/jetson/archives/r35.6.2/DeveloperGuide/SD/Multimedia/AcceleratedGstreamer.html).
+Factory detection does not prove the encoder works on a particular SoC or
+JetPack image. Inspect the printed pipeline and test real frames; the new
+NVIDIA encoder selection has regression coverage but has not been validated
+on physical Jetson hardware in this review.
+
 See the [Jetson installer notes](../installers/nvidia_jetson/README.md). Those notes target specific JetPack generations; newer Jetsons should be inventoried and tested independently.
 
 ## Orange Pi and Rockchip
 
 Orange Pi 5-class images may provide Rockchip MPP elements such as `mpph264enc`, `mpph265enc`, or `mppvp8enc`. Plugin naming, supported raw formats, bitrate property units, and kernel integration vary by image. Raspberry Ninja detects the Rockchip plugin and uses MPP-specific formats and controls only on that path.
+
+Runtime bitrate updates for these MPP encoders use `bps` in bits per second,
+matching their startup configuration. Software and other hardware encoders
+retain their own bitrate properties and units.
 
 See the [Orange Pi installer notes](../installers/orangepi/README.md). Treat their dated tested-image reference as a known baseline, not a requirement for every Orange Pi.
 
@@ -145,9 +165,25 @@ An installed plugin alone does not guarantee that it exposes the required
 encoder on the current hardware; inspect the element with `gst-inspect-1.0`.
 
 An explicit `--omx` request selects an available OMX encoder before automatic
-H.264 detection (`avenc_h264_omx`, then `omxh264enc`). If neither is installed,
+H.264 detection (`avenc_h264_omx`, then `omxh264enc`; NVIDIA mode prefers its
+native `omxh264enc`). If neither is installed,
 normal H.264 detection supplies the fallback. Selecting a plugin does not prove
 that its hardware backend works; test it with frames on the target device.
+
+JPEG capture through V4L2 and libcamera shares the same decoder selection.
+`--soft-jpeg` forces `jpegdec` on either path. Otherwise Pi mode uses
+`v4l2jpegdec` only after its frame probe succeeds, while NVIDIA mode uses
+`nvjpegdec` if installed. Missing or unusable Pi hardware decoders and missing
+NVIDIA JPEG elements fall back to `jpegdec`. Source dependencies are checked
+for the selected input: raw and test sources do not need JPEG plugins just
+because a platform hint is set. USB HDMI adapters exposing MJPEG use this
+same JPEG selection.
+
+Windows startup does not require the POSIX-only `SIGTSTP` signal. Linux and
+macOS retain the Ctrl+Z warning and restore the previous signal handler on
+normal shutdown. This check does not validate native Windows/macOS camera or
+audio plugins; those still need their platform-specific GStreamer installation
+and source selection. WSL media tests cover Linux behavior.
 
 Use this order when diagnosing or extending support:
 
@@ -175,3 +211,11 @@ Document results as `pass`, `fail`, or `not tested`; do not turn an expectation 
 | Resources | RSS, CPU, temperature, throttling, packet loss |
 
 The dated [Pi 3 and Pi Zero 2 W test-bench record](../dev_notes/PI3_TESTBENCH_2026-08-02.md) is one example. It is evidence for those exact combinations, not the entire support matrix.
+
+The September 2026 compatibility follow-up exercised USB MJPEG capture,
+software H.264 recording, and finalized-file decoding on Pi 3/Bullseye with
+GStreamer 1.18.4. Software pipeline tests also run under GStreamer 1.24.2 on
+Ubuntu/WSL. Factory and source mocks cover Pi 2/3/4/5 selection, legacy Pi CSI,
+Jetson CSI/OMX/V4L2 encoder selection, Rockchip MPP, and Apple device selection.
+Those mocked results are not physical hardware passes for the other boards,
+CSI cameras, or native desktop operating systems.

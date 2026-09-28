@@ -12941,13 +12941,13 @@ class WebRTCClient:
                 else:
                     print("AOM encoder not found")
                     
-            elif " mpph265enc " in self.pipeline or (client['encoder'] and hasattr(client['encoder'], 'get_name') and client['encoder'].get_name() and client['encoder'].get_name().startswith('mpph265enc')):
-                # For mpph265enc, use bps instead of bitrate
-                if client['encoder']:
-                    client['encoder'].set_property('bps', int(bitrate*1000))
-                    
-            elif " mppvp8enc " in self.pipeline or (client['encoder'] and hasattr(client['encoder'], 'get_name') and client['encoder'].get_name() and client['encoder'].get_name().startswith('mppvp8enc')):
-                # For mppvp8enc, use bps instead of bitrate
+            elif (
+                any(f" {name} " in self.pipeline for name in ('mpph264enc', 'mpph265enc', 'mppvp8enc'))
+                or (client['encoder'] and hasattr(client['encoder'], 'get_name')
+                    and client['encoder'].get_name()
+                    and client['encoder'].get_name().startswith(('mpph264enc', 'mpph265enc', 'mppvp8enc')))
+            ):
+                # Rockchip MPP video encoders use bps instead of bitrate.
                 if client['encoder']:
                     client['encoder'].set_property('bps', int(bitrate*1000))
                     
@@ -13762,6 +13762,17 @@ def build_openh264_encoder_fragment(args, timestamp_overlay=""):
         "! video/x-h264,profile=constrained-baseline,stream-format=(string)byte-stream"
     )
 
+
+def select_jpeg_decoder(args):
+    """Use the same JPEG fallback for V4L2 and libcamera capture."""
+    if not getattr(args, 'soft_jpeg', False):
+        if getattr(args, 'nvidia', False) and check_plugins('nvjpegdec'):
+            return 'nvjpegdec'
+        if getattr(args, 'rpi', False) and v4l2_jpeg_decoder_usable():
+            return 'v4l2jpegdec'
+    return 'jpegdec'
+
+
 async def main():
 
     error = False
@@ -14389,6 +14400,7 @@ async def main():
         pipeline_video_input = ''
         pipeline_audio_input = ''
         v4l2_h264_passthrough = False
+        video_input_uses_nvmm = False
 
         if args.bt601:
             args.raw = True
@@ -14437,7 +14449,9 @@ async def main():
         )
 
         h264 = None
-        if args.omx and check_plugins('avenc_h264_omx'):
+        if args.omx and args.nvidia and check_plugins('omxh264enc'):
+            h264 = 'omxh264enc'
+        elif args.omx and check_plugins('avenc_h264_omx'):
             h264 = 'avenc_h264_omx'
         elif args.omx and check_plugins('omxh264enc'):
             h264 = 'omxh264enc'
@@ -14448,7 +14462,13 @@ async def main():
         elif args.apple and check_plugins('vtenc_h264_hw'):
             h264 = 'vtenc_h264_hw'
         elif args.h264 and not args.streamin and not args.novideo:
-            if not native_v4l2_h264_requested and v4l2_h264_encoder_usable():
+            # Keep the legacy Jetson path when present; newer JetPack images
+            # expose nvv4l2h264enc instead. Explicit software flags above win.
+            if args.nvidia and check_plugins('nvvidconv') and check_plugins('omxh264enc'):
+                h264 = 'omxh264enc'
+            elif args.nvidia and check_plugins('nvvidconv') and check_plugins('nvv4l2h264enc'):
+                h264 = 'nvv4l2h264enc'
+            elif not native_v4l2_h264_requested and v4l2_h264_encoder_usable():
                 h264 = 'v4l2h264enc'
             elif check_plugins('mpph264enc'):
                 h264 = 'mpph264enc'
@@ -14602,17 +14622,8 @@ async def main():
 
         if not args.novideo and not args.streamin:
 
-            if args.rpicam:
-                needed += ['rpicamsrc']
-            elif args.nvidia:
-                needed += ['omx', 'nvvidconv']
-                if not args.raw:
-                    needed += ['nvjpeg']
-            elif args.rpi and not args.rpicam:
-                needed += ['video4linux2']
-                if not args.raw:
-                    needed += ['jpeg']
-
+            # Source dependencies belong to the selected source below. A board
+            # hint alone must not require OMX, JPEG, or V4L2 for every input.
             if args.streamin:
                 pass
             elif args.video_pipeline:
@@ -14684,6 +14695,7 @@ async def main():
             elif args.nvidiacsi:
                 needed += ['nvarguscamerasrc']
                 args.nvidia = True
+                video_input_uses_nvmm = True
                 pipeline_video_input = f'nvarguscamerasrc ! video/x-raw(memory:NVMM),width=(int){args.width},height=(int){args.height},format=(string){args.format or "NV12"},framerate=(fraction){args.framerate}/1'
             elif args.apple:
                 needed += ['applemedia']
@@ -14738,13 +14750,11 @@ async def main():
                             printc("Tip: You're on a Raspberry Pi. Using --rpi flag can improve JPEG decoding performance and reduce errors.", "7F7")
                         pipeline_video_input += f' ! image/jpeg,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
                         # Add queue before decoder to handle bursty/corrupted frames from USB adapters
-                        if args.nvidia:
-                            pipeline_video_input += ' ! queue ! jpegparse ! nvjpegdec ! video/x-raw'
-                        elif args.rpi:
-                            pipeline_video_input += ' ! queue ! jpegparse ! v4l2jpegdec '
-                        else:
-                            # Add jpegparse for better error handling of corrupted JPEG frames
-                            pipeline_video_input += ' ! queue ! jpegparse ! jpegdec'
+                        decoder = select_jpeg_decoder(args)
+                        needed += ['jpegparse', decoder]
+                        pipeline_video_input += f' ! queue ! jpegparse ! {decoder}'
+                        if decoder == 'nvjpegdec':
+                            pipeline_video_input += ' ! video/x-raw'
 
                     elif args.format == "H264": # Not going to try to support this right now
                         print("Not support h264 at the moment as an input")
@@ -14915,19 +14925,11 @@ async def main():
                             f'v4l2src device={quote_gst_string(args.v4l2)} io-mode={str(args.iomode)} ! {source_caps}'
                         )
                         pipeline_video_converter = ""  # Add this line
-                        if args.nvidia:
-                            pipeline_video_input += ' ! jpegparse ! nvjpegdec ! video/x-raw'
-                        elif args.rpi:
-                            if args.soft_jpeg:
-                                 # Force software decoding
-                                 pipeline_video_input += ' ! jpegparse ! jpegdec'
-                            else:
-                                 # Use hardware only after it proves that it can process frames.
-                                 decoder = 'v4l2jpegdec' if v4l2_jpeg_decoder_usable() else 'jpegdec'
-                                 pipeline_video_input += f' ! jpegparse ! {decoder} '
-                        else:
-                            # Add jpegparse for better error handling of corrupted JPEG frames
-                            pipeline_video_input += ' ! jpegparse ! jpegdec'
+                        decoder = select_jpeg_decoder(args)
+                        needed += ['jpegparse', decoder]
+                        pipeline_video_input += f' ! jpegparse ! {decoder}'
+                        if decoder == 'nvjpegdec':
+                            pipeline_video_input += ' ! video/x-raw'
                         if not v4l2_source_rate_supported:
                             pipeline_video_input += (
                                 f' ! videorate drop-only=true max-rate={args.framerate} '
@@ -14944,8 +14946,8 @@ async def main():
                 pass
             elif args.h264:
                 # Encoded passthrough paths above do not need an encoder.
-                # NVIDIA and rpicamsrc build their own platform-specific path.
-                if h264 is None and not args.nvidia and not args.rpicam:
+                # rpicamsrc supplies encoded H.264 itself.
+                if h264 is None and not args.rpicam:
                     parser.error(
                         "No usable H.264 encoder was found for raw video "
                         f"({Gst.version_string()}). Install a supported encoder "
@@ -14953,10 +14955,17 @@ async def main():
                         "Check availability with gst-inspect-1.0 x264enc."
                     )
                 print("h264 preferred codec is ", h264)
+                if video_input_uses_nvmm and h264 not in ('omxh264enc', 'nvv4l2h264enc'):
+                    needed += ['nvvidconv']
+                    pipeline_video_input += ' ! nvvidconv ! video/x-raw,format=I420'
                 if h264 == "vtenc_h264_hw":
                     pipeline_video_input += f'{pipeline_video_converter} ! autovideoconvert ! vtenc_h264_hw name="encoder" qos=true bitrate={args.bitrate} realtime=true allow-frame-reordering=false ! video/x-h264'
-                elif args.nvidia:
+                elif args.nvidia and h264 == 'omxh264enc':
+                    needed += ['nvvidconv', 'omxh264enc']
                     pipeline_video_input += f'{pipeline_video_converter} ! nvvidconv ! video/x-raw(memory:NVMM) ! omxh264enc bitrate={args.bitrate}000 control-rate="constant" name="encoder" qos=true ! video/x-h264,stream-format=(string)byte-stream'
+                elif args.nvidia and h264 == 'nvv4l2h264enc':
+                    needed += ['nvvidconv', 'nvv4l2h264enc']
+                    pipeline_video_input += f'{pipeline_video_converter} ! nvvidconv ! video/x-raw(memory:NVMM),format=I420 ! nvv4l2h264enc bitrate={args.bitrate * 1000} control-rate=1 name="encoder" ! video/x-h264,stream-format=(string)byte-stream'
                 elif args.rpicam:
                     pass
                 elif h264 == "mpph264enc" and check_plugins('rockchipmpp'):
@@ -15192,7 +15201,7 @@ async def main():
             PIPELINE_DESC = f'{pipeline_video_input} {pipeline_audio_input} {pipeline_save}'
             printc('\ngst-launch-1.0 ' + PIPELINE_DESC.replace('(', '\\(').replace(')', '\\)'), "FFF")
 
-        if not check_plugins(needed) or error:
+        if not check_plugins(needed, True) or error:
             sys.exit(1)
 
     if args.server:
@@ -15415,7 +15424,11 @@ async def main():
         signal.signal(signal.SIGTSTP, signal.SIG_DFL)
         os.kill(os.getpid(), signal.SIGTSTP)
     
-    signal.signal(signal.SIGTSTP, sigtstp_handler)
+    # Windows has SIGINT/SIGTERM, but no POSIX process-suspension signal.
+    suspend_signal = getattr(signal, 'SIGTSTP', None)
+    original_sigtstp = None
+    if suspend_signal is not None:
+        original_sigtstp = signal.signal(suspend_signal, sigtstp_handler)
     
     # Add shutdown flag to client
     c._shutdown_requested = False
@@ -15467,6 +15480,8 @@ async def main():
     # Restore original signal handlers
     signal.signal(signal.SIGINT, original_sigint)
     signal.signal(signal.SIGTERM, original_sigterm)
+    if suspend_signal is not None:
+        signal.signal(suspend_signal, original_sigtstp)
     if force_exit_handle[0] is not None:
         try:
             force_exit_handle[0].cancel()
