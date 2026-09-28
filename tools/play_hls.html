@@ -1,121 +1,128 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Direct HLS Player</title>
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Raspberry Ninja HLS Player</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.19/dist/hls.min.js"></script>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        video { width: 100%; max-width: 800px; }
-        .info { margin: 10px 0; padding: 10px; background: #f0f0f0; }
+        body { font: 16px system-ui, sans-serif; max-width: 900px; margin: 24px auto; padding: 0 16px; color: #18212b; }
+        h1 { font-size: 1.6rem; }
+        form { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 16px; }
+        input { flex: 1 1 300px; min-width: 0; padding: 12px; font: inherit; }
+        button { padding: 12px 20px; font: inherit; cursor: pointer; }
+        video { width: 100%; background: #111; max-height: 65vh; }
+        #status { min-height: 1.5em; }
+        #log { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; font-size: .85rem; }
     </style>
 </head>
 <body>
-    <h1>Direct HLS Player</h1>
-    
-    <video id="video" controls></video>
-    
-    <div class="info">
-        <strong>Status:</strong> <span id="status">Initializing...</span><br>
-        <strong>Stream URL:</strong> http://localhost:8088/hls/asdfasfsdfgasdf_YAPCDUE808d64_1750667561.m3u8
-    </div>
-    
-    <div id="log" style="margin-top: 20px; font-family: monospace; font-size: 12px;"></div>
-    
+    <h1>Raspberry Ninja HLS Player</h1>
+    <p>Paste the full playlist URL from your recording server. Use the Pi's hostname or address when playing from another computer.</p>
+    <label for="source">Playlist URL (.m3u8)</label>
+    <form id="playerForm">
+        <input id="source" type="url" placeholder="http://raspberrypi.local:8080/hls/recording.m3u8" required spellcheck="false" autocomplete="off">
+        <button type="submit">Play</button>
+        <button id="stop" type="button">Stop</button>
+    </form>
+    <p id="status" role="status" aria-live="polite">Enter a playlist URL, then choose Play.</p>
+    <video id="video" controls playsinline></video>
+    <details><summary>Playback log</summary><pre id="log"></pre></details>
     <script>
-        var video = document.getElementById('video');
-        var statusEl = document.getElementById('status');
-        var logEl = document.getElementById('log');
-        
-        function log(msg) {
-            var time = new Date().toLocaleTimeString();
-            logEl.innerHTML = time + ' - ' + msg + '<br>' + logEl.innerHTML;
+        'use strict';
+        const video = document.getElementById('video');
+        const source = document.getElementById('source');
+        const statusEl = document.getElementById('status');
+        const logEl = document.getElementById('log');
+        let hls = null;
+        let generation = 0;
+        let active = false;
+        const lines = [];
+
+        function log(message) {
+            lines.push(new Date().toLocaleTimeString() + ' — ' + message);
+            if (lines.length > 100) lines.shift();
+            logEl.textContent = lines.join('\n');
         }
-        
-        if (Hls.isSupported()) {
-            var hls = new Hls({
-                debug: false,
-                liveSyncDurationCount: 3,
-                liveMaxLatencyDurationCount: 10,
-                fragLoadingTimeOut: 20000,
-                fragLoadingMaxRetry: 6,
-                manifestLoadingTimeOut: 10000,
-                manifestLoadingMaxRetry: 3,
-                startLevel: -1,
-                startFragPrefetch: true
-            });
-            
-            var videoSrc = 'http://localhost:8088/hls/asdfasfsdfgasdf_YAPCDUE808d64_1750667561.m3u8';
-            
-            hls.on(Hls.Events.MEDIA_ATTACHING, function() {
-                log('Attaching media...');
-                statusEl.textContent = 'Attaching media...';
-            });
-            
-            hls.on(Hls.Events.MANIFEST_LOADING, function() {
-                log('Loading manifest...');
-                statusEl.textContent = 'Loading manifest...';
-            });
-            
-            hls.on(Hls.Events.MANIFEST_LOADED, function(event, data) {
-                log('Manifest loaded. Live: ' + data.live);
-                statusEl.textContent = 'Manifest loaded';
-            });
-            
-            hls.on(Hls.Events.MANIFEST_PARSED, function(event, data) {
-                log('Manifest parsed. Levels: ' + data.levels.length);
-                statusEl.textContent = 'Playing...';
-                video.play().catch(e => {
-                    statusEl.textContent = 'Click video to play';
-                    log('Autoplay blocked: ' + e.message);
-                });
-            });
-            
-            hls.on(Hls.Events.LEVEL_LOADED, function(event, data) {
-                log('Level loaded. Live: ' + data.details.live + ', Segments: ' + data.details.fragments.length);
-            });
-            
-            hls.on(Hls.Events.FRAG_LOADING, function(event, data) {
-                log('Loading fragment: ' + data.frag.url);
-            });
-            
-            hls.on(Hls.Events.FRAG_LOADED, function(event, data) {
-                log('Fragment loaded: ' + data.frag.url);
-            });
-            
-            hls.on(Hls.Events.ERROR, function(event, data) {
-                if (data.fatal) {
-                    log('FATAL ERROR: ' + data.type + ' - ' + data.details);
-                    statusEl.textContent = 'Fatal error: ' + data.details;
-                    
-                    switch(data.type) {
-                        case Hls.ErrorTypes.NETWORK_ERROR:
-                            log('Fatal network error, trying to recover...');
-                            hls.startLoad();
-                            break;
-                        case Hls.ErrorTypes.MEDIA_ERROR:
-                            log('Fatal media error, trying to recover...');
-                            hls.recoverMediaError();
-                            break;
-                        default:
-                            log('Unrecoverable error');
-                            hls.destroy();
-                            break;
-                    }
-                } else {
-                    log('Non-fatal error: ' + data.details);
-                    if (data.details === 'fragParsingError') {
-                        statusEl.textContent = 'Buffering...';
-                    }
+
+        function stopPlayback() {
+            generation++;
+            active = false;
+            if (hls) { hls.destroy(); hls = null; }
+            video.pause();
+            video.removeAttribute('src');
+            video.load();
+        }
+
+        async function beginPlayback(current) {
+            try { await video.play(); }
+            catch (error) {
+                if (current !== generation) return;
+                statusEl.textContent = 'Use the video Play button to start playback.';
+                log(error.message);
+            }
+        }
+
+        document.getElementById('playerForm').addEventListener('submit', event => {
+            event.preventDefault();
+            let url;
+            try {
+                url = new URL(source.value.trim());
+                if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Use an HTTP or HTTPS playlist URL.');
+                if (location.protocol === 'https:' && url.protocol === 'http:') {
+                    throw new Error('This HTTPS page cannot load an HTTP stream. Open this player as a local file or use an HTTPS stream.');
                 }
-            });
-            
-            log('Loading source: ' + videoSrc);
-            hls.loadSource(videoSrc);
-            hls.attachMedia(video);
-            
-        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            video.src = 'http://localhost:8088/hls/asdfasfsdfgasdf_YAPCDUE808d64_1750667561.m3u8';
-        }
+            } catch (error) {
+                statusEl.textContent = error.message || 'Enter a complete playlist URL.';
+                return;
+            }
+            stopPlayback();
+            const current = generation;
+            active = true;
+            statusEl.textContent = 'Loading playlist…';
+            log('Loading a new playlist.');
+            // Prefer native HLS where available, including when the CDN is offline.
+            if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = url.href;
+                beginPlayback(current);
+            } else if (window.Hls && Hls.isSupported()) {
+                hls = new Hls({liveSyncDurationCount: 3});
+                hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                    if (current === generation) beginPlayback(current);
+                });
+                hls.on(Hls.Events.ERROR, (_event, data) => {
+                    if (current !== generation) return;
+                    log(data.type + ': ' + data.details);
+                    if (data.fatal) {
+                        stopPlayback();
+                        statusEl.textContent = data.type === Hls.ErrorTypes.NETWORK_ERROR
+                            ? 'Could not load the stream. Check the playlist URL, server, and CORS access, then choose Play to retry.'
+                            : 'Playback failed. Check that the recording has playable audio/video, then choose Play to retry.';
+                    }
+                });
+                hls.loadSource(url.href);
+                hls.attachMedia(video);
+            } else {
+                active = false;
+                statusEl.textContent = window.Hls
+                    ? 'This browser does not support HLS playback. Try a current browser or VLC.'
+                    : 'The playback library could not load. Check your internet connection and reload this page, or open the playlist in VLC.';
+            }
+        });
+
+        document.getElementById('stop').addEventListener('click', () => {
+            stopPlayback();
+            statusEl.textContent = 'Stopped.';
+        });
+        video.addEventListener('playing', () => { if (active) statusEl.textContent = 'Playing'; });
+        video.addEventListener('waiting', () => { if (active) statusEl.textContent = 'Buffering…'; });
+        video.addEventListener('ended', () => { if (active) statusEl.textContent = 'Playback finished.'; });
+        video.addEventListener('error', () => {
+            if (active) statusEl.textContent = 'Could not play the stream. Check the playlist URL and media format.';
+        });
+        // Prefill only; opening a shared link must not start network playback.
+        source.value = new URLSearchParams(location.search).get('url') || '';
+        window.addEventListener('pagehide', stopPlayback);
     </script>
 </body>
 </html>

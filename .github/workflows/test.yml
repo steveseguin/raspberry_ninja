@@ -85,7 +85,7 @@ jobs:
         shell: bash
         run: |
           /usr/bin/python3 -m compileall -q \
-            publish.py record.py config_loader.py signaling_utils.py v4l2_devices.py hls_files.py whep.py whip.py turn_servers.py \
+            publish.py record.py config_loader.py signaling_utils.py v4l2_devices.py hls_files.py recording_files.py whep.py whip.py turn_servers.py \
             webrtc_subprocess_glib.py tools tests
 
       - name: Run complete test suite

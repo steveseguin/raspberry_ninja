@@ -17,7 +17,9 @@ concluding the file is damaged. For the local Matroska video track:
 gst-launch-1.0 filesrc location=RECORDING.mkv ! matroskademux ! h264parse ! avdec_h264 ! fakesink
 ```
 
-This checks video decoding only. Validate audio separately when present.
+This checks video decoding only. Validate audio separately when present. Local
+`--save` recording starts even before a viewer connects and continues when viewers
+leave. Stop with Ctrl+C to finalize the Matroska file before using it.
 
 ## Single-stream recording
 
@@ -51,6 +53,18 @@ The file container follows the negotiated codec:
 | Opus audio | separate `_audio.webm` WebM | Depayload and remux |
 
 Filenames include stream identifiers and timestamps. Read the startup log for the exact paths; do not assume that a user-supplied `.webm` suffix survives when the selected video container is MPEG-TS.
+
+Stream identifiers keep their original spelling for signaling. Characters that
+cannot safely appear in portable filenames are encoded in output names (for
+example, `/` becomes `~2F`); long identifiers receive a short hash suffix. This
+also prevents a remote stream name from creating unintended directory paths.
+The subprocess recorder gives audio and video the same basename, even when one
+track arrives later, so the combine tool can find the pair. Audio is written
+beside the video when an explicit output path is provided.
+
+On a graceful Raspberry Ninja publisher shutdown, a single-stream recorder
+finalizes that session and renews its subscription to the original stream ID.
+When the publisher starts again, recording continues in a new pair of files.
 
 Stop with Ctrl+C and let GStreamer finalize the files. A non-empty file is not proof of a valid recording; validate it as described below.
 
@@ -100,7 +114,18 @@ python3 -u publish.py \
   --password false
 ```
 
-Open the playlist named in the log through port 8080. Browser-native HLS support varies; the included [`tools/play_hls.html`](../tools/play_hls.html) can be used with the helper server when needed.
+Open the playlist named in the log through port 8080. For browser playback, open
+the local [`tools/play_hls.html`](../tools/play_hls.html) file on your viewing
+computer, paste the full playlist URL, and choose **Play**. Use the recording
+device's hostname or address, not `localhost`, when viewing from another computer.
+The player supports switching URLs and stopping playback. Browsers without native
+HLS support need internet access to load its pinned HLS.js library.
+
+For recordings that are already on disk, run
+`python3 tools/serve_hls.py --directory /path/to/recordings --port 8089`, then enter
+`http://DEVICE:8089/PLAYLIST.m3u8` in the local player. This helper serves media
+files only; open the player HTML locally. The built-in dashboard uses
+`http://DEVICE:8080/hls/PLAYLIST.m3u8` instead.
 
 `--hls` without `--hls-splitmux` keeps the older manual backend for platform compatibility. It produced empty segments in testing on GStreamer 1.18, so it is not the recommended general-purpose path. Do not remove it without testing the platforms that still depend on it.
 

@@ -33,6 +33,7 @@ from whep import WhepReceiver, RtpSourceSwitch, RelayControlState, media_request
 from whep import _gst as prepare_gstreamer_types
 from v4l2_devices import resolve_v4l2_input_device, resolve_v4l2_output_device
 from hls_files import resolve_hls_file
+from recording_files import recording_component
 try:
     import hashlib
     from urllib.parse import urlparse, urlencode, quote
@@ -3646,8 +3647,18 @@ class WebRTCClient:
             self.pipe = Gst.parse_launch(self.pipeline)
             self._apply_capture_device_identity()
             self._install_pipeline_bus_watch()
-            self.setup_ice_servers(self.pipe.get_by_name('sendrecv'))
-            self.pipe.set_state(Gst.State.PLAYING)
+            # --save uses shared RTP tees; its WebRTC peers are created later.
+            # Keep recording while no viewer is attached, including at startup.
+            for name in ('videotee', 'audiotee'):
+                tee = self.pipe.get_by_name(name)
+                if tee is not None:
+                    tee.set_property('allow-not-linked', True)
+            webrtc = self.pipe.get_by_name('sendrecv')
+            if webrtc is not None:
+                self.setup_ice_servers(webrtc)
+            if self.pipe.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+                self.pipe.set_state(Gst.State.NULL)
+                raise RuntimeError('Unable to start local recording; check the output directory and media pipeline.')
             print("RECORDING TO DISK STARTED")
 
     def _setup_room_join_gpio(self):
@@ -7748,6 +7759,12 @@ class WebRTCClient:
         if UUID in self.room_streams:
             await self.cleanup_room_stream(UUID)
         self.clients.pop(UUID, None)
+        if (manager is not None and getattr(self, 'single_stream_recording', False)
+                and not getattr(self, '_shutdown_requested', False)
+                and getattr(self, 'conn', None) is not None):
+            # A completed subscription is not automatically renewed when its
+            # publisher restarts. Keep waiting for the originally requested ID.
+            await self.sendMessageAsync({'request': 'play', 'streamID': self.streamin + self.hashcode})
 
     def on_incoming_stream(self, webrtc, pad):
         # pad-added and the GLib existing-pad scan can observe the same pad,
@@ -11290,7 +11307,7 @@ class WebRTCClient:
 
         # Create recording pipeline using parse_bin_from_description (like single-stream does)
         if encoding_name == 'H264':
-            recording_file = f"{self.record}_{stream_id}_{timestamp}.ts"
+            recording_file = f"{self.record}_{recording_component(stream_id)}_{timestamp}.ts"
             # Match single-stream H264 recording pattern
             pipeline_str = (
                 f"queue ! rtph264depay ! h264parse ! mpegtsmux ! "
@@ -11302,7 +11319,7 @@ class WebRTCClient:
             printc(f"[{stream_id}]    📐 Format: MPEG-TS container", "77F")
         elif encoding_name == 'VP8':
             # VP8 recording - decode and re-encode to handle resolution changes
-            recording_file = f"{self.record}_{stream_id}_{timestamp}.webm"
+            recording_file = f"{self.record}_{recording_component(stream_id)}_{timestamp}.webm"
             pipeline_str = (
                 f"queue max-size-buffers=0 max-size-time=0 ! "
                 f"rtpvp8depay ! "
@@ -11319,7 +11336,7 @@ class WebRTCClient:
             printc(f"[{stream_id}]    📐 Resolution: 1280x720", "77F")
             printc(f"[{stream_id}]    📐 Format: WebM container", "77F")
         elif encoding_name == 'VP9':
-            recording_file = f"{self.record}_{stream_id}_{timestamp}.mkv"
+            recording_file = f"{self.record}_{recording_component(stream_id)}_{timestamp}.mkv"
             pipeline_str = (
                 f"queue ! rtpvp9depay ! matroskamux ! "
                 f"filesink name=filesink_{stream_id} location={quote_gst_string(recording_file)}"
@@ -11748,6 +11765,19 @@ class WebRTCClient:
             self._viewer_restart_enabled = False
             self._viewer_restart_pending = False
             self._cancel_viewer_restart_timer()
+            notified = False
+            for client in list(self.clients.values()):
+                channel = client.get('send_channel')
+                if channel is not None:
+                    try:
+                        if channel.get_property('ready-state') == GstWebRTC.WebRTCDataChannelState.OPEN:
+                            channel.emit('send-string', json.dumps({'bye': True}))
+                            notified = True
+                    except Exception as exc:
+                        printwarn(f'Unable to notify peer of shutdown: {exc}')
+            if notified:
+                # Give SCTP a chance to flush before tearing down the transport.
+                await asyncio.sleep(0.1)
             # Finish parent state transitions before removing relay/display bins.
             # Otherwise a pending PLAYING transition can reactivate a splash bin
             # between its NULL transition and removal during immediate shutdown.
@@ -11812,6 +11842,14 @@ class WebRTCClient:
             if self.pipe:
                 self._flush_publisher_fec_probe()
                 try:
+                    if self.save_file:
+                        # With peer branches removed, EOS can finalize the local
+                        # muxer before PAUSED/NULL closes its output file.
+                        if self.pipe.send_event(Gst.Event.new_eos()):
+                            message = self.pipe.get_bus().timed_pop_filtered(
+                                3 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+                            if message is None or message.type != Gst.MessageType.EOS:
+                                printwarn('Local recording did not finalize cleanly; check the saved file before using it.')
                     pause_result = self.pipe.set_state(Gst.State.PAUSED)
                     if pause_result == Gst.StateChangeReturn.ASYNC:
                         pause_result = await self._await_state_change(
@@ -12292,7 +12330,7 @@ class WebRTCClient:
             'mode': 'view',
             'stream_id': stream_id,
             'room': self.record,  # Room name prefix for files
-            'record_file': f"{self.record}_{stream_id}_{int(time.time())}.webm",
+            'record_file': f"{self.record}_{recording_component(stream_id)}_{int(time.time())}.webm",
             'stun_server': None if self.no_stun else (self.stun_server or 'stun://stun.cloudflare.com:3478'),
             'turn_server': default_turn_url if self.turn_server == 'auto' else (self.turn_server or default_turn_url),
             'ice_transport_policy': self.ice_transport_policy,
@@ -12522,7 +12560,7 @@ class WebRTCClient:
         if "h264" in name.lower():
             # Direct mux H264 to MPEG-TS
             # Add counter to prevent file collisions
-            filename = f"{self.room_name}_{stream_id}_{timestamp}_{client['UUID'][:8]}.ts"
+            filename = f"{self.room_name}_{recording_component(stream_id)}_{timestamp}_{recording_component(client['UUID'][:8])}.ts"
             pipeline_str = (
                 f"queue ! rtph264depay ! h264parse ! "
                 f"mpegtsmux name=mux_{client['UUID']} ! "
@@ -12532,7 +12570,7 @@ class WebRTCClient:
         elif "vp8" in name.lower():
             # Direct mux VP8 to WebM
             # Add counter to prevent file collisions
-            filename = f"{self.room_name}_{stream_id}_{timestamp}_{client['UUID'][:8]}.webm"
+            filename = f"{self.room_name}_{recording_component(stream_id)}_{timestamp}_{recording_component(client['UUID'][:8])}.webm"
             pipeline_str = (
                 f"queue ! rtpvp8depay ! "
                 f"webmmux name=mux_{client['UUID']} ! "
@@ -12652,7 +12690,7 @@ class WebRTCClient:
                 stream_id = client['streamID']
                 timestamp = str(int(time.time()))
                 # Add UUID to prevent file collisions
-                filename = f"{self.room_name}_{stream_id}_{timestamp}_{client['UUID'][:8]}_audio.ts"
+                filename = f"{self.room_name}_{recording_component(stream_id)}_{timestamp}_{recording_component(client['UUID'][:8])}_audio.ts"
                 pipeline_str = (
                     f"queue ! rtpopusdepay ! opusparse ! audio/x-opus,channel-mapping-family=0,rate=48000 ! "
                     f"mpegtsmux ! filesink location={quote_gst_string(filename)}"
@@ -13648,6 +13686,8 @@ WSS="wss://wss.vdo.ninja:443"
 def configure_single_stream_recording(args):
     """Configure subprocess recording without losing the requested stream ID."""
     args.streamin = args.record
+    if not getattr(args, 'whep', None):
+        args.record = recording_component(args.record)
     args.single_stream_recording = True
     args.room_recording = False
     args.auto_turn = True
@@ -14102,7 +14142,7 @@ async def main():
             
         # If --record is also specified, use it as the prefix
         if not args.record:
-            args.record = args.room  # Default to room name if no prefix specified
+            args.record = recording_component(args.room)  # Room IDs are not paths.
             
         # Parse stream filter if provided
         if args.record_streams:
@@ -14581,9 +14621,9 @@ async def main():
                 needed += ['videotestsrc']
                 pipeline_video_input = 'videotestsrc'
                 if args.nvidia:
-                    pipeline_video_input = f'videotestsrc ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string){args.format or "NV12"},framerate=(fraction){args.framerate}/1'
+                    pipeline_video_input = f'videotestsrc is-live=true ! video/x-raw,width=(int){args.width},height=(int){args.height},format=(string){args.format or "NV12"},framerate=(fraction){args.framerate}/1'
                 else:
-                    pipeline_video_input = f'videotestsrc ! video/x-raw,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
+                    pipeline_video_input = f'videotestsrc is-live=true ! video/x-raw,width=(int){args.width},height=(int){args.height},type=video,framerate=(fraction){args.framerate}/1'
             elif args.filesrc:
                 pipeline_video_input = f'filesrc location={quote_gst_string(args.filesrc)} ! decodebin'
             elif args.filesrc2:
@@ -15250,7 +15290,7 @@ async def main():
         args.room_recording = True
         args.auto_turn = True  # Automatically use default TURN servers for room recording
         args.streamin = False  # Not receiving directly
-        args.record = args.record or args.room  # Default prefix
+        args.record = args.record or recording_component(args.room)
         
         # Continue with normal client creation below
         # The WebRTCClient will handle room recording with subprocess managers

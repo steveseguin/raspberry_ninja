@@ -15,6 +15,7 @@ import hashlib
 from typing import Optional, Dict, Any
 from whep import WhepReceiver, RtpSourceSwitch, RelayControlState, media_request_fields
 from whep import _gst as prepare_gstreamer_types
+from recording_files import recording_component
 
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GObject, GLib
@@ -1135,7 +1136,7 @@ class GLibWebRTCHandler:
                 output_dir = "/tmp"
                 self.log(f"   ⚠️  Cannot write to current directory, using {output_dir}")
         
-        base_filename = os.path.join(output_dir, f"{self.room}_{self.stream_id}_{timestamp}")
+        base_filename = os.path.join(output_dir, f"{self.room}_{recording_component(self.stream_id)}_{timestamp}")
         
         # For Jetson Nano with GStreamer 1.23.0, we need explicit mpegtsmux control
         # Create our own mpegtsmux to ensure proper segment handling
@@ -2632,12 +2633,7 @@ class GLibWebRTCHandler:
         else:
             # Recording mode
             # Set output filename
-            if self.record_file:
-                filename = filename_for_container(self.record_file, extension)
-            else:
-                import datetime
-                timestamp = int(datetime.datetime.now().timestamp())
-                filename = f"{self.room}_{self.stream_id}_{timestamp}.{extension}"
+            filename = self.recording_output_file(extension)
                 
             filesink.set_property('location', filename)
             self.log(f"   Output file: {filename}")
@@ -3099,9 +3095,7 @@ class GLibWebRTCHandler:
                 self.log("Failed to create audio elements", "error")
                 return
                 
-            import datetime
-            timestamp = int(datetime.datetime.now().timestamp())
-            filename = f"{self.room}_{self.stream_id}_{timestamp}_audio.{extension}"
+            filename = self.recording_output_file(extension, audio=True)
             filesink.set_property('location', filename)
             self.audio_filename = filename
             self.log(f"   📦 Direct OPUS → WebM (no transcoding)")
@@ -3167,6 +3161,18 @@ class GLibWebRTCHandler:
         self.log("Negotiation needed signal received")
         # In viewer mode, we don't initiate offers
         
+    def recording_output_file(self, extension, audio=False):
+        """Keep both tracks beside the requested file with one shared basename."""
+        if self.record_file:
+            base = os.path.splitext(self.record_file)[0] or self.record_file
+            if not audio:
+                return filename_for_container(self.record_file, extension)
+        else:
+            if not getattr(self, '_recording_base', None):
+                self._recording_base = f"{self.room}_{recording_component(self.stream_id)}_{int(time.time())}"
+            base = self._recording_base
+        return f"{base}{'_audio' if audio else ''}.{extension}"
+
     def on_connection_state_notify(self, element, pspec):
         """Monitor connection state changes"""
         state = element.get_property('connection-state')
