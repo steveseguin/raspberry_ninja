@@ -5,6 +5,7 @@ with standard WHEP PATCH signaling when supported; other peers use complete offe
 GStreamer control operations run on the GLib context; HTTP runs off that context.
 """
 
+import json
 import threading
 import time
 import uuid
@@ -149,16 +150,17 @@ def deferred_candidates(sdp):
     return '\r\n'.join(offer) + '\r\n', '\r\n'.join(fragment) + '\r\n'
 
 
-def numeric_mids(text):
-    """Keep local SDP and PATCH identities consistent for numeric-MID relays."""
+def numeric_mids(text, mids=None):
+    """Adapt a candidate fragment for relays requiring numeric media indexes."""
     lines = text.splitlines()
-    mids = {line[6:]: str(index) for index, line in enumerate(
-        line for line in lines if line.startswith('a=mid:'))}
+    if mids is None:
+        mids = {line[6:]: str(index) for index, line in enumerate(
+            line for line in lines if line.startswith('a=mid:'))}
     for index, line in enumerate(lines):
         if line.startswith('a=mid:'):
-            lines[index] = 'a=mid:' + mids[line[6:]]
+            lines[index] = 'a=mid:' + mids.get(line[6:], line[6:])
         elif line.startswith('a=group:BUNDLE '):
-            lines[index] = 'a=group:BUNDLE ' + ' '.join(mids[mid] for mid in line.split()[1:])
+            lines[index] = 'a=group:BUNDLE ' + ' '.join(mids.get(mid, mid) for mid in line.split()[1:])
     return '\r\n'.join(lines) + '\r\n'
 
 
@@ -167,6 +169,7 @@ class HttpStatusError(RuntimeError):
 
     def __init__(self, protocol, method, status, retry_after=None):
         super().__init__("%s %s returned HTTP %s" % (protocol, method, status))
+        self.method = method
         self.status = status
         self.retry_after = 0
         if retry_after:
@@ -192,6 +195,7 @@ class WhepHttpSession:
         self.location = None
         self.trickle = trickle
         self.candidates = None
+        self.mid_indices = {}
         self.etag = None
         self._closed = False
         self._lock = threading.Lock()
@@ -235,6 +239,8 @@ class WhepHttpSession:
 
     def offer(self, sdp):
         if self.trickle:
+            self.mid_indices = {line[6:]: str(index) for index, line in enumerate(
+                line for line in sdp.splitlines() if line.startswith('a=mid:'))}
             sdp, self.candidates = deferred_candidates(sdp)
         status, headers, body, endpoint = self._request("POST", self.url, sdp.encode("utf-8"))
         if status not in (200, 201):
@@ -273,7 +279,20 @@ class WhepHttpSession:
                 return
             location, fragment = self.location, self.candidates
             self.candidates = None
-        status, _, _, _ = self._request('PATCH', location, fragment.encode('utf-8'))
+        status, _, body, _ = self._request('PATCH', location, fragment.encode('utf-8'))
+        try:
+            mid_error = status == 500 and json.loads(body).get('error') == 'invalid mid attribute'
+        except (ValueError, AttributeError):
+            mid_error = False
+        if status == 400 or mid_error:
+            # Some MediaMTX versions parse MID as a media-line number and
+            # report that parse error as HTTP 500. Try the numeric format
+            # only after rejection; standards-compliant relays retain
+            # the original MID. Never rewrite native offers/transceiver MIDs:
+            # newer webrtcbin rejects that change before HTTP can even start.
+            numeric = numeric_mids(fragment, self.mid_indices)
+            if numeric != fragment:
+                status, _, _, _ = self._request('PATCH', location, numeric.encode('utf-8'))
         if status in (405, 412, 415, 422, 428, 501):
             raise TrickleUnsupported('Relay rejected %s trickle ICE; using a complete offer' % self.protocol)
         if status != 204:
@@ -563,13 +582,6 @@ class WhepReceiver:
     def _offer_created(self, offer):
         if not offer:
             raise RuntimeError("GStreamer did not create a WHEP offer")
-        if self.trickle:
-            # MediaMTX's SDP-fragment parser expects numeric mids. Set them in
-            # the local offer too, so the SDP, PATCH and RTP identities agree.
-            result, sdp = self.Sdp.SDPMessage.new_from_text(numeric_mids(offer.sdp.as_text()))
-            if result != self.Sdp.SDPResult.OK:
-                raise RuntimeError('Unable to prepare the WHEP offer')
-            offer = self.WebRTC.WebRTCSessionDescription.new(self.WebRTC.WebRTCSDPType.OFFER, sdp)
         self.peer.emit("set-local-description", offer,
                        self._promise(self.epoch, lambda _reply: setattr(self, "stage", "gathering")))
 

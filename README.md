@@ -578,12 +578,24 @@ python3 tools/combine_recordings.py
 ```
 
 This script will:
+
 - Automatically find matching audio/video pairs based on timestamps
-- Handle WebRTC negotiation delays (typically 400-600ms offset between audio/video)
+- Align compatible track timestamps, padding later video with black frames or later audio with silence
 - Create combined MP4 files with synchronized audio and video
 - Support batch processing of multiple recordings
 
-The script uses intelligent timestamp matching to ensure proper synchronization even when audio and video streams start at slightly different times due to WebRTC negotiation.
+MPEG-TS video and WebM audio can use different timestamp origins. For these
+pairs, specify `--audio-offset SECONDS` rather than inferring an offset from
+unrelated clocks. Zero aligns the first samples; positive values delay audio,
+and negative values delay video. For example:
+
+```bash
+python3 tools/combine_recordings.py camera.ts camera_audio.webm combined.mp4 --audio-offset 0
+```
+
+Use a measured offset when the tracks started at different times. The tool
+re-encodes both tracks and keeps the original files. Video padding works with
+older FFmpeg and FFmpeg 7, whose timestamp filter clears frame-rate metadata.
 
 ### Recording Features Summary
 
@@ -737,6 +749,12 @@ startup in that case; the publisher reports the limitation and retries. Timeout
 messages include the installed GStreamer version, ICE/peer/signaling states,
 and whether PATCH or a complete offer was used. See
 [legacy WHIP/WHEP troubleshooting](docs/troubleshooting.md#whip-or-whep-stalls-on-gstreamer-118).
+
+PATCH negotiation preserves GStreamer's native media IDs, including on 1.26
+and newer. If a relay requires numeric media indexes, the HTTP client retries
+the rejected candidate fragment once with that format. A PATCH session lost
+during a relay restart (HTTP 404/410) triggers reconnection; invalid publishing
+endpoints and authentication errors still stop with an actionable error.
 
 For VDO.Ninja's direct browser WHIP receiver, first open
 `https://vdo.ninja/?whip=YOUR_UNIQUE_ID`, then publish:

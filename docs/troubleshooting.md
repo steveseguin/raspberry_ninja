@@ -100,6 +100,14 @@ For an advertised WHEP stream, `--nowhep` requests P2P only if the publisher
 can supply it. The separate 1.18 data-only-to-P2P native crash described in the
 README makes that an unsuitable universal workaround.
 
+On newer GStreamer, forcing PATCH must not rename the media IDs in the native
+offer. Current Raspberry Ninja preserves those IDs and adapts only rejected
+HTTP candidate fragments for relays requiring numeric indexes. If an older
+build reports `GStreamer rejected WHIP SDP` before making an HTTP request,
+update Raspberry Ninja. A PATCH response of 404/410 after a relay restart now
+reconnects to allocate a new session; the same response to the initial POST
+still indicates an invalid or unavailable publishing endpoint.
+
 Timeout messages now include GStreamer version, ICE, peer and signaling states,
 and the candidate mode. Save that message and these version checks:
 

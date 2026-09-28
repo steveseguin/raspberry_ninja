@@ -13,7 +13,7 @@ import time
 import uuid
 
 from whep import (HttpStatusError, WhepHttpSession, TrickleUnsupported, _gst,
-                  mux_candidates, numeric_mids, deferred_candidates, negotiation_timeout)
+                  mux_candidates, deferred_candidates, negotiation_timeout)
 
 
 def prepare_offer(text, stream_id):
@@ -143,8 +143,6 @@ class WhipPublisher:
         if not offer:
             raise RuntimeError('GStreamer did not create a WHIP offer')
         text = prepare_offer(offer.sdp.as_text(), self.stream_id)
-        if self.trickle:
-            text = numeric_mids(text)
         result, sdp = self.Sdp.SDPMessage.new_from_text(text)
         if result != self.Sdp.SDPResult.OK:
             raise RuntimeError('Unable to prepare WHIP SDP')
@@ -223,6 +221,10 @@ class WhipPublisher:
         if isinstance(error, TrickleUnsupported):
             self.trickle = False
             self._retry(str(error))
+        elif isinstance(error, HttpStatusError) and error.method == 'PATCH' and error.status in (404, 410):
+            # An allocated session can disappear during a relay restart, even
+            # between applying its answer and PATCHing our gathered candidates.
+            self._retry(str(error) + '; relay session expired')
         elif isinstance(error, HttpStatusError) and 400 <= error.status < 500 and error.status not in (408, 429):
             self._fatal(str(error) + '; check endpoint, bearer token and accepted codecs')
         else:

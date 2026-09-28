@@ -156,12 +156,14 @@ async def combine_files(video_file, audio_file, output_file, audio_offset=None):
         video_delay, audio_delay = video_start - origin, audio_start - origin
         print(f"  Video start: {video_start:.3f}s; audio start: {audio_start:.3f}s")
 
-        # Each demuxer can normalize its input timestamps separately. Reset both
-        # explicitly, then pad the LATER track to preserve their relative timing.
-        video_filter = '[0:v:0]setpts=PTS-STARTPTS'
+        # FFmpeg normalizes each input's start. Pad the later track before the
+        # final PTS reset: FFmpeg 7's setpts clears frame-rate metadata needed
+        # by tpad to convert a duration into a number of black frames.
+        video_filter = '[0:v:0]'
         audio_filter = '[1:a:0]asetpts=PTS-STARTPTS'
         if video_delay > 0:
-            video_filter += f',tpad=start_duration={video_delay:.6f}:start_mode=add:color=black'
+            video_filter += f'tpad=start_duration={video_delay:.6f}:start_mode=add:color=black,'
+        video_filter += 'setpts=PTS-STARTPTS'
         if audio_delay > 0:
             audio_filter += f',adelay=delays={audio_delay * 1000:.3f}:all=1'
         filters = video_filter + '[video];' + audio_filter + '[audio]'
