@@ -87,5 +87,75 @@ class SingleStreamRecordingOfferTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class RecordingFinalizationTests(unittest.TestCase):
+    def make_handler(self, video=None, audio=None):
+        return SimpleNamespace(
+            pipe=MagicMock(),
+            recording_video=video is not None,
+            recording_audio=audio is not None,
+            recording_video_queue=video,
+            recording_audio_queue=audio,
+            log=MagicMock(),
+        )
+
+    def test_eos_is_enqueued_after_buffered_media_in_each_recording_queue(self):
+        video, audio = MagicMock(), MagicMock()
+        handler = self.make_handler(video, audio)
+        handler.pipe.get_bus.return_value.timed_pop_filtered.return_value = None
+
+        webrtc_subprocess_glib.GLibWebRTCHandler.finalize_recordings(handler, 2)
+
+        for queue in (video, audio):
+            queue.get_static_pad.assert_called_once_with("sink")
+            queue.get_static_pad.return_value.send_event.assert_called_once()
+            event = queue.get_static_pad.return_value.send_event.call_args.args[0]
+            self.assertEqual(event.type, webrtc_subprocess_glib.Gst.EventType.EOS)
+            queue.get_static_pad.return_value.push_event.assert_not_called()
+        handler.pipe.get_bus.return_value.timed_pop_filtered.assert_called_once_with(
+            2 * webrtc_subprocess_glib.Gst.SECOND,
+            webrtc_subprocess_glib.Gst.MessageType.EOS | webrtc_subprocess_glib.Gst.MessageType.ERROR,
+        )
+
+    def test_same_queue_is_finalized_once(self):
+        queue = MagicMock()
+        handler = self.make_handler(queue, queue)
+        webrtc_subprocess_glib.GLibWebRTCHandler.finalize_recordings(handler)
+        queue.get_static_pad.assert_called_once_with("sink")
+        queue.get_static_pad.return_value.send_event.assert_called_once()
+
+    def test_other_branch_is_finalized_when_one_rejects_eos(self):
+        video, audio = MagicMock(), MagicMock()
+        video.get_static_pad.return_value.send_event.return_value = False
+        handler = self.make_handler(video, audio)
+        webrtc_subprocess_glib.GLibWebRTCHandler.finalize_recordings(handler)
+        audio.get_static_pad.return_value.send_event.assert_called_once()
+        handler.pipe.get_bus.assert_called_once()
+
+    def test_other_branch_is_finalized_when_one_raises(self):
+        video, audio = MagicMock(), MagicMock()
+        video.get_static_pad.return_value.send_event.side_effect = RuntimeError("stopped")
+        handler = self.make_handler(video, audio)
+        webrtc_subprocess_glib.GLibWebRTCHandler.finalize_recordings(handler)
+        audio.get_static_pad.return_value.send_event.assert_called_once()
+        handler.pipe.get_bus.assert_called_once()
+
+    def test_does_not_wait_when_no_branch_accepts_eos(self):
+        for missing_pad in (False, True):
+            with self.subTest(missing_pad=missing_pad):
+                queue = MagicMock()
+                if missing_pad:
+                    queue.get_static_pad.return_value = None
+                else:
+                    queue.get_static_pad.return_value.send_event.return_value = False
+                handler = self.make_handler(queue)
+                webrtc_subprocess_glib.GLibWebRTCHandler.finalize_recordings(handler)
+                handler.pipe.get_bus.assert_not_called()
+
+    def test_does_not_finalize_when_recording_has_not_started(self):
+        handler = self.make_handler()
+        webrtc_subprocess_glib.GLibWebRTCHandler.finalize_recordings(handler)
+        handler.pipe.get_bus.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
