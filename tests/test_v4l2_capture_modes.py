@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import publish
 
@@ -90,6 +90,68 @@ class V4L2JpegProbeTests(unittest.TestCase):
     def test_successful_probe_accepts_decoder(self, run_probe, _available):
         self.assertTrue(publish.v4l2_jpeg_decoder_usable())
         run_probe.assert_called_once_with()
+
+
+class V4L2SourceIdentityTests(unittest.TestCase):
+    def device(self, path):
+        device = Mock()
+        device.get_properties.return_value = (
+            None if path is None else Mock(get_value=lambda _key: path)
+        )
+        return device
+
+    def optimize(self, path, devices):
+        monitor = Mock()
+        monitor.get_devices.return_value = devices
+        aliases = {
+            "/dev/v4l/by-id/usb-selected-video-index0": "/dev/video2",
+            "/dev/v4l/by-path/platform-selected-video-index0": "/dev/video2",
+        }
+        with (
+            patch.object(publish.Gst.DeviceMonitor, "new", return_value=monitor),
+            patch.object(publish.os.path, "realpath", side_effect=lambda value: aliases.get(value, value)),
+            patch.object(publish, "find_hardware_converter", return_value=("videoconvert", False)),
+            patch.object(publish, "find_best_format", return_value="YUY2") as select,
+            patch("builtins.print"),
+        ):
+            result = publish.optimize_pipeline_for_device(path, 640, 480, 30, 2, None)
+        return result, select
+
+    def test_persistent_paths_use_selected_camera_caps(self):
+        other, selected = self.device("/dev/video0"), self.device("/dev/video2")
+        for path in ("/dev/v4l/by-id/usb-selected-video-index0",
+                     "/dev/v4l/by-path/platform-selected-video-index0"):
+            with self.subTest(path=path):
+                result, select = self.optimize(path, [other, selected])
+                select.assert_called_once_with(selected, 640, 480, 30, "auto")
+                self.assertIn('device="' + path + '"', result[0])
+                self.assertEqual(result[2], "YUY2")
+
+    def test_direct_paths_keep_selected_camera(self):
+        other, selected = self.device("/dev/video0"), self.device("/dev/video2")
+        result, select = self.optimize("/dev/video2", [other, selected])
+        select.assert_called_once_with(selected, 640, 480, 30, "auto")
+        self.assertEqual(result[2], "YUY2")
+
+    def test_default_single_camera_still_optimizes(self):
+        selected = self.device("/dev/video0")
+        result, select = self.optimize("/dev/video0", [selected])
+        select.assert_called_once_with(selected, 640, 480, 30, "auto")
+        self.assertEqual(result[2], "YUY2")
+
+    def test_unmatched_camera_never_borrows_other_caps(self):
+        for devices in ([], [self.device("/dev/video0")],
+                        [self.device(None), self.device("")]):
+            with self.subTest(devices=devices):
+                result, select = self.optimize("/dev/video2", devices)
+                self.assertEqual(result, (None, None, None))
+                select.assert_not_called()
+
+    def test_missing_properties_do_not_hide_selected_camera(self):
+        selected = self.device("/dev/video2")
+        result, select = self.optimize("/dev/video2", [self.device(None), selected])
+        select.assert_called_once_with(selected, 640, 480, 30, "auto")
+        self.assertEqual(result[2], "YUY2")
 
 
 if __name__ == "__main__":
