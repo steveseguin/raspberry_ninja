@@ -1121,16 +1121,47 @@ python3 record.py --room myRoomName --record myRecordID
 # Note the PID that's displayed
 ```
 
-Stop recording (in another terminal):
+Stop recording (in another terminal, from the same working directory):
 ```bash
 python3 record.py --stop --pid 12345 --record myRecordID --language en
 ```
 
 ### File Output
 
-- **Audio files**: Current recordings match `{record_id}_*_audio.webm` in the current directory; the service also accepts legacy `_audio.ts` files and selects the most recently modified match.
-- **Transcriptions**: Saved as `stt/{record_id}_speech.txt`.
+- **Audio files**: Each `record.py` launch writes into a fresh private `.recordings/sessions/session-*` directory beneath the working directory. Stop selects the newest `_audio.webm` or `_audio.ts` file only in that launch's directory. Direct `publish.py` recording output is unchanged.
+- **Transcriptions**: Saved as `stt/{record_id}_speech.txt`; a later successful transcription for the same record ID still overwrites that transcript.
 - **Format**: Current Opus audio uses WebM. The source audio file is removed after successful transcription.
+
+`record.py` stores the PID, record ID, and output-directory association in
+`.recordings/pids/{pid}/session.json`, so CLI start and stop can run in separate
+terminals. Use the same working directory and OS account for both commands. Keep
+`.recordings` private and do not move, edit, or share its contents while recordings
+or stop requests are active. A shared exclusive claim prevents web and CLI stops
+from processing the same session twice.
+
+Missing, mismatched, or already-claimed ownership metadata causes stop to fail
+closed; it never falls back to audio in the current directory. This includes
+recordings started before upgrading. Stop those recordings using your existing
+process-management procedure, verify which files belong to them, and transcribe
+or archive those files manually. Do not fabricate metadata to import old audio.
+
+If stopping, transcription, or transcript writing fails, audio and the session
+claim are retained for manual recovery; repeating stop will not retry the session.
+The log's `Claimed recording output` entry and the PID manifest identify the output
+directory. Before manual recovery or removing an unresolved PID binding, verify
+that the original publisher, its media children, and any transcription attempt
+have finished, then preserve the audio you need. An unresolved binding blocks a
+new launch that happens to receive the same PID rather than silently reassigning
+its audio. Successful transcription removes the PID binding but keeps the session
+directory and claim marker; retain that marker while a delayed stop could still
+be running. These directories can be archived or removed when the recording
+service and all CLI stop invocations are inactive.
+
+The manifest establishes audio ownership only. CLI stop still sends SIGTERM to a
+numeric PID and does not verify the live process identity or wait for media
+finalization. An old command can refer to a different process after PID reuse,
+including a later recording with the same ID. Verify the PID before using CLI
+stop; this change does not solve that existing process-lifecycle limitation.
 
 ### Running as a System Service
 

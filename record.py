@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import asyncio
+import json
 import logging
 import os
 from pathlib import Path
@@ -8,6 +9,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from typing import Optional
@@ -28,11 +30,12 @@ model = whisper.load_model("medium")
 
 PROJECT_DIR = Path(__file__).resolve().parent
 TRANSCRIPT_DIR = Path.cwd().resolve() / "stt"
+RECORDING_DIR = Path.cwd().resolve() / ".recordings"
 PUBLISH_SCRIPT = PROJECT_DIR / "publish.py"
 RECORD_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 PROCESS_TIMEOUT_SECONDS = 3600
 
-# PID -> (process, start time, record ID)
+# PID -> (process, start time, record ID, session directory)
 processes = {}
 processes_lock = threading.Lock()
 
@@ -46,14 +49,50 @@ def validate_record_id(record: str) -> str:
     return record
 
 
+def recording_directory(path: Path) -> Path:
+    if path.is_symlink() or not path.is_dir():
+        raise ValueError(f"Invalid recording directory: {path}")
+    return path
+
+
 def start_publish_process(room: str, record: str) -> subprocess.Popen:
     validate_record_id(record)
-    process = subprocess.Popen(
-        [sys.executable, str(PUBLISH_SCRIPT), "--room", room, "--record", record, "--novideo"],
-        cwd=Path.cwd(),
-    )
+    RECORDING_DIR.mkdir(mode=0o700, exist_ok=True)
+    recording_directory(RECORDING_DIR)
+    sessions = RECORDING_DIR / "sessions"
+    bindings = RECORDING_DIR / "pids"
+    for directory in (sessions, bindings):
+        directory.mkdir(mode=0o700, exist_ok=True)
+        recording_directory(directory)
+    session = Path(tempfile.mkdtemp(prefix="session-", dir=sessions))
+    try:
+        process = subprocess.Popen(
+            [sys.executable, str(PUBLISH_SCRIPT), "--room", room, "--record", record, "--novideo"],
+            cwd=session,
+        )
+    except Exception:
+        session.rmdir()
+        raise
+    binding = bindings / str(process.pid)
+    reserved = False
+    try:
+        # An unresolved PID binding must never be reassigned to another launch.
+        binding.mkdir(mode=0o700)
+        reserved = True
+        metadata = {"version": 1, "pid": process.pid, "record": record, "session": session.name}
+        pending = binding / "pending.json"
+        pending.write_text(json.dumps(metadata), encoding="utf-8")
+        pending.replace(binding / "session.json")
+    except Exception:
+        logger.error("Recording registration failed; retained output directory: %s", session)
+        terminate_process(process)
+        if reserved:
+            for name in ("pending.json", "session.json"):
+                (binding / name).unlink(missing_ok=True)
+            binding.rmdir()
+        raise
     with processes_lock:
-        processes[process.pid] = (process, time.time(), record)
+        processes[process.pid] = (process, time.time(), record, session)
     return process
 
 
@@ -68,19 +107,65 @@ def terminate_process(process: subprocess.Popen, timeout: float = 10.0) -> None:
         process.wait()
 
 
-def claim_recording_process(process_pid: int, record: str) -> Optional[subprocess.Popen]:
+def claim_recording_session(process_pid: int, record: str, expected_session=None) -> Path:
+    validate_record_id(record)
+    if process_pid <= 0:
+        raise ValueError("Recording PID must be positive")
+    recording_directory(RECORDING_DIR)
+    recording_directory(RECORDING_DIR / "pids")
+    recording_directory(RECORDING_DIR / "sessions")
+    binding = recording_directory(RECORDING_DIR / "pids" / str(process_pid))
+    manifest = binding / "session.json"
+    if manifest.is_symlink() or not manifest.is_file():
+        raise ValueError("Recording ownership metadata is missing or invalid")
+    metadata = json.loads(manifest.read_text(encoding="utf-8"))
+    if (not isinstance(metadata, dict) or metadata.get("version") != 1
+            or metadata.get("pid") != process_pid or metadata.get("record") != record):
+        raise ValueError("Recording ownership metadata does not match the request")
+    token = metadata.get("session")
+    if not isinstance(token, str) or not re.fullmatch(r"session-[A-Za-z0-9_-]+", token):
+        raise ValueError("Invalid recording session token")
+    session = recording_directory(RECORDING_DIR / "sessions" / token)
+    if expected_session is not None and session != expected_session:
+        raise ValueError("Recording session does not match the running process")
+    # Claim the immutable session, not the reusable PID binding. Web and CLI share this claim.
+    with (session / "claimed").open("x", encoding="utf-8"):
+        pass
+    logger.info("Claimed recording output: %s", session)
+    return session
+
+
+def claim_recording_process(process_pid: int, record: str):
     with processes_lock:
         process_info = processes.get(process_pid)
         if not process_info or process_info[2] != record:
             return None
+        session = claim_recording_session(process_pid, record, process_info[3])
         del processes[process_pid]
-        return process_info[0]
+        return process_info[0], session
 
 
-def find_audio_file(record: str) -> Optional[Path]:
-    validate_record_id(record)
-    matches = [path for suffix in ('.webm', '.ts')
-               for path in Path.cwd().glob(f"{record}_*_audio{suffix}") if path.is_file()]
+def finish_recording_session(process_pid: int) -> None:
+    # Called only by the exclusive claimant after transcription and audio removal.
+    binding = RECORDING_DIR / "pids" / str(process_pid)
+    (binding / "session.json").unlink()
+    binding.rmdir()
+    # Keep the session's claim marker so a delayed stop cannot reclaim this launch.
+
+
+def find_audio_file(session: Path) -> Optional[Path]:
+    recording_directory(RECORDING_DIR)
+    recording_directory(RECORDING_DIR / "sessions")
+    if session.parent != RECORDING_DIR / "sessions":
+        raise ValueError("Audio must belong to the claimed recording session")
+    recording_directory(session)
+    matches = []
+    for suffix in ('.webm', '.ts'):
+        for path in session.glob(f"*_audio{suffix}"):
+            if path.is_symlink():
+                raise ValueError("Recording audio must not be a symbolic link")
+            if path.is_file():
+                matches.append(path)
     return max(matches, key=lambda path: path.stat().st_mtime, default=None)
 
 
@@ -96,7 +181,7 @@ def monitor_processes() -> None:
         expired = []
         with processes_lock:
             for pid, process_info in list(processes.items()):
-                process, start_time, _record = process_info
+                process, start_time, _record, _session = process_info
                 if process.poll() is not None:
                     del processes[pid]
                 elif current_time - start_time > PROCESS_TIMEOUT_SECONDS:
@@ -156,14 +241,18 @@ async def stop_recording(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     logger.info("Stopping recording for record ID: %s with process PID: %d", record, process_pid)
-    process = claim_recording_process(process_pid, record)
-    if process is None:
+    try:
+        claimed = claim_recording_process(process_pid, record)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=f"Recording ownership unavailable: {exc}") from exc
+    if claimed is None:
         raise HTTPException(status_code=404, detail="Recording process not found")
+    process, session = claimed
 
     await asyncio.to_thread(terminate_process, process)
     logger.info("Stopped publish.py process with PID: %d", process_pid)
 
-    audio_file = find_audio_file(record)
+    audio_file = find_audio_file(session)
     if audio_file is None:
         logger.error("No audio file found for record ID: %s", record)
         return {"error": f"No audio file found for record ID: {record}"}
@@ -182,6 +271,7 @@ async def stop_recording(
     logger.info("Transcription saved to: %s", transcript_file)
 
     audio_file.unlink()
+    finish_recording_session(process_pid)
     logger.info("Audio file %s removed.", audio_file)
     return {"transcription": speech}
 
@@ -232,10 +322,15 @@ def start_recording_cli(room: str, record: str) -> int:
 def stop_recording_cli(record: str, process_pid: int, language: str):
     record = validate_record_id(record)
     logger.info("Stopping recording for record ID: %s with process PID: %d", record, process_pid)
+    try:
+        session = claim_recording_session(process_pid, record)
+    except (OSError, ValueError) as exc:
+        return {"error": f"Recording ownership unavailable: {exc}"}
+    # The manifest locates audio; it does not verify the identity of a live OS process.
     os.kill(process_pid, signal.SIGTERM)
     logger.info("Stopped publish.py process with PID: %d", process_pid)
 
-    audio_file = find_audio_file(record)
+    audio_file = find_audio_file(session)
     if audio_file is None:
         logger.error("No audio file found for record ID: %s", record)
         return {"error": f"No audio file found for record ID: {record}"}
@@ -252,6 +347,7 @@ def stop_recording_cli(record: str, process_pid: int, language: str):
     transcript_file.write_text(speech, encoding="utf-8")
     logger.info("Transcription saved to: %s", transcript_file)
     audio_file.unlink()
+    finish_recording_session(process_pid)
     logger.info("Audio file %s removed.", audio_file)
     return {"transcription": speech}
 
