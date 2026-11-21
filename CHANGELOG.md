@@ -1,5 +1,29 @@
 # Changelog
 
+# Release 31.0.1
+
+**Release Date:** 2026-11-21
+
+## 🐛 Patch Release
+
+This release includes bug fixes and minor improvements.
+
+### Commits
+
+- Support Arch Linux installs and honor the system upgrade flag (326086f)
+- Fix PATCH negotiation and recording alignment across runtime versions (4f94ca2)
+
+### Installation
+
+For installation instructions, please refer to the platform-specific guides:
+- [Raspberry Pi](./raspberry_pi/README.md)
+- [NVIDIA Jetson](./nvidia_jetson/README.md)
+- [Orange Pi](./orangepi/README.md)
+- [Ubuntu](./ubuntu/README.md)
+
+
+---
+
 # Release 31.0.0
 
 **Release Date:** 2026-09-28
