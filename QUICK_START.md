@@ -2,7 +2,7 @@
 
 ## 1. Install
 
-On Raspberry Pi OS, Ubuntu, or Debian, run as your normal user with sudo access:
+On Raspberry Pi OS, Ubuntu, Debian, or Arch Linux, run as your normal user with sudo access:
 
 ```bash
 cd ~
@@ -12,7 +12,8 @@ cd ~/raspberry_ninja
 ```
 
 Continue only after the installer succeeds. This installs runtime dependencies
-without development headers or a full OS upgrade. If you already have a clone,
+without a full OS upgrade. On Arch, pacman uses your existing package databases.
+If you already have a clone,
 run `bash install.sh --non-interactive --runtime-only --skip-system-upgrade`
 from that directory instead.
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Raspberry Ninja Universal Installer
-# Supports: Raspberry Pi, Orange Pi, Nvidia Jetson, Ubuntu, Debian, WSL
+# Supports: Raspberry Pi, Orange Pi, Nvidia Jetson, Ubuntu, Debian, Arch Linux, WSL
 # This script provides an interactive installation and setup experience
 
 set -e
@@ -58,7 +58,7 @@ for arg in "$@"; do
             echo "Options:"
             echo "  --non-interactive, -y  Run in non-interactive mode"
             echo "  --runtime-only         Install runtime packages without development headers"
-            echo "  --skip-system-upgrade  Refresh package indexes without upgrading the OS"
+            echo "  --skip-system-upgrade  Install dependencies without a full OS upgrade"
             echo "  --help, -h            Show this help message"
             exit 0
             ;;
@@ -350,27 +350,36 @@ check_root() {
     fi
 }
 
-# Update system packages
-update_system() {
-    print_color "$YELLOW" "Updating system packages..."
-    
-    if command -v apt-get &> /dev/null; then
-        sudo apt-get update
-        if [ "$SKIP_SYSTEM_UPGRADE" = false ]; then
-            sudo apt-get upgrade -y
-        else
-            print_color "$YELLOW" "Skipping the full OS upgrade as requested."
-        fi
-    elif command -v dnf &> /dev/null; then
-        sudo dnf update -y
-    elif command -v yum &> /dev/null; then
-        sudo yum update -y
-    else
-        print_color "$RED" "✗ Package manager not supported. Please update system manually."
+# Arch ships the GStreamer headers and Python bindings with its runtime packages.
+install_arch_dependencies() {
+    if ! command -v pacman &> /dev/null; then
+        print_color "$RED" "Cannot install dependencies on $DISTRO: pacman was not found."
         return 1
     fi
-    
-    print_color "$GREEN" "✓ System updated"
+
+    local options=(--needed)
+    if [ "$SKIP_SYSTEM_UPGRADE" = true ]; then
+        # Refreshing the databases alone would risk a partial upgrade on Arch.
+        options+=(-S)
+        print_color "$YELLOW" "Skipping the OS upgrade. Installing dependencies using the existing pacman databases."
+    else
+        options+=(-Syu)
+        print_color "$YELLOW" "Upgrading Arch packages and installing dependencies..."
+    fi
+    if [ "$NON_INTERACTIVE" = true ]; then
+        options+=(--noconfirm)
+    fi
+
+    local packages=(git gst-python python-websockets python-aiohttp python-cryptography
+        gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly
+        gst-libav libnice v4l-utils alsa-utils)
+    if ! sudo pacman "${options[@]}" "${packages[@]}"; then
+        if [ "$SKIP_SYSTEM_UPGRADE" = true ]; then
+            print_color "$RED" "If the pacman databases are stale, complete your usual Arch system update and rerun the installer."
+        fi
+        return 1
+    fi
+    print_color "$GREEN" "✓ Dependencies installed"
 }
 
 ensure_display_utilities() {
@@ -1129,25 +1138,29 @@ main() {
         exit 0
     fi
     
-    # Run installation steps
-    update_system
-    
-    # Install git first if needed
-    if ! command -v git &> /dev/null; then
-        print_color "$YELLOW" "Installing git..."
-        if command -v apt-get &> /dev/null; then
-            sudo apt-get install -y git
-        elif command -v dnf &> /dev/null; then
-            sudo dnf install -y git
-        elif command -v yum &> /dev/null; then
-            sudo yum install -y git
+    if [[ "$DISTRO" = arch || " ${ID_LIKE:-} " = *" arch "* ]]; then
+        # Install Git and the runtime together in one pacman transaction.
+        install_arch_dependencies
+        setup_repository
+    elif command -v apt-get &> /dev/null; then
+        print_color "$YELLOW" "Refreshing APT package lists..."
+        sudo apt-get update
+        if [ "$SKIP_SYSTEM_UPGRADE" = true ]; then
+            print_color "$YELLOW" "Skipping the full OS upgrade as requested."
+        else
+            print_color "$YELLOW" "Upgrading system packages..."
+            sudo apt-get upgrade -y
         fi
+        if ! command -v git &> /dev/null; then
+            print_color "$YELLOW" "Installing git..."
+            sudo apt-get install -y git
+        fi
+        setup_repository
+        install_dependencies
+    else
+        print_color "$RED" "Automatic dependency installation is unavailable on ${DISTRO:-$PLATFORM} ($ARCH). Install the dependencies manually."
+        return 1
     fi
-    
-    # Now we can setup the repository
-    setup_repository
-    
-    install_dependencies
     detect_cameras
     create_config
     setup_autostart
