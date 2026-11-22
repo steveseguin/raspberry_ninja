@@ -178,6 +178,9 @@ Thumbs.db
 .nfs*
 ndi/gst-plugin-ndi/
 
+# record.py private session metadata and audio
+.recordings/
+
 # record.py whisper transcriptions output directory
 *_audio.ts
 stt/*.txt
