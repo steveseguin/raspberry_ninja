@@ -91,6 +91,65 @@ class V4L2JpegProbeTests(unittest.TestCase):
         self.assertTrue(publish.v4l2_jpeg_decoder_usable())
         run_probe.assert_called_once_with()
 
+class V4L2MjpegRateFallbackTests(unittest.TestCase):
+    def test_decoded_fallback_handles_lower_and_higher_capture_rates(self):
+        # Exercise the actual fragment in main without opening a camera or
+        # starting signaling. Keep hardware/integration harnesses in the QA repo.
+        import ast
+        import inspect
+        from types import SimpleNamespace
+
+        tree = ast.parse(inspect.getsource(publish.main))
+        fragments = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.JoinedStr)
+            and any(
+                isinstance(value, ast.Constant)
+                and isinstance(value.value, str)
+                and 'videorate' in value.value
+                and 'max-rate=' in value.value
+                for value in node.values
+            )
+            and any(
+                isinstance(value, ast.Constant)
+                and isinstance(value.value, str)
+                and 'video/x-raw,framerate=' in value.value
+                for value in node.values
+            )
+        ]
+        self.assertEqual(len(fragments), 1)
+        fragment = eval(
+            compile(ast.Expression(fragments[0]), '<MJPEG rate fallback>', 'eval'),
+            {'args': SimpleNamespace(framerate=30)},
+        )
+        publish.Gst.init(None)
+        for element in ('videotestsrc', 'jpegenc', 'jpegparse', 'jpegdec', 'videorate', 'fakesink'):
+            if not publish.Gst.ElementFactory.find(element):
+                self.skipTest(f'{element} unavailable')
+
+        for capture_rate in (15, 30, 60):
+            with self.subTest(capture_rate=capture_rate):
+                pipeline = publish.Gst.parse_launch(
+                    'videotestsrc num-buffers=8 ! '
+                    f'video/x-raw,width=64,height=48,framerate={capture_rate}/1 ! '
+                    'jpegenc ! jpegparse ! jpegdec'
+                    + fragment + ' ! fakesink sync=false'
+                )
+                try:
+                    pipeline.set_state(publish.Gst.State.PLAYING)
+                    message = pipeline.get_bus().timed_pop_filtered(
+                        5 * publish.Gst.SECOND,
+                        publish.Gst.MessageType.EOS | publish.Gst.MessageType.ERROR,
+                    )
+                    self.assertIsNotNone(message, 'Timed out waiting for synthetic MJPEG')
+                    if message.type == publish.Gst.MessageType.ERROR:
+                        error, debug = message.parse_error()
+                        self.fail(f'{error}: {debug}')
+                    self.assertEqual(message.type, publish.Gst.MessageType.EOS)
+                finally:
+                    pipeline.set_state(publish.Gst.State.NULL)
+
 
 if __name__ == "__main__":
     unittest.main()
+

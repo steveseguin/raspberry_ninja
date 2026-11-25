@@ -14820,7 +14820,7 @@ async def main():
                             + (
                                 "because compressed H.264 passthrough cannot safely alter frame rate"
                                 if v4l2_h264_passthrough
-                                else "and limiting decoded output instead"
+                                else "and converting decoded output to the requested rate"
                             ),
                             "FA0",
                         )
@@ -14936,7 +14936,7 @@ async def main():
                             pipeline_video_input += ' ! video/x-raw'
                         if not v4l2_source_rate_supported:
                             pipeline_video_input += (
-                                f' ! videorate drop-only=true max-rate={args.framerate} '
+                                f' ! videorate max-rate={args.framerate} '
                                 f'! video/x-raw,framerate=(fraction){args.framerate}/1'
                             )
 
