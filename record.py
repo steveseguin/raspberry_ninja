@@ -258,7 +258,7 @@ def stop_recording_cli(record: str, process_pid: int, language: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Start the FastAPI recording service.")
-    parser.add_argument("--host", type=str, default="0.0.0.0", help="FastAPI bind address.")
+    parser.add_argument("--host", type=str, default="127.0.0.1", help="FastAPI bind address.")
     parser.add_argument("--port", type=int, default=9000, help="FastAPI port.")
     parser.add_argument("--room", type=str, help="Room name for the recording session.")
     parser.add_argument("--record", type=str, help="Record ID for the session.")
