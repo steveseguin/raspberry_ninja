@@ -2649,8 +2649,8 @@ class GLibWebRTCHandler:
             # Muxer is already configured above
                 
             # Link elements based on codec
-            if encoding_name == 'VP8':
-                # VP8: queue -> depay -> webmmux -> filesink
+            if encoding_name in ('VP8', 'VP9', 'AV1'):
+                # WebM codecs: queue -> depay -> webmmux -> filesink
                 if not queue.link(depay):
                     self.log("Failed to link queue to depay", "error")
                     return
