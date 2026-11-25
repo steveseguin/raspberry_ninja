@@ -3271,8 +3271,10 @@ class GLibWebRTCHandler:
         eos_sent = False
         for queue in queues:
             try:
-                src_pad = queue.get_static_pad("src")
-                if src_pad and src_pad.push_event(Gst.Event.new_eos()):
+                # Enqueue EOS behind media still buffered in the recording
+                # queue. Pushing it from the src pad bypasses that media.
+                sink_pad = queue.get_static_pad("sink")
+                if sink_pad and sink_pad.send_event(Gst.Event.new_eos()):
                     eos_sent = True
             except Exception as exc:
                 self.log(f"Could not send EOS to recording branch: {exc}", "warning")
