@@ -13524,22 +13524,20 @@ def optimize_pipeline_for_device(device, width, height, framerate, iomode, forma
     video_monitor.add_filter("Video/Source", None)
     videodevices = video_monitor.get_devices()
     
-    # Find our target device
+    # Persistent udev links and the monitor's /dev/videoN path identify the
+    # same camera. Never use another camera's caps for the selected source.
+    target_path = os.path.realpath(device)
     target_device = None
     for dev in videodevices:
         props = dev.get_properties()
-        if props.get_value("device.path") == device:
+        monitored_path = props.get_value("device.path") if props is not None else None
+        if monitored_path and os.path.realpath(monitored_path) == target_path:
             target_device = dev
             break
-    
-    if not target_device:
+
+    if target_device is None:
         print(f"Warning: Could not find detailed capabilities for {device}")
-        if videodevices:
-            print("Using first available device for capabilities")
-            target_device = videodevices[0]
-        else:
-            print("No video devices found")
-            return None, None, None
+        return None, None, None
     
     # Find hardware converter if available
     hw_converter, is_hw_converter = find_hardware_converter()
